@@ -215,7 +215,7 @@ private fun RetentionDropdown(currentIndex: Int, onPick: (Int) -> Unit) {
                 text = retentionLevels[currentIndex].label,
                 color = FG_PRIMARY,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 16.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )

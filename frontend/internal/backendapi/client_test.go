@@ -264,7 +264,7 @@ func TestClient_Send_RoundTrip(t *testing.T) {
 	var captured SendRequest
 	fb.on("POST", "/send", func(w http.ResponseWriter, r *http.Request) {
 		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
-			http.Error(w, "want application/json", 415)
+			http.Error(w, "want application/json", http.StatusUnsupportedMediaType)
 			return
 		}
 		body, _ := io.ReadAll(r.Body)

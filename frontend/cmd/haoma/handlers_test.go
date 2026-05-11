@@ -399,7 +399,7 @@ func TestDispatch_InviteAccept_HappyPath(t *testing.T) {
 	connB := dialTest(t, ctx, addrB, certB, tokenB)
 	writeFrame(t, ctx, connB, mustFrame(ipc.FrameInviteCreate, "b0", ipc.InviteCreateRequest{Nick: "bob"}))
 	_ = readUntil(t, ctx, connB, ipc.FrameInviteCreated)
-	writeFrame(t, ctx, connB, mustFrame(ipc.FrameInviteAccept, "b1", ipc.InviteAcceptRequest{InviteJSON: cr.InviteJSON}))
+	writeFrame(t, ctx, connB, mustFrame(ipc.FrameInviteAccept, "b1", ipc.InviteAcceptRequest(cr)))
 	accepted := readUntil(t, ctx, connB, ipc.FrameInviteAccepted)
 	if accepted.ID != "b1" {
 		t.Errorf("correlation id = %q, want b1", accepted.ID)

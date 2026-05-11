@@ -72,7 +72,7 @@ func stubBackend(t *testing.T, status int, c *captured) string {
 		}
 		c.called++
 		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
-			http.Error(w, "want application/json, got "+ct, 415)
+			http.Error(w, "want application/json, got "+ct, http.StatusUnsupportedMediaType)
 			return
 		}
 		c.body, _ = io.ReadAll(r.Body)

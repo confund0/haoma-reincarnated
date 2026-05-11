@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -486,16 +485,4 @@ func (w *Worker) RetryAllFailed(ctx context.Context, isRetired func(peerID strin
 		slog.Int("enqueued", enqueued),
 	)
 	return enqueued, nil
-}
-
-func parseContentLength(h http.Header) int64 {
-	v := h.Get("Content-Length")
-	if v == "" {
-		return -1
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return -1
-	}
-	return n
 }

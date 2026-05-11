@@ -101,17 +101,8 @@ func TestDispatch_PushPresence_SendsKindPresenceWithSourceHaoma(t *testing.T) {
 }
 
 func TestDispatch_PushPresence_BroadcastEmptyTargetHitsListPeers(t *testing.T) {
-	stub := startHaomadStub(t, []string{"our-onion"}, http.StatusCreated)
-	d, addr, certPath, token := newTestDaemon(t, stub)
-	const peerID = "0000000000000000000000000000000b"
-	preEstablishSession(t, d, peerID)
 
 	t.Skip("broadcast-empty-target path needs a /peers stub; covered in C.2 integration tests")
-	_ = peerID
-	_ = d
-	_ = addr
-	_ = certPath
-	_ = token
 }
 
 func TestDispatch_ClientFocus_FiresPresencePushForDirectChat(t *testing.T) {

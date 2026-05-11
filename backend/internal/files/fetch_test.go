@@ -152,15 +152,6 @@ func (s *fakeSink) OnFetchEvent(ev files.FetchEvent) {
 	s.events = append(s.events, ev)
 }
 
-func (s *fakeSink) lastState() files.FetchState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.events) == 0 {
-		return ""
-	}
-	return s.events[len(s.events)-1].State
-}
-
 func waitForState(t *testing.T, mgr *files.Manager, token string, want files.FetchState) files.Fetch {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

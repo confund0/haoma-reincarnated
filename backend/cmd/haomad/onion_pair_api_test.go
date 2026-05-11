@@ -4,18 +4,7 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"haoma/internal/pair"
 )
-
-type stubPending struct{}
-
-func (stubPending) OOB() pair.OOB                               { return pair.OOB{} }
-func (stubPending) ExpiresAt() int64                            { return 0 }
-func (stubPending) Wait(_ chanContext) (pair.WaitResult, error) { return pair.WaitResult{}, nil }
-func (stubPending) Cancel()                                     {}
-
-type chanContext interface{ Done() <-chan struct{} }
 
 func TestOnionInviteRegistry_PutGetDrop(t *testing.T) {
 	t.Parallel()

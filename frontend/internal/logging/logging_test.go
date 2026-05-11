@@ -1,6 +1,7 @@
 package logging_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,10 +17,10 @@ func TestNew_DefaultsToWarn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closer()
-	if !logger.Enabled(nil, slog.LevelWarn) {
+	if !logger.Enabled(context.TODO(), slog.LevelWarn) {
 		t.Error("default config should enable WARN")
 	}
-	if logger.Enabled(nil, slog.LevelInfo) {
+	if logger.Enabled(context.TODO(), slog.LevelInfo) {
 		t.Error("default config should NOT enable INFO")
 	}
 }
@@ -31,7 +32,7 @@ func TestNew_LevelDebugEnablesAll(t *testing.T) {
 	}
 	defer closer()
 	for _, lvl := range []slog.Level{slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, slog.LevelError} {
-		if !logger.Enabled(nil, lvl) {
+		if !logger.Enabled(context.TODO(), lvl) {
 			t.Errorf("debug config should enable %s", lvl)
 		}
 	}

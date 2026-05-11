@@ -769,7 +769,3 @@ func jitter(d time.Duration, frac float64) time.Duration {
 	factor := 1.0 + frac*(2*r-1)
 	return time.Duration(float64(d) * factor)
 }
-
-func isCtxErr(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}

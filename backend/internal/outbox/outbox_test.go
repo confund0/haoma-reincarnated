@@ -278,8 +278,6 @@ func TestStore_KickByDests(t *testing.T) {
 	futureAt := base.Add(5 * time.Minute)
 	_ = st.Advance(r, StateEnqueued, futureAt, 1, 0, "offline", base)
 
-	r, _ = st.Load("k1")
-
 	now := base.Add(10 * time.Second)
 	n, err := st.KickByDests([]string{"http://a.onion"}, now)
 	if err != nil {

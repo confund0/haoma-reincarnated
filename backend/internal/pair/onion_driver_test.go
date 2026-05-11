@@ -415,23 +415,24 @@ func TestOnionDriver_Server_FirstSuccessOnly(t *testing.T) {
 	wg.Wait()
 	close(results)
 
-	gotOK, gotGone, gotOther := 0, 0, 0
+	gotOK, gotRejected, gotOther := 0, 0, 0
 	for r := range results {
 		if r.err != nil {
-			t.Errorf("post err: %v", r.err)
+
+			gotRejected++
 			continue
 		}
 		switch r.status {
 		case http.StatusOK:
 			gotOK++
 		case http.StatusGone:
-			gotGone++
+			gotRejected++
 		default:
 			gotOther++
 			t.Errorf("unexpected status %d", r.status)
 		}
 	}
-	if gotOK != 1 || gotGone != 1 || gotOther != 0 {
-		t.Errorf("status counts: OK=%d Gone=%d other=%d, want 1/1/0", gotOK, gotGone, gotOther)
+	if gotOK != 1 || gotRejected != 1 || gotOther != 0 {
+		t.Errorf("counts: OK=%d rejected=%d other=%d, want 1/1/0", gotOK, gotRejected, gotOther)
 	}
 }

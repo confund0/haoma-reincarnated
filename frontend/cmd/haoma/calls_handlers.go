@@ -377,10 +377,7 @@ func (sd *sessionDispatcher) handleCallControl(_ context.Context, sess *ipc.Sess
 		slog.String("call_id", req.CallID),
 		slog.String("action", req.Action),
 	)
-	resp, err := ipc.NewFrame(ipc.FrameCallControlled, f.ID, ipc.CallControlledResponse{
-		CallID: req.CallID,
-		Action: req.Action,
-	})
+	resp, err := ipc.NewFrame(ipc.FrameCallControlled, f.ID, ipc.CallControlledResponse(req))
 	if err != nil {
 		sendError(sess, f.ID, "encode_frame", err.Error())
 		return

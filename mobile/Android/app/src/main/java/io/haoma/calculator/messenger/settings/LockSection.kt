@@ -720,7 +720,7 @@ private fun EnumDropdown(
                     text = options[currentIndex],
                     color = FG_PRIMARY,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 16.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )

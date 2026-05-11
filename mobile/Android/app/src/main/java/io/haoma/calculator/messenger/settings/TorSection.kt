@@ -65,8 +65,8 @@ internal fun TorSection(store: MessengerStore, onBack: () -> Unit) {
             return@Column
         }
 
-        Section(label = "Control-port password") {
-            IndicatorRow(hasPassword = initial.hasPassword)
+        Section(label = "Tor authentication") {
+            EmbeddedStatusRow(hasPassword = initial.hasPassword)
             Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = { dialogOpen = true },
@@ -75,15 +75,16 @@ internal fun TorSection(store: MessengerStore, onBack: () -> Unit) {
                     contentColor = BG_BASE,
                 ),
             ) {
-                Text("Change Tor password…")
+                Text("Change password override…")
             }
         }
 
         Section(label = "Privacy posture") {
             Text(
-                text = "Stored in the vault — re-sealed via haoma-vault on save. " +
-                    "Live haomad picks the new password up immediately; no restart " +
-                    "needed.",
+                text = "On Android, haomad spawns its own tor child with cookie " +
+                    "auth — the password override is only used if you point haomad " +
+                    "at an external tor (rare). Stored in the vault, re-sealed on " +
+                    "save; live haomad picks changes up immediately, no restart.",
                 color = FG_DIM,
                 fontSize = 12.sp,
             )
@@ -110,16 +111,17 @@ internal fun TorSection(store: MessengerStore, onBack: () -> Unit) {
 }
 
 @Composable
-private fun IndicatorRow(hasPassword: Boolean) {
-    val (label, color) = if (hasPassword) {
-        "configured" to FG_PRIMARY
-    } else {
-        "not set — pairing will fail until configured" to C_DANGER
-    }
+private fun EmbeddedStatusRow(hasPassword: Boolean) {
+    val overrideLabel = if (hasPassword) "configured" else "not set"
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(text = label, color = color, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            text = "Used by haomad to authenticate against the local Tor control port.",
+            text = "Embedded tor — cookie auth",
+            color = C_SUCCESS,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Password override: $overrideLabel.",
             color = FG_DIM,
             fontSize = 12.sp,
         )
@@ -278,3 +280,4 @@ private val FG_DIM = Color(0xFF7C6F64)
 private val FG_LINK = Color(0xFF83A598)
 private val BTN_PRIMARY = Color(0xFF5FCC1A)
 private val C_DANGER = Color(0xFFCC241D)
+private val C_SUCCESS = Color(0xFF8EC07C)

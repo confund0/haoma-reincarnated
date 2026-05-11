@@ -138,12 +138,7 @@ func (sd *sessionDispatcher) handleSetChatSettings(ctx context.Context, sess *ip
 		slog.Bool("disable_read_receipts", req.DisableReadReceipts),
 	)
 
-	payload := ipc.ChatSettingsPayload{
-		ChatID:              req.ChatID,
-		RetentionTTL:        req.RetentionTTL,
-		DisableReadReceipts: req.DisableReadReceipts,
-		NotificationsMuted:  req.NotificationsMuted,
-	}
+	payload := ipc.ChatSettingsPayload(req)
 	if sd.d.ipcSrv != nil {
 		push(sd.d.ipcSrv, ipc.FrameChatSettings, "", payload)
 	}

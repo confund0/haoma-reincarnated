@@ -184,22 +184,23 @@ func (s *Stores) AvailableOPK() (uint32, []byte, error) {
 		opts.Prefix = []byte(opkKeyPrefix)
 		it := txn.NewIterator(opts)
 		defer it.Close()
-		for it.Rewind(); it.Valid(); it.Next() {
-			var raw []byte
-			if err := it.Item().Value(func(v []byte) error {
-				raw = append([]byte(nil), v...)
-				return nil
-			}); err != nil {
-				return err
-			}
-			opk, err := decodePreKey(raw, s.serializer.PreKeyRecord)
-			if err != nil {
-				return fmt.Errorf("decode opk: %w", err)
-			}
-			chosen = opk
 
+		it.Rewind()
+		if !it.Valid() {
 			return nil
 		}
+		var raw []byte
+		if err := it.Item().Value(func(v []byte) error {
+			raw = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			return err
+		}
+		opk, err := decodePreKey(raw, s.serializer.PreKeyRecord)
+		if err != nil {
+			return fmt.Errorf("decode opk: %w", err)
+		}
+		chosen = opk
 		return nil
 	})
 	if err != nil {
