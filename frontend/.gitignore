@@ -1,0 +1,73 @@
+# Binaries
+/haoma
+/haoma-text
+
+# Build + test artifacts
+*.test
+*.out
+*.prof
+coverage.txt
+coverage.html
+*.cov
+
+# Go
+vendor/
+go.work
+go.work.sum
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local runtime data (v0 dev nodes will drop data here)
+/data/
+/var/
+/run/
+/logs/
+
+# Secrets — NEVER commit
+.env
+.env.*
+*.pem
+*.key
+*.p12
+/secrets/
+
+# Android signing — NEVER commit
+*.jks
+*.keystore
+keystore.properties
+local.properties
+
+# Tor hidden-service identity material — NEVER commit
+#   leaking these = permanent address + identity exposure
+hs_ed25519_secret_key
+hs_ed25519_public_key
+hostname
+tordata/
+hidden_service*/
+
+# Tor binaries — fetched via apt-download at build time, never committed
+/android/jniLibs/
+/build/tor/
+*.deb
+
+# Android build output (Phase 15+)
+*.apk
+*.aab
+/android/build/
+/android/app/build/
+
+# Frontend (Phase 14+)
+/ui/node_modules/
+/ui/dist/
+/ui/build/
+/ui/.svelte-kit/

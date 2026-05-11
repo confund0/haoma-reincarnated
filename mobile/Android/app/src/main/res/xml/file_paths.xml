@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!--
+      files-path covers everything under getFilesDir(). The frontend
+      daemon spawns with `cfg-dir <filesDir>/haoma`, so its sealed
+      caches and the OpenFile transient sit under
+      <filesDir>/haoma/frontend/files/open/<msg_id>. Exposing the whole
+      files dir lets any path the daemon hands us via FrameFileOpenReady
+      be wrapped into a content://-URI for ACTION_VIEW handoff to a
+      system viewer. Save-as also drops temp output under
+      <filesDir>/saf-out/, same root.
+    -->
+    <files-path name="files-root" path="." />
+
+    <!--
+      cache-path covers the SAF copy-in scratch space: files the user
+      picked via ACTION_OPEN_DOCUMENT that we copy locally so the
+      daemon (which reads filesystem paths, not content URIs) can ship
+      them. Cache eviction is the OS's call; we also wipe per-attach
+      after the daemon's SendFile reply lands.
+    -->
+    <cache-path name="saf-in" path="saf-in/" />
+</paths>

@@ -1,0 +1,16 @@
+tmp/
+release-artifacts/
+**/build/
+**/.gradle/
+mobile/tor-build/work/
+mobile/tor-build/output/
+.claude/
+sources/
+stego/
+# Theme-pack source texts (Project Gutenberg etc.) — staged for
+# future skins, no current consumer.
+kjv.txt
+*.txt.gz
+*.swp
+*~
+.DS_Store

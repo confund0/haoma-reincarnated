@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Calculator</string>
+    <string name="fgs_core_notification_text">Background service running</string>
+    <string name="fgs_core_channel_name">Background service</string>
+    <string name="fgs_core_channel_description">Keeps the app responsive in the background.</string>
+    <string name="messages_channel_name">Messages</string>
+    <string name="messages_channel_description">Inbound message banners.</string>
+</resources>
