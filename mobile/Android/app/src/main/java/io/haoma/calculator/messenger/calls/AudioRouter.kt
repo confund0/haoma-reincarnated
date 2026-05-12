@@ -60,6 +60,9 @@ class AudioRouter(
     private val _inCallActive = MutableStateFlow(false)
     val inCallActive: StateFlow<Boolean> = _inCallActive.asStateFlow()
 
+    
+    private var listenerRegistered = false
+
     private val _availableDevices = MutableStateFlow<List<AudioRoute>>(emptyList())
     val availableDevices: StateFlow<List<AudioRoute>> = _availableDevices.asStateFlow()
 
@@ -89,6 +92,7 @@ class AudioRouter(
             commDeviceListener?.let {
                 try {
                     audio.addOnCommunicationDeviceChangedListener(mainExecutor, it)
+                    listenerRegistered = true
                 } catch (t: Throwable) {
                     Logger.w("audio", "addOnCommunicationDeviceChangedListener: ${t.message}")
                 }
@@ -102,12 +106,15 @@ class AudioRouter(
     private fun onCallInactive() {
         Logger.i("audio", "in-call inactive — restoring MODE_NORMAL")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            commDeviceListener?.let {
-                try {
-                    audio.removeOnCommunicationDeviceChangedListener(it)
-                } catch (t: Throwable) {
-                    Logger.w("audio", "removeOnCommunicationDeviceChangedListener: ${t.message}")
+            if (listenerRegistered) {
+                commDeviceListener?.let {
+                    try {
+                        audio.removeOnCommunicationDeviceChangedListener(it)
+                    } catch (t: Throwable) {
+                        Logger.w("audio", "removeOnCommunicationDeviceChangedListener: ${t.message}")
+                    }
                 }
+                listenerRegistered = false
             }
             try {
                 audio.clearCommunicationDevice()

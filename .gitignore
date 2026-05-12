@@ -14,3 +14,4 @@ kjv.txt
 *.swp
 *~
 .DS_Store
+mobile/Android/.kotlin
