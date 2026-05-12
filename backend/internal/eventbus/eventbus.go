@@ -16,6 +16,9 @@ const (
 
 	TopicFileFetchStateChanged = "file.fetch-state-changed"
 	TopicFileFetchProgress     = "file.fetch-progress"
+
+	TopicPeerSelfReachChanged       = "peer.self-reach-changed"
+	TopicHealthExternalReachChanged = "health.external-reach-changed"
 )
 
 type Event struct {

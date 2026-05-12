@@ -37,7 +37,11 @@ int listen_local(uint16_t port) {
 int accept_one(int listen_fd) {
   int cfd = ::accept(listen_fd, nullptr, nullptr);
   if (cfd < 0) {
-    LOG_ERR("accept: %s", std::strerror(errno));
+    if (errno == EINTR) {
+      LOG_INFO("accept interrupted (shutdown)");
+    } else {
+      LOG_ERR("accept: %s", std::strerror(errno));
+    }
     ::close(listen_fd);
     return -1;
   }

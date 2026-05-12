@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -73,10 +75,19 @@ fun MessengerScaffold(store: MessengerStore) {
         store.popBack()
     }
 
+    
+    val connected by store.connection.collectAsStateWithLifecycle()
+    LaunchedEffect(connected, current) {
+        if (connected) {
+            store.requestSelfProbeForActiveSurface()
+            store.requestExternalProbeBurst()
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = BG_BASE,
-        bottomBar = { MessengerBottomBar(current = current, onSelect = store::selectTab) },
+        bottomBar = { MessengerBottomBar(current = current, onSelect = store::selectTab, store = store) },
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             when (val screen = current) {
@@ -115,15 +126,16 @@ fun MessengerScaffold(store: MessengerStore) {
 }
 
 @Composable
-private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit) {
+private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: MessengerStore) {
     val activeTab = (current as? Screen.Tabbed)?.tab
     
     
     NavigationBar(
+        modifier = Modifier.height(NAV_BAR_HEIGHT),
         containerColor = BG_BAR,
         contentColor = FG_BAR,
     ) {
-        Spacer(modifier = Modifier.width(NAV_EDGE_INSET))
+        ReadinessStrip(store = store)
         NavTabs.forEach { entry ->
             val selected = activeTab == entry.tab
             
@@ -135,6 +147,7 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit) {
                     Icon(
                         imageVector = entry.icon,
                         contentDescription = entry.label,
+                        modifier = Modifier.size(NAV_ICON_SIZE),
                     )
                 },
                 colors = navItemColors(),
@@ -145,6 +158,8 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit) {
 }
 
 private val NAV_EDGE_INSET = 16.dp
+private val NAV_BAR_HEIGHT = 58.dp
+private val NAV_ICON_SIZE = 20.dp
 
 private data class NavTabEntry(val tab: Tab, val label: String, val icon: ImageVector)
 

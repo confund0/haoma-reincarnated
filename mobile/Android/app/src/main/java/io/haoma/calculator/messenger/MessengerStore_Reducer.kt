@@ -35,13 +35,29 @@ internal fun MessengerStore.dispatch(frame: Frame) {
 
         FrameType.BackendStatus -> if (payload != null) {
             val b = BackendStatusPayload.fromJson(payload)
+            val now = System.currentTimeMillis() / 1000L
             _health.update {
                 it.copy(
                     backendReachable = b.backendReachable,
                     tor = b.tor,
                     onionCount = b.onionCount,
+                    backendStatusAt = now,
                 )
             }
+        }
+
+        FrameType.PeerSelfReachChanged -> if (payload != null) {
+            val p = PeerSelfReachPayload.fromJson(payload)
+            if (p.peerId.isNotEmpty()) {
+                _health.update { s ->
+                    s.copy(selfReach = s.selfReach + (p.peerId to SelfReach(p.onion, p.ok, p.at)))
+                }
+            }
+        }
+
+        FrameType.ExternalReachChanged -> if (payload != null) {
+            val e = ExternalReachPayload.fromJson(payload)
+            _health.update { it.copy(externalReach = ExternalReach(e.ok, e.lastTarget, e.at)) }
         }
 
         FrameType.PeerUpdated -> if (payload != null) {

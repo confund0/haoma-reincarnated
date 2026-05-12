@@ -86,9 +86,17 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::signal(SIGINT,  on_signal);
-  std::signal(SIGTERM, on_signal);
-  std::signal(SIGPIPE, SIG_IGN);
+  // sigaction with SA_RESTART cleared: SIGTERM must interrupt the
+  // pre-control-thread accept() — std::signal's SA_RESTART default
+  // would auto-resume it, so cancel-before-connect would hit SIGKILL.
+  struct sigaction sa{};
+  sa.sa_handler = on_signal;
+  ::sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  ::sigaction(SIGINT,  &sa, nullptr);
+  ::sigaction(SIGTERM, &sa, nullptr);
+  sa.sa_handler = SIG_IGN;
+  ::sigaction(SIGPIPE, &sa, nullptr);
 
   if (!Aead::global_init()) return 2;
 

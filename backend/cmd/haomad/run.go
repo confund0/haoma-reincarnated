@@ -20,6 +20,7 @@ import (
 	"haoma/internal/auth"
 	"haoma/internal/peers"
 	"haoma/internal/eventbus"
+	"haoma/internal/extprobe"
 	"haoma/internal/files"
 	"haoma/internal/ids"
 	"haoma/internal/outbox"
@@ -90,6 +91,12 @@ type daemon struct {
 	torPasswordMu sync.RWMutex
 	torPassword   string
 	torKick       chan struct{}
+
+	hsfetchMu     sync.Mutex
+	hsfetchLastAt map[string]time.Time
+
+	extProbe  *extprobe.Prober
+	selfProbe *peerSelfProbe
 }
 
 func (d *daemon) loadTorPassword() string {
@@ -346,6 +353,14 @@ func run(ctx context.Context, cfg config) error {
 	pairHTTP.Timeout = 30 * time.Second
 	d.torHTTP = pairHTTP
 
+	extHTTP, err := xport.NewTorHTTPClient(cfg.torSocks, "haomad-extprobe")
+	if err != nil {
+		return fmt.Errorf("tor SOCKS client (extprobe): %w", err)
+	}
+	extHTTP.Timeout = 60 * time.Second
+	d.extProbe = extprobe.New(extHTTP)
+	d.selfProbe = newPeerSelfProbe()
+
 	if n, err := outbox.Migrate(s, time.Now()); err != nil {
 		slog.Warn("outbox migration failed", slog.Any("err", err))
 	} else if n > 0 {
@@ -362,12 +377,23 @@ func run(ctx context.Context, cfg config) error {
 	outboxBus := &outbox.Bus{}
 	d.worker = outbox.NewWorker(outboxStore, xportClient, ackVerifier, outboxBus)
 	d.worker.Gate = d.torPoller.Ready
+	d.worker.OnDialFailure = func(dest string) {
+		if onion := onionFromDest(dest); onion != "" {
+			d.HsfetchPeer(onion)
+		}
+	}
 
 	go bridgeOutboxToBus(ctx, outboxBus, bus)
 
 	slog.Debug("outbox worker starting")
-	workerCtx, workerCancel := context.WithCancel(ctx)
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
+
+	defer func() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		d.worker.Drain(drainCtx)
+	}()
 	go func() {
 		if err := d.worker.Run(workerCtx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("outbox worker exited", slog.Any("err", err))
@@ -672,6 +698,7 @@ func tryBringUpTorTier(
 		d.bus.Publish(topic, ev)
 	})
 	worker := files.NewWorker(d.files, resolver, clientForPeer, sink, slog.Default())
+	worker.OnDialFailure = d.HsfetchPeer
 	d.fetchWorker.Store(worker)
 	go worker.Run(ctx)
 

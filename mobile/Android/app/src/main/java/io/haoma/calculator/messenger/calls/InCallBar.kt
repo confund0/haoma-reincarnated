@@ -34,7 +34,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.messenger.CallDirection
 import io.haoma.calculator.messenger.CallEntry
+import io.haoma.calculator.messenger.CallStatus
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.toggleMute
 import kotlinx.coroutines.delay
@@ -42,6 +44,7 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun InCallBar(call: CallEntry, store: MessengerStore) {
+    val accepted = call.status == CallStatus.Accepted
     val router = store.audioRouter
     val current = router?.currentDevice?.collectAsStateWithLifecycle()?.value
     val muted by store.mutedCalls.collectAsStateWithLifecycle()
@@ -57,7 +60,16 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
             delay(1_000L)
         }
     }
+    
+    
     val duration = (now - call.startedAt).coerceAtLeast(0L)
+    val preAcceptLabel = when {
+        call.direction == CallDirection.Out && call.status == CallStatus.Offered -> "Calling…"
+        call.direction == CallDirection.In && call.status == CallStatus.Ringing -> "Ringing…"
+        call.status == CallStatus.Ringing -> "Ringing…" 
+        call.status == CallStatus.Offered -> "Calling…"
+        else -> ""
+    }
 
     
     val pulse = rememberInfiniteTransition(label = "in-call pulse")
@@ -93,62 +105,72 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
         )
-        Text(
-            text = formatDuration(duration),
-            color = BarText,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        
-        
-        if (jitterMs != null) {
-            Text(text = "·", color = BarTextDim, fontSize = 13.sp)
+        if (accepted) {
             Text(
-                text = "${jitterMs.toInt()}ms",
-                color = BarTextDim,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-            )
-        }
-        Text(text = "·", color = BarTextDim, fontSize = 13.sp)
-        
-        
-        val routeGlyph = glyphFor(current)
-        val solid = fontAwesomeSolid()
-        val brands = fontAwesomeBrands()
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(percent = 50))
-                .background(BarRouteBg)
-                .clickable { pickerOpen = true }
-                .padding(horizontal = 10.dp, vertical = 2.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = routeGlyph,
+                text = formatDuration(duration),
                 color = BarText,
-                fontSize = 14.sp,
-                fontFamily = if (isBrandsGlyph(routeGlyph)) brands else solid,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
             )
-        }
-        Spacer(modifier = Modifier.weight(1f))
-        
-        
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(percent = 50))
-                .background(if (isMuted) BarMuteBg else BarRouteBg)
-                .clickable { store.toggleMute(call.callId) }
-                .padding(horizontal = 10.dp, vertical = 2.dp),
-            contentAlignment = Alignment.Center,
-        ) {
+            
+            
+            if (jitterMs != null) {
+                Text(text = "·", color = BarTextDim, fontSize = 13.sp)
+                Text(
+                    text = "${jitterMs.toInt()}ms",
+                    color = BarTextDim,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                )
+            }
+            Text(text = "·", color = BarTextDim, fontSize = 13.sp)
+            
+            
+            val routeGlyph = glyphFor(current)
+            val solid = fontAwesomeSolid()
+            val brands = fontAwesomeBrands()
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(BarRouteBg)
+                    .clickable { pickerOpen = true }
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = routeGlyph,
+                    color = BarText,
+                    fontSize = 14.sp,
+                    fontFamily = if (isBrandsGlyph(routeGlyph)) brands else solid,
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            
+            
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(if (isMuted) BarMuteBg else BarRouteBg)
+                    .clickable { store.toggleMute(call.callId) }
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (isMuted) CallIcons.MicrophoneSlash else CallIcons.Microphone,
+                    color = if (isMuted) BarAccent else BarText,
+                    fontSize = 14.sp,
+                    fontFamily = solid,
+                )
+            }
+        } else {
             Text(
-                text = if (isMuted) CallIcons.MicrophoneSlash else CallIcons.Microphone,
-                color = if (isMuted) BarAccent else BarText,
-                fontSize = 14.sp,
-                fontFamily = solid,
+                text = preAcceptLabel,
+                color = BarText,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
             )
+            Spacer(modifier = Modifier.weight(1f))
         }
     }
     if (pickerOpen) {

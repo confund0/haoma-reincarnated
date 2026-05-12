@@ -265,6 +265,12 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleRespondCall(ctx, sess, f)
 	case ipc.FrameCallControl:
 		sd.handleCallControl(ctx, sess, f)
+	case ipc.FrameNewCircuitForPeer:
+		sd.handleNewCircuitForPeer(ctx, sess, f)
+	case ipc.FramePeerSelfProbe:
+		sd.handlePeerSelfProbe(ctx, sess, f)
+	case ipc.FrameExternalProbeBurst:
+		sd.handleExternalProbeBurst(ctx, sess, f)
 	case ipc.FrameRotateBegin:
 		sd.handleRotateBegin(ctx, sess, f)
 	case ipc.FrameRotateUserAccept:

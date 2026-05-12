@@ -99,6 +99,68 @@ func (d *daemon) handleCollapsePeerAddress(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (d *daemon) handleNewCircuitForPeer(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("peer id required"))
+		return
+	}
+	peer, err := d.registry.Get(id)
+	if err != nil {
+		if errors.Is(err, peers.ErrPeerNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(peer.KnownAddresses) == 0 {
+		writeJSON(w, http.StatusOK, map[string]int{"closed": 0})
+		return
+	}
+	d.ctrlMu.Lock()
+	conn := d.ctrlConn
+	d.ctrlMu.Unlock()
+	if conn == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("tor control not yet up"))
+		return
+	}
+	targets := make(map[string]struct{}, len(peer.KnownAddresses))
+	for _, a := range peer.KnownAddresses {
+		if a != "" {
+			targets[a] = struct{}{}
+		}
+	}
+	circuits, err := conn.CircuitStatus()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("circuit-status: %w", err))
+		return
+	}
+	closed := 0
+	for _, ci := range circuits {
+		if ci.Purpose != "HS_CLIENT_REND" {
+			continue
+		}
+		if _, ok := targets[ci.HSAddress]; !ok {
+			continue
+		}
+		if err := conn.CloseCircuit(ci.ID); err != nil {
+			slog.Warn("CloseCircuit failed",
+				slog.String("peer_id", id),
+				slog.String("circ_id", ci.ID),
+				slog.Any("err", err),
+			)
+			continue
+		}
+		closed++
+	}
+	slog.Info("new tor circuit requested for peer",
+		slog.String("peer_id", id),
+		slog.Int("closed", closed),
+	)
+	writeJSON(w, http.StatusOK, map[string]int{"closed": closed})
+}
+
 func (d *daemon) handleRotateOwnOnion(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {

@@ -212,6 +212,10 @@ class HaomaApp : Application(), ImageLoaderFactory {
             
             
             messengerStore.refireFocusOnResume()
+            
+            
+            messengerStore.requestExternalProbeBurst()
+            messengerStore.requestSelfProbeForActiveSurface()
         }
 
         override fun onStop(owner: LifecycleOwner) {

@@ -244,6 +244,29 @@ func eventsLoop(ctx context.Context, d *daemon) {
 					At:       p.At,
 				})
 			},
+			OnPeerSelfReach: func(ev backendapi.PeerSelfReachEvent) {
+				slog.Debug("peer.self-reach-changed via SSE",
+					slog.String("peer_id", ev.PeerID),
+					slog.Bool("ok", ev.Ok),
+				)
+				push(d.ipcSrv, ipc.FramePeerSelfReachChanged, "", ipc.PeerSelfReachPayload{
+					PeerID: ev.PeerID,
+					Onion:  ev.Onion,
+					Ok:     ev.Ok,
+					At:     ev.At,
+				})
+			},
+			OnExternalReach: func(ev backendapi.ExternalReachEvent) {
+				slog.Debug("health.external-reach-changed via SSE",
+					slog.Bool("ok", ev.Ok),
+					slog.String("last_target", ev.LastTargetName),
+				)
+				push(d.ipcSrv, ipc.FrameExternalReachChanged, "", ipc.ExternalReachPayload{
+					Ok:         ev.Ok,
+					LastTarget: ev.LastTargetName,
+					At:         ev.At,
+				})
+			},
 		})
 
 		if d.backendReachable.CompareAndSwap(true, false) {

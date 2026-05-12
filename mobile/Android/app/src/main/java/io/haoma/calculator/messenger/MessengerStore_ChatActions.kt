@@ -126,6 +126,33 @@ fun MessengerStore.deleteChat(chatId: String) {
 }
 
 
+fun MessengerStore.newTorCircuitForChat(chatId: String) {
+    if (chatId.isEmpty()) return
+    val peerId = peerIdOrWarn(chatId, "new circuit") ?: return
+    scope.launch {
+        val c = ipc ?: run {
+            appendStatus("new circuit: ipc not connected", level = StatusLevel.WARN)
+            return@launch
+        }
+        try {
+            val reply = c.request(
+                type = FrameType.NewCircuitForPeer,
+                payload = NewCircuitForPeerRequest(peerId).toJson(),
+            )
+            if (reply.type == FrameType.Error) {
+                val err = reply.payload?.let(ErrorPayload::fromJson)
+                appendStatus("new circuit error: ${err?.message ?: "?"}", level = StatusLevel.WARN)
+                return@launch
+            }
+            val resp = reply.payload?.let(NewCircuitClosedResponse::fromJson) ?: return@launch
+            appendStatus("tor: closed ${resp.closed} circuit(s) to ${shortChat(peerId)}")
+        } catch (t: Throwable) {
+            appendStatus("new circuit failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+        }
+    }
+}
+
+
 fun MessengerStore.rotateTorForChat(chatId: String) {
     if (chatId.isEmpty()) return
     val peerId = peerIdOrWarn(chatId, "rotate") ?: return

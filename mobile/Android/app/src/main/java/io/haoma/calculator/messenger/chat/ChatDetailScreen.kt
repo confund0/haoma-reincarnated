@@ -64,10 +64,10 @@ fun ChatDetailScreen(
     
     
     val callHere = activeCalls.values
-        .filter { it.chatId == chatId && it.status == CallStatus.Accepted }
+        .filter { it.chatId == chatId && !it.isTerminal }
         .maxByOrNull { it.startedAt }
     val callElsewhere = activeCalls.values.any {
-        it.chatId != chatId && it.status == CallStatus.Accepted
+        it.chatId != chatId && !it.isTerminal
     }
     var actionTarget by remember { mutableStateOf<TimelineEvent?>(null) }
     var reactPickerTarget by remember { mutableStateOf<TimelineEvent?>(null) }
@@ -132,8 +132,9 @@ fun ChatDetailScreen(
             canCall = recordAudio,
             onBack = onBack,
             onPlaceCall = { store.startCall(chatId) },
-            onHangup = { store.hangupLatest() },
+            onHangup = { store.hangupCallInChat(chatId) },
             onRotateTor = { store.rotateTorForChat(chatId) },
+            onNewTorCircuit = { store.newTorCircuitForChat(chatId) },
             onToggleMute = {
                 val nextMuted = chat?.notificationsMuted != true
                 store.setChatMute(chatId, nextMuted)

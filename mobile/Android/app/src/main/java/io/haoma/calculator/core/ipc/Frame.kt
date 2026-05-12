@@ -124,6 +124,18 @@ object FrameType {
     const val PeerPaired = "pair.completed"
 
     
+    const val NewCircuitForPeer = "new_circuit_for_peer"
+    const val NewCircuitClosed = "new_circuit_closed"
+
+    
+    const val PeerSelfProbe = "peer_self_probe"
+    const val PeerSelfProbed = "peer_self_probed"
+    const val PeerSelfReachChanged = "peer.self-reach-changed"
+    const val ExternalProbeBurst = "external_probe_burst"
+    const val ExternalProbeAccepted = "external_probe_accepted"
+    const val ExternalReachChanged = "health.external-reach-changed"
+
+    
     const val RotateBegin = "rotate_begin"
     const val RotateBegun = "rotate_begun"
     const val RotateUserAccept = "rotate_user_accept"

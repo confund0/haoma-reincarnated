@@ -33,6 +33,10 @@ func (d *daemon) apiHandler() http.Handler {
 	mux.HandleFunc("POST /peers/{id}/overlay-address", d.handleOverlayPeerAddress)
 	mux.HandleFunc("POST /peers/{id}/collapse-address", d.handleCollapsePeerAddress)
 	mux.HandleFunc("POST /peers/{id}/rotate-own-onion", d.handleRotateOwnOnion)
+	mux.HandleFunc("POST /peers/{id}/new-circuit", d.handleNewCircuitForPeer)
+
+	mux.HandleFunc("POST /external-probe-burst", d.handleExternalProbeBurst)
+	mux.HandleFunc("POST /peers/{id}/self-probe", d.handlePeerSelfProbe)
 	mux.HandleFunc("GET /stats", d.handleStats)
 	mux.HandleFunc("POST /send", d.handleSend)
 	mux.HandleFunc("GET /inbox", d.handleInboxList)

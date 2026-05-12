@@ -140,6 +140,35 @@ func (c *Client) RotateOwnOnion(ctx context.Context, peerID, address, privateKey
 	return out, nil
 }
 
+func (c *Client) NewCircuitForPeer(ctx context.Context, peerID string) (int, error) {
+	var out struct {
+		Closed int `json:"closed"`
+	}
+	if err := c.postJSON(ctx, "/peers/"+peerID+"/new-circuit", nil, http.StatusOK, &out); err != nil {
+		return 0, err
+	}
+	return out.Closed, nil
+}
+
+type PeerSelfReach struct {
+	PeerID string `json:"peer_id"`
+	Onion  string `json:"onion,omitempty"`
+	Ok     bool   `json:"ok"`
+	At     int64  `json:"at"`
+}
+
+func (c *Client) ProbePeerSelf(ctx context.Context, peerID string) (PeerSelfReach, error) {
+	var out PeerSelfReach
+	if err := c.postJSON(ctx, "/peers/"+peerID+"/self-probe", nil, http.StatusOK, &out); err != nil {
+		return PeerSelfReach{}, err
+	}
+	return out, nil
+}
+
+func (c *Client) ExternalProbeBurst(ctx context.Context) error {
+	return c.postJSON(ctx, "/external-probe-burst", nil, http.StatusAccepted, nil)
+}
+
 type Peer struct {
 	ID                   string         `json:"id"`
 	KnownAddresses       []string       `json:"known_addresses"`

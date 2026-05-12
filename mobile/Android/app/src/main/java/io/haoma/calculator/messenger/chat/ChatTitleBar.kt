@@ -45,6 +45,7 @@ internal fun ChatTitleBar(
     onPlaceCall: () -> Unit,
     onHangup: () -> Unit,
     onRotateTor: () -> Unit,
+    onNewTorCircuit: () -> Unit,
     onToggleMute: () -> Unit,
     onOpenSettings: () -> Unit,
     onViewFiles: () -> Unit,
@@ -159,6 +160,13 @@ internal fun ChatTitleBar(
                         onClick = {
                             menuOpen = false
                             onOpenSettings()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("New Tor circuit", color = ChatPalette.Accent) },
+                        onClick = {
+                            menuOpen = false
+                            onNewTorCircuit()
                         },
                     )
                     DropdownMenuItem(

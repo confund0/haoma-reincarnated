@@ -63,6 +63,19 @@ type FileFetchEvent struct {
 	At            int64  `json:"at"`
 }
 
+type PeerSelfReachEvent struct {
+	PeerID string `json:"peer_id"`
+	Onion  string `json:"onion,omitempty"`
+	Ok     bool   `json:"ok"`
+	At     int64  `json:"at"`
+}
+
+type ExternalReachEvent struct {
+	Ok             bool   `json:"ok"`
+	LastTargetName string `json:"last_target,omitempty"`
+	At             int64  `json:"at"`
+}
+
 type EventsOpts struct {
 	OnEvent             func(Notification)
 	OnDelivery          func(DeliveryStatus)
@@ -72,6 +85,8 @@ type EventsOpts struct {
 	OnPairOnionProbe    func(PairOnionProbe)
 	OnFileFetchState    func(FileFetchEvent)
 	OnFileFetchProgress func(FileFetchEvent)
+	OnPeerSelfReach     func(PeerSelfReachEvent)
+	OnExternalReach     func(ExternalReachEvent)
 
 	OnReady func()
 }
@@ -191,6 +206,24 @@ func parseSSE(ctx context.Context, r io.Reader, opts EventsOpts) error {
 				return
 			}
 			opts.OnFileFetchProgress(ev)
+		case "peer.self-reach-changed":
+			if opts.OnPeerSelfReach == nil {
+				return
+			}
+			var ev PeerSelfReachEvent
+			if err := json.Unmarshal([]byte(data.String()), &ev); err != nil {
+				return
+			}
+			opts.OnPeerSelfReach(ev)
+		case "health.external-reach-changed":
+			if opts.OnExternalReach == nil {
+				return
+			}
+			var ev ExternalReachEvent
+			if err := json.Unmarshal([]byte(data.String()), &ev); err != nil {
+				return
+			}
+			opts.OnExternalReach(ev)
 		}
 	}
 

@@ -160,6 +160,16 @@ const (
 	FrameCallControl     FrameType = "call_control"
 	FrameCallControlled  FrameType = "call_controlled"
 
+	FrameNewCircuitForPeer FrameType = "new_circuit_for_peer"
+	FrameNewCircuitClosed  FrameType = "new_circuit_closed"
+
+	FramePeerSelfProbe         FrameType = "peer_self_probe"
+	FramePeerSelfProbed        FrameType = "peer_self_probed"
+	FramePeerSelfReachChanged  FrameType = "peer.self-reach-changed"
+	FrameExternalProbeBurst    FrameType = "external_probe_burst"
+	FrameExternalProbeAccepted FrameType = "external_probe_accepted"
+	FrameExternalReachChanged  FrameType = "health.external-reach-changed"
+
 	FrameRotateBegin       FrameType = "rotate_begin"
 	FrameRotateBegun       FrameType = "rotate_begun"
 	FrameRotateUserAccept  FrameType = "rotate_user_accept"
@@ -219,7 +229,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 31
+const ProtocolVersion = 33
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -878,6 +888,36 @@ type CallControlRequest struct {
 type CallControlledResponse struct {
 	CallID string `json:"call_id"`
 	Action string `json:"action"`
+}
+
+type NewCircuitForPeerRequest struct {
+	PeerID string `json:"peer_id"`
+}
+
+type NewCircuitClosedResponse struct {
+	PeerID string `json:"peer_id"`
+	Closed int    `json:"closed"`
+}
+
+type PeerSelfProbeRequest struct {
+	PeerID string `json:"peer_id"`
+}
+
+type PeerSelfReachPayload struct {
+	PeerID string `json:"peer_id"`
+	Onion  string `json:"onion,omitempty"`
+	Ok     bool   `json:"ok"`
+	At     int64  `json:"at"`
+}
+
+type ExternalProbeBurstRequest struct{}
+
+type ExternalProbeAcceptedResponse struct{}
+
+type ExternalReachPayload struct {
+	Ok         bool   `json:"ok"`
+	LastTarget string `json:"last_target,omitempty"`
+	At         int64  `json:"at"`
 }
 
 type RotateBeginRequest struct {

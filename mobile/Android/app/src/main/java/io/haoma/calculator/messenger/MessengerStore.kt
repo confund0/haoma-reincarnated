@@ -369,6 +369,13 @@ data class SystemHealth(
     val selfNickIsDefault: Boolean,
     val daemonVersion: String,
     val protocolVersion: Int,
+    
+    val externalReach: ExternalReach? = null,
+    
+    val selfReach: Map<String, SelfReach> = emptyMap(),
+    
+
+    val backendStatusAt: Long = 0L,
 ) {
     companion object {
         val INITIAL = SystemHealth(
@@ -382,6 +389,12 @@ data class SystemHealth(
         )
     }
 }
+
+
+data class ExternalReach(val ok: Boolean, val lastTarget: String, val at: Long)
+
+
+data class SelfReach(val onion: String, val ok: Boolean, val at: Long)
 
 enum class StatusLevel { INFO, WARN }
 

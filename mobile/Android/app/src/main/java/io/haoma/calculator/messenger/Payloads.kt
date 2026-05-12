@@ -885,6 +885,62 @@ data class ChatActionAppliedResponse(
 }
 
 
+data class NewCircuitForPeerRequest(val peerId: String) {
+    fun toJson(): JSONObject = JSONObject().apply { put("peer_id", peerId) }
+}
+
+data class NewCircuitClosedResponse(val peerId: String, val closed: Int) {
+    companion object {
+        fun fromJson(o: JSONObject): NewCircuitClosedResponse = NewCircuitClosedResponse(
+            peerId = o.optStringOrEmpty("peer_id"),
+            closed = o.optInt("closed", 0),
+        )
+    }
+}
+
+
+data class PeerSelfProbeRequest(val peerId: String) {
+    fun toJson(): JSONObject = JSONObject().apply { put("peer_id", peerId) }
+}
+
+
+data class PeerSelfReachPayload(
+    val peerId: String,
+    val onion: String,
+    val ok: Boolean,
+    val at: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): PeerSelfReachPayload = PeerSelfReachPayload(
+            peerId = o.optStringOrEmpty("peer_id"),
+            onion = o.optStringOrEmpty("onion"),
+            ok = o.optBoolean("ok", false),
+            at = o.optLong("at", 0L),
+        )
+    }
+}
+
+
+data class ExternalProbeBurstRequest(val placeholder: Unit = Unit) {
+    fun toJson(): JSONObject = JSONObject()
+}
+
+
+data class ExternalReachPayload(
+    val ok: Boolean,
+    val lastTarget: String,
+    val at: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ExternalReachPayload = ExternalReachPayload(
+            ok = o.optBoolean("ok", false),
+            lastTarget = o.optStringOrEmpty("last_target"),
+            at = o.optLong("at", 0L),
+        )
+    }
+}
+
+
 data class RotateBeginRequest(val peerId: String) {
     fun toJson(): JSONObject = JSONObject().apply { put("peer_id", peerId) }
 }

@@ -30,6 +30,20 @@ fun MessengerStore.acceptedCallForChat(chatId: String): CallEntry? {
 }
 
 
+fun MessengerStore.activeCallForChat(chatId: String): CallEntry? {
+    if (chatId.isEmpty()) return null
+    return _activeCalls.value.values
+        .filter { it.chatId == chatId && !it.isTerminal }
+        .maxByOrNull { it.startedAt }
+}
+
+
+fun MessengerStore.hangupCallInChat(chatId: String) {
+    val target = activeCallForChat(chatId) ?: return
+    respondCall(target.callId, CallAction.End)
+}
+
+
 fun MessengerStore.hangupLatest() {
     val target = _activeCalls.value.values
         .filter { it.status == CallStatus.Accepted }

@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.messenger.CallDirection
 import io.haoma.calculator.messenger.CallStatus
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.peerLabelFor
@@ -33,29 +34,35 @@ import kotlinx.coroutines.delay
 @Composable
 fun CallChip(store: MessengerStore, modifier: Modifier = Modifier) {
     val active by store.activeCalls.collectAsStateWithLifecycle()
-    val accepted = remember(active) {
+    val target = remember(active) {
         active.values
-            .filter { it.status == CallStatus.Accepted }
+            .filter { !it.isTerminal }
             .minByOrNull { it.startedAt }
     } ?: return
+    val accepted = target.status == CallStatus.Accepted
 
     
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000L) }
-    LaunchedEffect(accepted.callId) {
+    LaunchedEffect(target.callId) {
         while (true) {
             now = System.currentTimeMillis() / 1000L
             delay(1_000L)
         }
     }
-    val duration = (now - accepted.startedAt).coerceAtLeast(0L)
-    val label = store.peerLabelFor(accepted.peerId)
+    val duration = (now - target.startedAt).coerceAtLeast(0L)
+    val label = store.peerLabelFor(target.peerId)
+    val suffix = when {
+        accepted -> formatDuration(duration)
+        target.direction == CallDirection.In && target.status == CallStatus.Ringing -> "Ringing…"
+        else -> "Calling…"
+    }
 
     var pickerOpen by remember { mutableLongStateOf(0L) }
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(percent = 50))
             .background(ChipBg)
-            .clickable { pickerOpen = System.currentTimeMillis() }
+            .clickable(enabled = accepted) { pickerOpen = System.currentTimeMillis() }
             .padding(horizontal = 8.dp, vertical = 2.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -67,7 +74,7 @@ fun CallChip(store: MessengerStore, modifier: Modifier = Modifier) {
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "$label · ${formatDuration(duration)}",
+                text = "$label · $suffix",
                 color = ChipFg,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,

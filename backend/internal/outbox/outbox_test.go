@@ -492,6 +492,36 @@ func TestWorker_Send401_TerminalImmediate(t *testing.T) {
 	}
 }
 
+func TestWorker_OnDialFailure_FiresOnTransport_SkipsOnPeerHTTP(t *testing.T) {
+
+	ms := &mockSender{failWith: errors.New("offline")}
+	w, _, _ := newTestWorker(t, ms, nil)
+	w.Tick = time.Hour
+	var transportCalls []string
+	w.OnDialFailure = func(dest string) { transportCalls = append(transportCalls, dest) }
+	startWorker(t, w)
+	mustEnqueue(t, w, "http://a.onion", "transient")
+	waitForCalls(t, ms, 1, time.Second)
+
+	time.Sleep(50 * time.Millisecond)
+	if len(transportCalls) != 1 || transportCalls[0] != "http://a.onion" {
+		t.Errorf("transport callback fired %v, want [http://a.onion]", transportCalls)
+	}
+
+	ms2 := &mockSender{failWith: &xport.PeerHTTPError{StatusCode: http.StatusInternalServerError, Body: "boom"}}
+	w2, _, _ := newTestWorker(t, ms2, nil)
+	w2.Tick = time.Hour
+	var peerCalls []string
+	w2.OnDialFailure = func(dest string) { peerCalls = append(peerCalls, dest) }
+	startWorker(t, w2)
+	mustEnqueue(t, w2, "http://b.onion", "peer500")
+	waitForCalls(t, ms2, 1, time.Second)
+	time.Sleep(50 * time.Millisecond)
+	if len(peerCalls) != 0 {
+		t.Errorf("peer-http callback fired %v, want empty (peer was reached)", peerCalls)
+	}
+}
+
 func TestWorker_TransientFailure_Reschedule(t *testing.T) {
 	ms := &mockSender{failWith: errors.New("offline")}
 	w, _, _ := newTestWorker(t, ms, nil)
@@ -848,4 +878,120 @@ func TestWorker_MultipleDestsConcurrent(t *testing.T) {
 	}
 	ps.mu.Unlock()
 	t.Fatalf("peak concurrent Sends = %d, want %d", total, len(dests))
+}
+
+type blockingSender struct {
+	startedOnce sync.Once
+	started     chan struct{}
+	release     chan struct{}
+}
+
+func newBlockingSender() *blockingSender {
+	return &blockingSender{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingSender) Send(ctx context.Context, _ string, _ xport.Envelope) ([]byte, error) {
+	b.startedOnce.Do(func() { close(b.started) })
+	select {
+	case <-b.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestWorker_Drain_NoInFlight_ReturnsImmediately(t *testing.T) {
+	w, _, _ := newTestWorker(t, &mockSender{body: nil}, nil)
+	startWorker(t, w)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	w.Drain(ctx)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("Drain with no in-flight took %v, want near-zero", elapsed)
+	}
+}
+
+func TestWorker_Drain_WaitsForInFlight(t *testing.T) {
+	bs := newBlockingSender()
+	w, _, _ := newTestWorker(t, bs, nil)
+	w.Tick = time.Hour
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "x")
+
+	select {
+	case <-bs.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not start")
+	}
+
+	drainReturned := make(chan struct{})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		w.Drain(ctx)
+		close(drainReturned)
+	}()
+
+	select {
+	case <-drainReturned:
+		t.Fatal("Drain returned before Send was released")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(bs.release)
+
+	select {
+	case <-drainReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drain did not return after Send completed")
+	}
+}
+
+func TestWorker_Drain_GraceExpires(t *testing.T) {
+	bs := newBlockingSender()
+	w, _, _ := newTestWorker(t, bs, nil)
+	w.Tick = time.Hour
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "x")
+
+	select {
+	case <-bs.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not start")
+	}
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	w.Drain(ctx)
+	elapsed := time.Since(start)
+	if elapsed < 80*time.Millisecond || elapsed > 300*time.Millisecond {
+		t.Errorf("Drain took %v, want ~100ms (grace expiry)", elapsed)
+	}
+
+	close(bs.release)
+}
+
+func TestWorker_Drain_NewRowsSkipped(t *testing.T) {
+	ms := &mockSender{body: nil}
+	w, _, _ := newTestWorker(t, ms, nil)
+	w.Tick = time.Hour
+	startWorker(t, w)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	w.Drain(ctx)
+
+	mustEnqueue(t, w, "http://a.onion", "after-drain")
+	time.Sleep(150 * time.Millisecond)
+	if got := ms.callCount(); got != 0 {
+		t.Errorf("sender called %d times after Drain, want 0", got)
+	}
 }

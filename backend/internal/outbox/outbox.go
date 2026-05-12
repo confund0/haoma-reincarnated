@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -426,6 +427,8 @@ type Worker struct {
 
 	Gate func() bool
 
+	OnDialFailure func(dest string)
+
 	Tick              time.Duration
 	GCInterval        time.Duration
 	Backoff           func(attempts int) time.Duration
@@ -440,6 +443,10 @@ type Worker struct {
 	running bool
 	runCtx  context.Context
 	destsWG sync.WaitGroup
+
+	drainCh   chan struct{}
+	drainOnce sync.Once
+	inFlight  atomic.Int64
 }
 
 type destState struct {
@@ -453,6 +460,7 @@ func NewWorker(st *Store, sender Sender, ackVerifier AckVerifier, bus *Bus) *Wor
 		ackV:              ackVerifier,
 		bus:               bus,
 		dests:             map[string]*destState{},
+		drainCh:           make(chan struct{}),
 		Tick:              30 * time.Second,
 		GCInterval:        1 * time.Hour,
 		Backoff:           doublingBackoffWithJitter,
@@ -599,7 +607,37 @@ func (w *Worker) drainDest(ctx context.Context, dest string) {
 		if ctx.Err() != nil {
 			return
 		}
+		select {
+		case <-w.drainCh:
+			return
+		default:
+		}
+		w.inFlight.Add(1)
 		w.processRow(ctx, row)
+		w.inFlight.Add(-1)
+	}
+}
+
+func (w *Worker) Drain(ctx context.Context) {
+	w.drainOnce.Do(func() { close(w.drainCh) })
+
+	if w.inFlight.Load() == 0 {
+		return
+	}
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Warn("outbox: drain grace expired",
+				slog.Int64("in_flight", w.inFlight.Load()),
+			)
+			return
+		case <-tick.C:
+			if w.inFlight.Load() == 0 {
+				return
+			}
+		}
 	}
 }
 
@@ -623,9 +661,10 @@ func (w *Worker) processRow(ctx context.Context, row *OutboxRow) {
 
 func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 	newAttempts := row.Attempts + 1
-
 	var peerErr *xport.PeerHTTPError
-	if errors.As(sendErr, &peerErr) && peerErr.StatusCode == http.StatusUnauthorized {
+	isPeerHTTP := errors.As(sendErr, &peerErr)
+
+	if isPeerHTTP && peerErr.StatusCode == http.StatusUnauthorized {
 		slog.Debug("outbox: 401 terminal",
 			slog.String("envelope_id", row.EnvelopeID),
 			slog.String("dest", row.Dest),
@@ -633,6 +672,10 @@ func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 		)
 		w.transition(row, StateFailed, time.Time{}, newAttempts, row.AckFailures, peerErr.Error(), now)
 		return
+	}
+
+	if w.OnDialFailure != nil && !isPeerHTTP {
+		w.OnDialFailure(row.Dest)
 	}
 
 	if newAttempts >= w.MaxAttempts || now.UnixNano()-row.FirstAt >= int64(w.DeadLetterAge) {

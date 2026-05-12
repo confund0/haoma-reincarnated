@@ -64,6 +64,8 @@ type Worker struct {
 	sink          FetchEventSink
 	log           *slog.Logger
 
+	OnDialFailure func(onion string)
+
 	kick chan string
 	sem  chan struct{}
 
@@ -257,6 +259,10 @@ func (w *Worker) runOne(ctx context.Context, token string) {
 			row = finalRow
 			w.transitionPermanent(row, err.Error(), logger)
 			return
+		}
+
+		if w.OnDialFailure != nil {
+			w.OnDialFailure(addr)
 		}
 
 		row = finalRow

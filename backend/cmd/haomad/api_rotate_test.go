@@ -9,6 +9,41 @@ import (
 	"testing"
 )
 
+func TestAPI_NewCircuitForPeer_PeerNotFound(t *testing.T) {
+	d := newTestDaemon(t)
+	srv := httptest.NewServer(d.apiHandler())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/peers/deadbeef/new-circuit", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAPI_NewCircuitForPeer_NoCtrlConn_Returns503(t *testing.T) {
+	d := newTestDaemon(t)
+	srv := httptest.NewServer(d.apiHandler())
+	defer srv.Close()
+
+	inv := newTestBackendInvite(t, []string{"alice-onion"})
+	raw, _ := json.Marshal(inv)
+	r1, _ := http.Post(srv.URL+"/peers", "application/json", bytes.NewReader(raw))
+	r1.Body.Close()
+
+	resp, err := http.Post(srv.URL+"/peers/"+inv.PeerID+"/new-circuit", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
 func TestAPI_OverlayPeerAddress(t *testing.T) {
 	d := newTestDaemon(t)
 	srv := httptest.NewServer(d.apiHandler())
