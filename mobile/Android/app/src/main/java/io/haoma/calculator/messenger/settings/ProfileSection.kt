@@ -50,7 +50,7 @@ internal fun ProfileSection(store: MessengerStore, onBack: () -> Unit) {
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
-        SectionHeader(title = "Profile", onBack = onBack)
+        SectionHeader(title = "Profile", store = store, onBack = onBack)
 
         Section(label = "Self nick") {
             OutlinedTextField(

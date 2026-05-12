@@ -38,7 +38,12 @@ internal fun ChatTitleBar(
     chat: ChatEntry?,
     chatId: String,
     presence: String?,
+    inCall: Boolean,
+    otherChatInCall: Boolean,
+    canCall: Boolean,
     onBack: () -> Unit,
+    onPlaceCall: () -> Unit,
+    onHangup: () -> Unit,
     onRotateTor: () -> Unit,
     onToggleMute: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -79,32 +84,35 @@ internal fun ChatTitleBar(
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = label,
-            color = ChatPalette.Text,
+            
+            
+            color = if (inCall) ChatPalette.Bad else ChatPalette.Text,
             fontWeight = FontWeight.SemiBold,
             fontSize = 16.sp,
             modifier = Modifier.weight(1f),
         )
+        
+        
+        val phoneTint = when {
+            inCall -> ChatPalette.Bad
+            canCall -> ChatPalette.Accent
+            else -> ChatPalette.TextFaint
+        }
         IconButton(
-            onClick = {},
-            enabled = false,
+            onClick = { if (inCall) onHangup() else if (canCall) onPlaceCall() },
+            enabled = inCall || canCall,
         ) {
             Icon(
                 imageVector = Icons.Filled.Call,
-                contentDescription = "Voice call (calls slice)",
-                tint = ChatPalette.TextFaint,
+                contentDescription = if (inCall) "Hang up" else "Voice call",
+                tint = phoneTint,
             )
         }
-        IconButton(
-            onClick = {},
-            enabled = false,
-        ) {
-            
-            
-            Text(
-                text = "📹",
-                color = ChatPalette.TextFaint,
-                fontSize = 18.sp,
-            )
+        
+        
+        if (otherChatInCall) {
+            io.haoma.calculator.messenger.calls.CallChipGlyph()
+            Spacer(modifier = Modifier.width(4.dp))
         }
         Box {
             IconButton(onClick = { menuOpen = true }) {

@@ -18,6 +18,10 @@ fun MessengerStore.runCommand(input: String) {
             }
         }
         is Command.SetTorPassword -> setTorPassword(cmd.password)
+        is Command.Call -> dispatchCall(cmd.target)
+        Command.Answer -> dispatchRespond(CallAction.Accept, "/answer", "no incoming call to answer")
+        Command.Decline -> dispatchRespond(CallAction.Reject, "/decline", "no incoming call to decline")
+        Command.Hangup -> dispatchHangup()
         Command.Help -> appendHelp()
         is Command.Unknown -> appendStatus(cmd.reason, level = StatusLevel.WARN)
     }
@@ -26,5 +30,54 @@ fun MessengerStore.runCommand(input: String) {
 private fun MessengerStore.appendHelp() {
     for (line in CommandParser.helpText().split('\n')) {
         appendStatus(line)
+    }
+}
+
+
+private fun MessengerStore.dispatchCall(target: String) {
+    val chatId = resolveChatByAlias(target)
+    if (chatId == null) {
+        appendStatus(
+            "/call: no unique match for \"$target\" (try a longer prefix or full peer-id)",
+            level = StatusLevel.WARN,
+        )
+        return
+    }
+    startCall(chatId)
+}
+
+private fun MessengerStore.dispatchRespond(action: String, verb: String, noneMessage: String) {
+    val ringing = findRingingIncoming()
+    when (ringing.size) {
+        0 -> appendStatus("$verb: $noneMessage", level = StatusLevel.WARN)
+        1 -> respondCall(ringing.first().callId, action)
+        else -> {
+            appendStatus(
+                "$verb: ${ringing.size} incoming calls — be more specific (GUI lands in M-CALLS-C):",
+                level = StatusLevel.WARN,
+            )
+            for (c in ringing) {
+                appendStatus("  • from ${peerLabelFor(c.peerId)} (call_id=${shortCallId(c.callId)})")
+            }
+        }
+    }
+}
+
+private fun MessengerStore.dispatchHangup() {
+    val active = findActiveCalls()
+    when (active.size) {
+        0 -> appendStatus("/hangup: no active call", level = StatusLevel.WARN)
+        1 -> respondCall(active.first().callId, CallAction.End)
+        else -> {
+            appendStatus(
+                "/hangup: ${active.size} active calls — be more specific:",
+                level = StatusLevel.WARN,
+            )
+            for (c in active) {
+                appendStatus(
+                    "  • ${c.status} with ${peerLabelFor(c.peerId)} (call_id=${shortCallId(c.callId)})",
+                )
+            }
+        }
     }
 }

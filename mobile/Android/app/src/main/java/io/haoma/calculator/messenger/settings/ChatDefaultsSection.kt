@@ -60,7 +60,7 @@ internal fun ChatDefaultsSection(store: MessengerStore, onBack: () -> Unit) {
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
-        SectionHeader(title = "Chat defaults", onBack = onBack)
+        SectionHeader(title = "Chat defaults", store = store, onBack = onBack)
 
         if (initial == null) {
             VaultUnavailableBanner()

@@ -33,7 +33,7 @@ internal fun AdvancedSection(store: MessengerStore, onBack: () -> Unit) {
             .background(BG_BASE_AS)
             .verticalScroll(rememberScrollState()),
     ) {
-        SectionHeader(title = "Advanced", onBack = onBack)
+        SectionHeader(title = "Advanced", store = store, onBack = onBack)
 
         InfoSection(label = "Security warnings") {
             when {

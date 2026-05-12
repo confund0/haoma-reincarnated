@@ -86,7 +86,7 @@ fun AcceptScreen(
             .fillMaxSize()
             .background(BG_BASE),
     ) {
-        Header(title = "Accept ${type.label} invite", onBack = onBack)
+        Header(title = "Accept ${type.label} invite", store = store, onBack = onBack)
 
         Column(
             modifier = Modifier
@@ -195,7 +195,7 @@ fun AcceptScreen(
 }
 
 @Composable
-private fun Header(title: String, onBack: () -> Unit) {
+private fun Header(title: String, store: MessengerStore, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -219,6 +219,7 @@ private fun Header(title: String, onBack: () -> Unit) {
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
         )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 

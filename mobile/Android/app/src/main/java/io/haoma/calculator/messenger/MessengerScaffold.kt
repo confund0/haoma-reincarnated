@@ -107,6 +107,9 @@ fun MessengerScaffold(store: MessengerStore) {
                     onBack = { store.popBack() },
                 )
             }
+            
+            
+            RingerDialogHost(store = store)
         }
     }
 }
@@ -190,7 +193,7 @@ private fun StatusTab(store: MessengerStore) {
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        SystemBar(connection = connection, health = health)
+        SystemBar(connection = connection, health = health, store = store)
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             StatusLogList(log = log)
         }
@@ -248,7 +251,7 @@ private fun CommandInput(store: MessengerStore) {
 }
 
 @Composable
-private fun SystemBar(connection: Boolean, health: SystemHealth) {
+private fun SystemBar(connection: Boolean, health: SystemHealth, store: MessengerStore) {
     val ipcChip = if (connection) "ipc:up" else "ipc:dn"
     val ipcColor = if (connection) C_OK else C_BAD
     val beChip = if (health.backendReachable) "be:up" else "be:dn"
@@ -280,7 +283,11 @@ private fun SystemBar(connection: Boolean, health: SystemHealth) {
             color = if (health.selfNickIsDefault) C_WARN else FG_BAR_SELECTED,
             fontFamily = FontFamily.Monospace,
             fontSize = 13.sp,
+            modifier = Modifier.weight(1f),
         )
+        
+        
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 

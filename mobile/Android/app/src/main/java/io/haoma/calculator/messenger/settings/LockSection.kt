@@ -63,7 +63,7 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
                 .fillMaxSize()
                 .background(BG_BASE),
         ) {
-            SectionHeader(title = "Lock", onBack = onBack)
+            SectionHeader(title = "Lock", store = store, onBack = onBack)
             VaultUnavailableBanner()
         }
         return
@@ -91,7 +91,7 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
-        SectionHeader(title = "Lock", onBack = onBack)
+        SectionHeader(title = "Lock", store = store, onBack = onBack)
 
         val current by remember(idleIndex, idleTimeoutText, pinValidityText, panicIndex) {
             derivedStateOf {

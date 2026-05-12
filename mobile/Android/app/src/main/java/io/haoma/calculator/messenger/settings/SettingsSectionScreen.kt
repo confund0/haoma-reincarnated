@@ -30,20 +30,20 @@ fun SettingsSectionScreen(
     when (domain) {
         SettingsDomains.Profile -> ProfileSection(store, onBack)
         SettingsDomains.Defaults -> ChatDefaultsSection(store, onBack)
-        SettingsDomains.Files -> FilesSection(onBack)
+        SettingsDomains.Files -> FilesSection(store, onBack)
         SettingsDomains.Notifications -> NotificationsSection(store, onBack)
         SettingsDomains.Tor -> TorSection(store, onBack)
         SettingsDomains.Lock -> LockSection(store, onBack)
         SettingsDomains.Advanced -> AdvancedSection(store, onBack)
-        else -> PendingSection(domain = domain, onBack = onBack)
+        else -> PendingSection(store = store, domain = domain, onBack = onBack)
     }
 }
 
 @Composable
-private fun PendingSection(domain: String, onBack: () -> Unit) {
+private fun PendingSection(store: MessengerStore, domain: String, onBack: () -> Unit) {
     val title = SettingsDomains.Labels[domain] ?: domain
     Column(modifier = Modifier.fillMaxSize().background(BG_BASE_LOCAL)) {
-        SectionHeader(title = title, onBack = onBack)
+        SectionHeader(title = title, store = store, onBack = onBack)
         Box(
             modifier = Modifier.fillMaxSize().padding(24.dp),
             contentAlignment = Alignment.Center,
@@ -59,7 +59,7 @@ private fun PendingSection(domain: String, onBack: () -> Unit) {
 
 
 @Composable
-internal fun SectionHeader(title: String, onBack: () -> Unit) {
+internal fun SectionHeader(title: String, store: MessengerStore, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -84,6 +84,7 @@ internal fun SectionHeader(title: String, onBack: () -> Unit) {
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
         )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 

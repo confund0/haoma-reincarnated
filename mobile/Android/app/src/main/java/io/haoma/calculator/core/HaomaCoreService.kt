@@ -1,5 +1,6 @@
 package io.haoma.calculator.core
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -7,10 +8,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.R
 import io.haoma.calculator.log.Logger
@@ -33,6 +37,9 @@ class HaomaCoreService : Service() {
     
     private var screenOffReceiver: BroadcastReceiver? = null
 
+    
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -40,11 +47,18 @@ class HaomaCoreService : Service() {
         Logger.i("fgs", "HaomaCoreService.onCreate")
         ensureChannel()
         registerScreenOffReceiver()
+        acquireWakeLock()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Logger.i("fgs", "HaomaCoreService.onStartCommand startId=$startId flags=$flags")
+        val action = intent?.action
+        Logger.i("fgs", "HaomaCoreService.onStartCommand startId=$startId flags=$flags action=$action")
         startForegroundCompat()
+        if (action == ACTION_REFRESH_TYPE) {
+            
+            
+            return START_NOT_STICKY
+        }
         if (haomad == null) {
             scope.launch { bootstrapFromPayload() }
         }
@@ -61,6 +75,7 @@ class HaomaCoreService : Service() {
     override fun onDestroy() {
         Logger.i("fgs", "HaomaCoreService.onDestroy")
         unregisterScreenOffReceiver()
+        releaseWakeLock()
         
         
         try {
@@ -197,13 +212,61 @@ class HaomaCoreService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIF_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
-            )
+            val type = pickForegroundServiceType()
+            Logger.i("fgs", "startForeground type=${typeName(type)}")
+            startForeground(NOTIF_ID, notification, type)
         } else {
             startForeground(NOTIF_ID, notification)
+        }
+    }
+
+    
+    private fun pickForegroundServiceType(): Int {
+        val micGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (micGranted) {
+            return ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+        val dozeExempt = (getSystemService(POWER_SERVICE) as? PowerManager)
+            ?.isIgnoringBatteryOptimizations(packageName) == true
+        if (dozeExempt) {
+            return ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+        }
+        return ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+    }
+
+    private fun typeName(type: Int): String = when (type) {
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE -> "microphone"
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED -> "systemExempted"
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING -> "remoteMessaging"
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE -> "specialUse"
+        else -> "0x${type.toString(16)}"
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(POWER_SERVICE) as? PowerManager ?: return
+        val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "haoma:fgs")
+        try {
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            wakeLock = lock
+            Logger.i("fgs", "wakelock acquired")
+        } catch (t: Throwable) {
+            Logger.e("fgs", "wakelock acquire failed", t)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        val lock = wakeLock ?: return
+        wakeLock = null
+        try {
+            if (lock.isHeld) lock.release()
+            Logger.i("fgs", "wakelock released")
+        } catch (t: Throwable) {
+            Logger.w("fgs", "wakelock release failed: ${t.message}")
         }
     }
 
@@ -255,9 +318,23 @@ class HaomaCoreService : Service() {
         private const val STOP_GRACE_MS = 5_000L
 
         
+        const val ACTION_REFRESH_TYPE = "io.haoma.calculator.fgs.REFRESH_TYPE"
+
+        
         fun start(context: Context) {
             val intent = Intent(context, HaomaCoreService::class.java)
             context.startForegroundService(intent)
+        }
+
+        
+        fun refreshType(context: Context) {
+            val intent = Intent(context, HaomaCoreService::class.java)
+                .setAction(ACTION_REFRESH_TYPE)
+            try {
+                context.startForegroundService(intent)
+            } catch (t: Throwable) {
+                Logger.w("fgs", "refreshType skipped: ${t.message}")
+            }
         }
 
         fun stop(context: Context) {

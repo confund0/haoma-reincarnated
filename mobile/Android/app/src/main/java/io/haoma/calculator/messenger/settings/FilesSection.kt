@@ -18,17 +18,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.haoma.calculator.messenger.MessengerStore
 
 
 @Composable
-internal fun FilesSection(onBack: () -> Unit) {
+internal fun FilesSection(store: MessengerStore, onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(BG_BASE_FS)
             .verticalScroll(rememberScrollState()),
     ) {
-        SectionHeader(title = "Files", onBack = onBack)
+        SectionHeader(title = "Files", store = store, onBack = onBack)
 
         InfoSection(label = "On Android") {
             Text(

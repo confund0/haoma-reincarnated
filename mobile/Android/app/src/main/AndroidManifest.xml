@@ -7,11 +7,42 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!--
+        Conversations' "FGS-type cascade" trick: if the user has granted
+        RECORD_AUDIO (eagerly at first unlock — see MainActivity) we run
+        the FGS as type=microphone for stronger backgrounding posture.
+        On Honor/Huawei/Xiaomi this is the difference between "killed
+        within seconds of screen-off" and "stays alive". The mic isn't
+        actually opened until a real call starts — Android's permission
+        model trusts mic-grant holders to maintain the FGS longer.
+
+        SYSTEM_EXEMPTED is the fallback when the user is on the doze
+        allowlist (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS exemption).
+        SPECIAL_USE is the last-ditch fallback when neither applies;
+        Android 14+ rejects FGS-type-none, so we always pick something.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!--
+        Required on API 31+ before AudioManager will hand us user-friendly
+        Bluetooth device names from getAvailableCommunicationDevices() and
+        before setCommunicationDevice() will route to a paired BT headset /
+        hearing aid. We don't need it to *list* the devices — only to name
+        them and route to them — so the runtime prompt is lazy: fired only
+        when the user actually picks a Bluetooth entry from the in-call
+        audio-route picker. Pre-grant, BT slots show up as "Bluetooth
+        device" placeholders so the user can see routing is available.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <application
         android:name=".HaomaApp"
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Haoma">
@@ -28,7 +59,26 @@
         <service
             android:name=".core.HaomaCoreService"
             android:exported="false"
-            android:foregroundServiceType="remoteMessaging" />
+            android:foregroundServiceType="remoteMessaging|microphone|systemExempted|specialUse">
+            <!--
+                Android 14 mandates a SPECIAL_USE subtype when the FGS
+                declares specialUse in its type bitmap. The value is a
+                free-form string surfaced to Play Store reviewers; we
+                ship on F-Droid so it's informational only. "private-
+                messenger" matches Conversations' "xmpp-im" shape.
+            -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="private-messenger" />
+        </service>
+        <receiver
+            android:name=".notifications.CallActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="io.haoma.calculator.CALL_ANSWER" />
+                <action android:name="io.haoma.calculator.CALL_DECLINE" />
+            </intent-filter>
+        </receiver>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

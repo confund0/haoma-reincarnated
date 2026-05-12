@@ -19,6 +19,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,10 +39,17 @@ import io.haoma.calculator.messenger.PeerEntry
 fun ContactsTab(store: MessengerStore) {
     val peers by store.peers.collectAsStateWithLifecycle()
     val presence by store.presence.collectAsStateWithLifecycle()
+    val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val nowSeconds = System.currentTimeMillis() / 1000L
+    val inCallPeers = remember(activeCalls) {
+        activeCalls.values
+            .filter { it.status == CallStatus.Accepted }
+            .map { it.peerId }
+            .toHashSet()
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(BG_BASE)) {
-        TabHeader(title = "Contacts")
+        TabHeader(title = "Contacts", store = store)
         if (peers.isEmpty()) {
             EmptyContactsSurface()
             return@Column
@@ -52,6 +60,7 @@ fun ContactsTab(store: MessengerStore) {
                     peer = peer,
                     presenceLabel = presence[peer.id] ?: peer.effective.ifEmpty { "unknown" },
                     nowSeconds = nowSeconds,
+                    inCall = peer.id in inCallPeers,
                     onOpen = { store.openChatForPeer(peer.id) },
                     onEdit = { store.openContactDetail(peer.id) },
                 )
@@ -62,19 +71,22 @@ fun ContactsTab(store: MessengerStore) {
 }
 
 @Composable
-private fun TabHeader(title: String) {
-    Box(
+private fun TabHeader(title: String, store: MessengerStore) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(BG_BAR)
             .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
             color = FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
+            modifier = Modifier.weight(1f),
         )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 
@@ -83,12 +95,14 @@ private fun ContactRow(
     peer: PeerEntry,
     presenceLabel: String,
     nowSeconds: Long,
+    inCall: Boolean,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
 ) {
     val retired = peer.retiredAt != 0L
     val displayLabel = displayLabelFor(peer, retired)
     val labelColor = when {
+        inCall -> FG_IN_CALL
         retired -> FG_DIM
         peer.alias.isEmpty() && peer.nick.isEmpty() -> FG_DIM
         else -> FG_PRIMARY
@@ -108,13 +122,24 @@ private fun ContactRow(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(
-                text = displayLabel,
-                color = labelColor,
-                fontStyle = labelStyle,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 15.sp,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (inCall) {
+                    Text(
+                        text = "☎",
+                        color = FG_IN_CALL,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = displayLabel,
+                    color = labelColor,
+                    fontStyle = labelStyle,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp,
+                )
+            }
             LastSeenLine(
                 active = peer.lastActiveAt,
                 passive = peer.lastPassiveAt,
@@ -231,6 +256,7 @@ private val DIVIDER = Color(0xFF3C3836)
 private val FG_PRIMARY = Color(0xFFEBDBB2)
 private val FG_DIM = Color(0xFF7C6F64)
 private val FG_LINK = Color(0xFF83A598)
+private val FG_IN_CALL = Color(0xFFCC241D)
 
 
 private val C_AVAILABLE = Color(0xFF5FCC1A) 

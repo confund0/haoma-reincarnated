@@ -30,7 +30,7 @@ import io.haoma.calculator.messenger.MessengerStore
 @Composable
 fun SettingsTab(store: MessengerStore) {
     Column(modifier = Modifier.fillMaxSize().background(BG_BASE)) {
-        TabHeader(title = "Settings")
+        TabHeader(title = "Settings", store = store)
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(SettingsDomains.Order, key = { it }) { domain ->
                 SettingsRow(
@@ -45,19 +45,22 @@ fun SettingsTab(store: MessengerStore) {
 }
 
 @Composable
-private fun TabHeader(title: String) {
-    Box(
+private fun TabHeader(title: String, store: MessengerStore) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(BG_BAR)
             .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
             color = FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
+            modifier = Modifier.weight(1f),
         )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 

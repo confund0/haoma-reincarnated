@@ -95,4 +95,25 @@ class CommandParserTest {
         assertEquals(Command.Nick("alice"), CommandParser.parse("/Nick alice"))
         assertEquals(Command.Nick("alice"), CommandParser.parse("/NICK alice"))
     }
+
+    @Test
+    fun callRequiresTarget() {
+        val r = CommandParser.parse("/call")
+        assertTrue(r is Command.Unknown)
+    }
+
+    @Test
+    fun callHappyPath() {
+        assertEquals(Command.Call("alice"), CommandParser.parse("/call alice"))
+        
+        assertEquals(Command.Call("alice senior"), CommandParser.parse("/call alice senior"))
+    }
+
+    @Test
+    fun answerDeclineHangupNoArgs() {
+        assertEquals(Command.Answer, CommandParser.parse("/answer"))
+        assertEquals(Command.Decline, CommandParser.parse("/decline"))
+        assertEquals(Command.Decline, CommandParser.parse("/reject"))
+        assertEquals(Command.Hangup, CommandParser.parse("/hangup"))
+    }
 }

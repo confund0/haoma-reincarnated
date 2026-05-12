@@ -202,6 +202,30 @@ internal fun MessengerStore.dispatch(frame: Frame) {
             }
         }
 
+        FrameType.CallStateChanged -> if (payload != null) {
+            val p = CallStateChangedPayload.fromJson(payload)
+            if (p.call.callId.isNotEmpty()) applyCallStateChange(p.call)
+        }
+
+        
+        FrameType.CallStreamEvent -> if (payload != null) {
+            val ev = CallStreamEventPayload.fromJson(payload)
+            when (ev.type) {
+                "stats" -> if (ev.callId.isNotEmpty() && ev.side == "spk") {
+                    _callJitter.update { it + (ev.callId to ev.jitterMs) }
+                }
+                "warn" -> appendStatus(
+                    "call streamer warn (${shortCallId(ev.callId)}/${ev.side}): ${ev.reason}",
+                    level = StatusLevel.WARN,
+                )
+                "error" -> appendStatus(
+                    "call streamer error (${shortCallId(ev.callId)}/${ev.side}): ${ev.reason}",
+                    level = StatusLevel.WARN,
+                )
+                
+            }
+        }
+
         FrameType.RotateLifecycle -> if (payload != null) {
             val r = RotateLifecyclePush.fromJson(payload)
             val tail = if (r.reason.isNotEmpty()) " — ${r.reason}" else ""

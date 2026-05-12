@@ -69,6 +69,31 @@ class MessengerStore(
     val recentInvites: StateFlow<List<RecentInvite>> = _recentInvites.asStateFlow()
 
     
+    internal val _activeCalls = MutableStateFlow<Map<String, CallEntry>>(emptyMap())
+    val activeCalls: StateFlow<Map<String, CallEntry>> = _activeCalls.asStateFlow()
+
+    
+    internal val _mutedCalls = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val mutedCalls: StateFlow<Map<String, Boolean>> = _mutedCalls.asStateFlow()
+
+    
+    internal val _callJitter = MutableStateFlow<Map<String, Double>>(emptyMap())
+    val callJitter: StateFlow<Map<String, Double>> = _callJitter.asStateFlow()
+
+    
+    internal val _recordAudioGranted = MutableStateFlow(false)
+    val recordAudioGranted: StateFlow<Boolean> = _recordAudioGranted.asStateFlow()
+
+    
+    internal val _bluetoothConnectGranted = MutableStateFlow(false)
+    val bluetoothConnectGranted: StateFlow<Boolean> = _bluetoothConnectGranted.asStateFlow()
+
+    
+    @Volatile
+    var audioRouter: io.haoma.calculator.messenger.calls.AudioRouter? = null
+        internal set
+
+    
     internal val _imagePathByMsgId = MutableStateFlow<Map<String, String>>(emptyMap())
     val imagePathByMsgId: StateFlow<Map<String, String>> = _imagePathByMsgId.asStateFlow()
 

@@ -43,10 +43,19 @@ import io.haoma.calculator.messenger.contacts.shortPeerId
 fun ChatsTab(store: MessengerStore) {
     val chats by store.chats.collectAsStateWithLifecycle()
     val presence by store.presence.collectAsStateWithLifecycle()
+    val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val nowSeconds = System.currentTimeMillis() / 1000L
+    
+    
+    val inCallPeers = remember(activeCalls) {
+        activeCalls.values
+            .filter { it.status == CallStatus.Accepted }
+            .map { it.peerId }
+            .toHashSet()
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(BG_BASE)) {
-        TabHeader(title = "Conversations")
+        TabHeader(title = "Conversations", store = store)
         if (chats.isEmpty()) {
             EmptyChatsSurface()
             return@Column
@@ -58,6 +67,7 @@ fun ChatsTab(store: MessengerStore) {
                     chat = chat,
                     presenceLabel = presence[chat.peerId].orEmpty(),
                     nowSeconds = nowSeconds,
+                    inCall = chat.peerId.isNotEmpty() && chat.peerId in inCallPeers,
                     onOpen = { store.openChatDetail(chat.chatId) },
                     onEdit = { store.openChatSettings(chat.chatId) },
                 )
@@ -68,19 +78,22 @@ fun ChatsTab(store: MessengerStore) {
 }
 
 @Composable
-private fun TabHeader(title: String) {
-    Box(
+private fun TabHeader(title: String, store: MessengerStore) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(BG_BAR)
             .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
             color = FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
+            modifier = Modifier.weight(1f),
         )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 
@@ -89,13 +102,17 @@ private fun ChatRow(
     chat: ChatEntry,
     presenceLabel: String,
     nowSeconds: Long,
+    inCall: Boolean,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
 ) {
     val hasUnread = chat.unreadCount > 0
     val isDirect = chat.kind == ChatKind.Direct
     val displayLabel = renderChatLabel(chat)
+    
+    
     val labelColor = when {
+        inCall -> FG_IN_CALL
         hasUnread -> FG_UNREAD
         else -> FG_PRIMARY
     }
@@ -123,6 +140,17 @@ private fun ChatRow(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (inCall) {
+                    
+                    
+                    Text(
+                        text = "☎",
+                        color = FG_IN_CALL,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
                 Text(
                     text = displayLabel,
                     color = labelColor,
@@ -266,6 +294,7 @@ private val FG_PRIMARY = Color(0xFFEBDBB2)
 private val FG_DIM = Color(0xFF7C6F64)
 private val FG_LINK = Color(0xFF83A598)
 private val FG_UNREAD = Color(0xFFB16286) 
+private val FG_IN_CALL = Color(0xFFCC241D) 
 
 private val C_AVAILABLE = Color(0xFF5FCC1A) 
 private val C_AWAY = Color(0xFFFABD2F) 

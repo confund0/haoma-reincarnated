@@ -1,0 +1,4 @@
+# libhaoma-mic.so + libhaoma-spk.so are produced by `make android-streams`
+# from streams/ source. They are NOT vendored prebuilts (unlike libtor.so).
+libhaoma-mic.so
+libhaoma-spk.so

@@ -54,7 +54,7 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
-        SectionHeader(title = "Notifications", onBack = onBack)
+        SectionHeader(title = "Notifications", store = store, onBack = onBack)
 
         if (initial == null) {
             VaultUnavailableBanner()

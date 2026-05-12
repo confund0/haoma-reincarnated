@@ -52,7 +52,11 @@ fun ContactDetailScreen(
     onBack: () -> Unit,
 ) {
     val peers by store.peers.collectAsStateWithLifecycle()
+    val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val peer = peers.firstOrNull { it.id == peerId }
+    val inCall = activeCalls.values.any {
+        it.peerId == peerId && it.status == CallStatus.Accepted
+    }
 
     if (peer == null) {
         
@@ -83,7 +87,13 @@ fun ContactDetailScreen(
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
-        Header(title = peer.label.ifEmpty { shortPeerId(peer.id) }, retired = retired, onBack = onBack)
+        Header(
+            title = peer.label.ifEmpty { shortPeerId(peer.id) },
+            retired = retired,
+            inCall = inCall,
+            store = store,
+            onBack = onBack,
+        )
 
         IdentityFooter(nick = peer.nick)
 
@@ -187,7 +197,13 @@ fun ContactDetailScreen(
 }
 
 @Composable
-private fun Header(title: String, retired: Boolean, onBack: () -> Unit) {
+private fun Header(
+    title: String,
+    retired: Boolean,
+    inCall: Boolean,
+    store: MessengerStore,
+    onBack: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -205,13 +221,23 @@ private fun Header(title: String, retired: Boolean, onBack: () -> Unit) {
                 .padding(horizontal = 8.dp, vertical = 4.dp),
         )
         Spacer(modifier = Modifier.width(20.dp))
+        if (inCall) {
+            Text(
+                text = "☎",
+                color = FG_IN_CALL,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
         Text(
             text = title + if (retired) " (retired)" else "",
-            color = FG_PRIMARY,
+            color = if (inCall) FG_IN_CALL else FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
         )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 
@@ -362,6 +388,7 @@ private val FG_PRIMARY = Color(0xFFEBDBB2)
 private val FG_DIM = Color(0xFF7C6F64)
 private val FG_VALUE_DIM = Color(0xFFA89984) 
 private val FG_LINK = Color(0xFF83A598)
+private val FG_IN_CALL = Color(0xFFCC241D)
 private val BTN_PRIMARY = Color(0xFF5FCC1A)
 private val BTN_DIM = Color(0xFF504945)
 private val C_DANGER = Color(0xFFCC241D) 

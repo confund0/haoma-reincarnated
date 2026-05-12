@@ -23,13 +23,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import android.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import io.haoma.calculator.core.OemHelper
 import io.haoma.calculator.core.UnlockManager
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.MessengerScaffold
 import io.haoma.calculator.messenger.MessengerStore
+import io.haoma.calculator.messenger.updateBluetoothConnectGranted
+import io.haoma.calculator.messenger.updateRecordAudioGranted
 import io.haoma.calculator.notifications.NotificationPoster
 import io.haoma.calculator.unlock.PassphraseScreen
 import io.haoma.calculator.unlock.PatternConfig
@@ -53,6 +57,27 @@ class MainActivity : ComponentActivity() {
         Logger.i("notifications", "POST_NOTIFICATIONS grant=$granted")
     }
 
+    
+    private val micPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        Logger.i("mic", "RECORD_AUDIO grant=$granted")
+        (application as HaomaApp).messengerStore.updateRecordAudioGranted(granted)
+        if (granted) {
+            
+            
+            io.haoma.calculator.core.HaomaCoreService.refreshType(applicationContext)
+        }
+    }
+
+    
+    private val btPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        Logger.i("audio", "BLUETOOTH_CONNECT grant=$granted")
+        (application as HaomaApp).messengerStore.updateBluetoothConnectGranted(granted)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Logger.i("activity", "MainActivity.onCreate")
@@ -62,23 +87,16 @@ class MainActivity : ComponentActivity() {
         val app = application as HaomaApp
 
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            app.appState.state
-                .map { it == AppState.Warm }
-                .distinctUntilChanged()
-                .onEach { warm ->
-                    if (!warm) return@onEach
-                    val granted = ContextCompat.checkSelfPermission(
-                        this@MainActivity,
-                        Manifest.permission.POST_NOTIFICATIONS,
-                    ) == PackageManager.PERMISSION_GRANTED
-                    if (!granted) {
-                        Logger.i("notifications", "requesting POST_NOTIFICATIONS")
-                        notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                }
-                .launchIn(lifecycleScope)
-        }
+        app.appState.state
+            .map { it == AppState.Warm }
+            .distinctUntilChanged()
+            .onEach { warm ->
+                if (!warm) return@onEach
+                requestPostNotificationsIfNeeded()
+                requestRecordAudioIfNeeded()
+                offerOemBackgroundAllowlistOnce()
+            }
+            .launchIn(lifecycleScope)
 
         val skin: DisguiseSkin = app.disguiseSkin
         val reveal: RevealController = VerifyingRevealController(
@@ -152,6 +170,85 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             Logger.e("battery", "failed to launch battery optimization request", t)
         }
+    }
+
+    private fun requestPostNotificationsIfNeeded() {
+        
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        Logger.i("notifications", "requesting POST_NOTIFICATIONS")
+        notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun requestRecordAudioIfNeeded() {
+        val store = (application as HaomaApp).messengerStore
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        
+        store.updateRecordAudioGranted(granted)
+        
+        
+        store.updateBluetoothConnectGranted(
+            io.haoma.calculator.messenger.calls.AudioRouter.bluetoothConnectGranted(this),
+        )
+        if (granted) return
+        Logger.i("mic", "requesting RECORD_AUDIO")
+        micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        
+        
+        val store = (application as HaomaApp).messengerStore
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        store.updateRecordAudioGranted(granted)
+        
+        
+        store.updateBluetoothConnectGranted(
+            io.haoma.calculator.messenger.calls.AudioRouter.bluetoothConnectGranted(this),
+        )
+    }
+
+    
+    fun requestBluetoothConnect() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        Logger.i("audio", "requesting BLUETOOTH_CONNECT")
+        btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+
+    
+    private fun offerOemBackgroundAllowlistOnce() {
+        if (!OemHelper.hasRecommendation()) return
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        if (prefs.getBoolean(OEM_PROMPT_SHOWN_KEY, false)) return
+        Logger.i("oem", "showing background-allowlist prompt for ${OemHelper.manufacturerLabel()}")
+        prefs.edit().putBoolean(OEM_PROMPT_SHOWN_KEY, true).apply()
+        val appName = getString(R.string.app_name)
+        val mfr = OemHelper.manufacturerLabel()
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.oem_background_title, appName))
+            .setMessage(getString(R.string.oem_background_message, mfr))
+            .setCancelable(false)
+            .setPositiveButton(R.string.oem_background_open) { _, _ ->
+                OemHelper.tryLaunch(this)
+            }
+            .setNegativeButton(R.string.oem_background_skip, null)
+            .show()
+    }
+
+    companion object {
+        private const val OEM_PROMPT_SHOWN_KEY = "oem_background_prompt_shown"
     }
 }
 

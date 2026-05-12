@@ -1,0 +1,19 @@
+{
+  "_comment": "Pinned upstream versions for the call-streamers' native deps (libopus + libsodium). Schema mirrors mobile/tor-build/tor-versions.json. NDK revision MUST match the tor-build pin so a single NDK install satisfies both recipes. Bump 'commit' fields to move forward; commit the resulting .a archives + updated streams-prebuilt.lock together.",
+  "0.1.0": {
+    "opus": {
+      "url": "https://github.com/xiph/opus.git",
+      "commit": "v1.5.2"
+    },
+    "libsodium": {
+      "url": "https://github.com/jedisct1/libsodium.git",
+      "commit": "1.0.20-RELEASE"
+    },
+    "ndk": {
+      "url": "https://dl.google.com/android/repository/android-ndk-r29-linux.zip",
+      "revision": "29.0.14206865",
+      "sha256": "4abbbcdc842f3d4879206e9695d52709603e52dd68d3c1fff04b3b5e7a308ecf"
+    },
+    "timestamp": "201001010000.00"
+  }
+}

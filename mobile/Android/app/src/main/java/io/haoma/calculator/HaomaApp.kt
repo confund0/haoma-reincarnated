@@ -153,6 +153,13 @@ class HaomaApp : Application(), ImageLoaderFactory {
             notificationPoster = notificationPoster,
             appContext = applicationContext,
         )
+        
+        
+        messengerStore.audioRouter = io.haoma.calculator.messenger.calls.AudioRouter(
+            app = applicationContext,
+            activeCallsSource = messengerStore.activeCalls,
+            bluetoothConnectGrantedSource = messengerStore.bluetoothConnectGranted,
+        ).also { it.start() }
 
         
         thread(name = "disguise-bootstrap", isDaemon = true) {

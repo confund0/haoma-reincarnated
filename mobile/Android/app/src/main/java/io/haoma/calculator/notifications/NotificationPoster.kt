@@ -112,18 +112,119 @@ class NotificationPoster(
 
     private fun ensureChannel() {
         val mgr = app.getSystemService(NotificationManager::class.java) ?: return
-        if (mgr.getNotificationChannel(CHANNEL_ID) != null) return
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            app.getString(R.string.messages_channel_name),
-            NotificationManager.IMPORTANCE_DEFAULT,
-        ).apply {
-            description = app.getString(R.string.messages_channel_description)
-            lockscreenVisibility = NotificationCompat.VISIBILITY_SECRET
-            setShowBadge(false)
-            
+        if (mgr.getNotificationChannel(CHANNEL_ID) == null) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                app.getString(R.string.messages_channel_name),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = app.getString(R.string.messages_channel_description)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_SECRET
+                setShowBadge(false)
+                
+            }
+            mgr.createNotificationChannel(channel)
         }
-        mgr.createNotificationChannel(channel)
+        if (mgr.getNotificationChannel(CALLS_CHANNEL_ID) == null) {
+            val calls = NotificationChannel(
+                CALLS_CHANNEL_ID,
+                app.getString(R.string.calls_channel_name),
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = app.getString(R.string.calls_channel_description)
+                
+                
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+                setShowBadge(false)
+                enableVibration(true)
+                enableLights(true)
+            }
+            mgr.createNotificationChannel(calls)
+        }
+    }
+
+    
+    fun postCall(
+        callId: String,
+        chatId: String,
+        peerLabel: String,
+        softLocked: Boolean,
+    ) {
+        val mgr = NotificationManagerCompat.from(app)
+        if (!mgr.areNotificationsEnabled()) {
+            Logger.i("notifications", "skip call notify reason=permission-denied call=${shortTag(callId)}")
+            return
+        }
+        if (softLocked && settingsProvider()?.onLock != true) {
+            Logger.i(
+                "notifications",
+                "skip call notify reason=soft-locked+notifications_on_lock=false call=${shortTag(callId)}",
+            )
+            return
+        }
+
+        val title = app.getString(R.string.calls_incoming_title)
+        val body = app.getString(R.string.calls_incoming_body, peerLabel)
+
+        val tapIntent = Intent(app, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val tap = PendingIntent.getActivity(
+            app,
+            callId.hashCode(),
+            tapIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val answer = callActionPendingIntent(callId, ACTION_ANSWER)
+        val decline = callActionPendingIntent(callId, ACTION_DECLINE)
+
+        val notification = NotificationCompat.Builder(app, CALLS_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setContentIntent(tap)
+            .addAction(0, app.getString(R.string.calls_answer), answer)
+            .addAction(0, app.getString(R.string.calls_decline), decline)
+            .build()
+        try {
+            mgr.notify(callId, NOTIF_ID_CALL, notification)
+            Logger.i("notifications", "posted call call=${shortTag(callId)} peer=$peerLabel")
+        } catch (t: SecurityException) {
+            Logger.w("notifications", "call notify() threw: ${t.message}")
+        }
+    }
+
+    
+    fun cancelCall(callId: String) {
+        try {
+            NotificationManagerCompat.from(app).cancel(callId, NOTIF_ID_CALL)
+            Logger.i("notifications", "cancelled call call=${shortTag(callId)}")
+        } catch (t: Throwable) {
+            Logger.w("notifications", "cancel call notify failed: ${t.message}")
+        }
+    }
+
+    private fun callActionPendingIntent(callId: String, action: String): PendingIntent {
+        val intent = Intent(app, io.haoma.calculator.notifications.CallActionReceiver::class.java).apply {
+            this.action = action
+            putExtra(EXTRA_CALL_ID, callId)
+        }
+        
+        
+        val requestCode = (callId + action).hashCode()
+        return PendingIntent.getBroadcast(
+            app,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     private fun shortTag(tag: String): String =
@@ -131,10 +232,17 @@ class NotificationPoster(
 
     companion object {
         const val CHANNEL_ID = "haoma_messages"
+        const val CALLS_CHANNEL_ID = "haoma_calls"
         const val NOTIF_ID_MESSAGE = 2001
+        const val NOTIF_ID_CALL = 2002
 
         
         const val EXTRA_DISGUISE_TIP_TITLE = "haoma.disguise_tip_title"
         const val EXTRA_DISGUISE_TIP_BODY = "haoma.disguise_tip_body"
+
+        
+        const val ACTION_ANSWER = "io.haoma.calculator.CALL_ANSWER"
+        const val ACTION_DECLINE = "io.haoma.calculator.CALL_DECLINE"
+        const val EXTRA_CALL_ID = "haoma.call_id"
     }
 }

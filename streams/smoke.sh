@@ -1,5 +1,30 @@
 #!/usr/bin/env bash
-# streams/smoke.sh — manual loopback for Calls-1d/1e.
+# streams/smoke.sh — manual loopback for Calls-1d/1e (Linux/PipeWire).
+#
+# For the Android-arm64 on-device loopback (M-CALLS-A.4), don't run
+# this script — there's no socat in /system, and we don't want to
+# pull Termux into the loop.  Recipe instead, two `adb shell`s + dual
+# adb-forward + a host-side socat bridging the two listeners:
+#
+#   make android-streams
+#   adb push mobile/Android/app/src/main/jniLibs/arm64-v8a/libhaoma-mic.so /data/local/tmp/haoma-mic
+#   adb push mobile/Android/app/src/main/jniLibs/arm64-v8a/libhaoma-spk.so /data/local/tmp/haoma-spk
+#   adb shell chmod +x /data/local/tmp/haoma-mic /data/local/tmp/haoma-spk
+#   dd if=/dev/urandom of=/tmp/k bs=32 count=1 status=none
+#   adb push /tmp/k /data/local/tmp/k
+#   adb forward tcp:15551 tcp:15551       # device-mic listener -> host:15551
+#   adb forward tcp:15552 tcp:15552       # device-spk listener -> host:15552
+#   # Two terminals, one per streamer:
+#   adb shell '/data/local/tmp/haoma-spk --port 15552 --stream-id mic --trace </data/local/tmp/k'
+#   adb shell '/data/local/tmp/haoma-mic --port 15551 --stream-id mic --trace </data/local/tmp/k'
+#   # Host bridges the two:
+#   socat -u TCP:127.0.0.1:15551 TCP:127.0.0.1:15552
+#
+# Audio path: device-mic -> opus -> :15551 -> host (adb) -> host socat ->
+# host (adb) -> :15552 -> spk -> opus -> device speaker.  Talk into the
+# phone, hear yourself out the phone.  Pass: both streamers ready=true,
+# matching monotonic counters in mic/spk trace.frame events, no
+# frames_dropped post-warmup.
 #
 # Default path (no CMDS): same shape as the 1d smoke that worked.
 # Each streamer's stdin is plain `<keyfile` redirection — 32 bytes of

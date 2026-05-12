@@ -9,25 +9,27 @@ import (
 )
 
 func Discover(flagDir string) (mic, spk string, err error) {
+	micName := micBinaryName
+	spkName := spkBinaryName
 	dirs := candidateDirs(flagDir)
 	for _, dir := range dirs {
 		if dir == "" {
 			continue
 		}
-		mic = pickIfExecutable(dir, "haoma-mic")
-		spk = pickIfExecutable(dir, "haoma-spk")
+		mic = pickIfExecutable(dir, micName)
+		spk = pickIfExecutable(dir, spkName)
 		if mic != "" && spk != "" {
 			return mic, spk, nil
 		}
 	}
 
 	if mic == "" {
-		if p, perr := exec.LookPath("haoma-mic"); perr == nil {
+		if p, perr := exec.LookPath(micName); perr == nil {
 			mic = p
 		}
 	}
 	if spk == "" {
-		if p, perr := exec.LookPath("haoma-spk"); perr == nil {
+		if p, perr := exec.LookPath(spkName); perr == nil {
 			spk = p
 		}
 	}
@@ -65,3 +67,8 @@ func pickIfExecutable(dir, name string) string {
 }
 
 var ErrNoBinary = errors.New("streamers: streamer binary not found")
+
+var (
+	micBinaryName = "haoma-mic"
+	spkBinaryName = "haoma-spk"
+)

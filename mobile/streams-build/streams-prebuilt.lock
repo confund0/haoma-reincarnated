@@ -1,0 +1,8 @@
+# Auto-written by `make streams-deps`. Do not hand-edit.
+# Verified by `make streams-verify` and CI.
+abi=arm64-v8a
+opus_version=v1.5.2
+libsodium_version=1.0.20-RELEASE
+ndk_revision=29.0.14206865
+libopus_a_sha256=d18960e8577366d253b0f4296425d461b14ca6c78ae5344e1ec5080b6b4deea8
+libsodium_a_sha256=871778f4738af78d5486bba8ae324d1353fbe0000e7a26635c4134bea522d69c

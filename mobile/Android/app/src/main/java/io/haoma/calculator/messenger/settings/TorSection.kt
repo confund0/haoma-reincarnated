@@ -58,7 +58,7 @@ internal fun TorSection(store: MessengerStore, onBack: () -> Unit) {
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
-        SectionHeader(title = "Tor", onBack = onBack)
+        SectionHeader(title = "Tor", store = store, onBack = onBack)
 
         if (initial == null) {
             VaultUnavailableBanner()

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Calculator-themed launcher foreground. The disguise demands a calc icon
+    on the home screen — anything else would tip the cover.
+
+    Adaptive-icon viewport is 108×108 dp with a 66 dp guaranteed-visible
+    safe zone in the centre (the outer ring gets cropped to circle / squircle
+    / rounded-square depending on the launcher). Everything load-bearing
+    stays inside x∈[21,87], y∈[21,87].
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Calculator body (rounded rect) -->
+    <path
+        android:pathData="M34,26 L74,26 A4,4 0 0 1 78,30 L78,82 A4,4 0 0 1 74,86 L34,86 A4,4 0 0 1 30,82 L30,30 A4,4 0 0 1 34,26 Z"
+        android:fillColor="#F5F5F5"/>
+
+    <!-- Display strip -->
+    <path
+        android:pathData="M36,32 L72,32 A2,2 0 0 1 74,34 L74,42 A2,2 0 0 1 72,44 L36,44 A2,2 0 0 1 34,42 L34,34 A2,2 0 0 1 36,32 Z"
+        android:fillColor="#374151"/>
+
+    <!-- Display digits (right-aligned, faint) -->
+    <path
+        android:pathData="M62,36 L62,40 M66,36 L66,40 M70,36 L70,40"
+        android:strokeColor="#F59E0B"
+        android:strokeWidth="1.4"
+        android:strokeLineCap="round"/>
+
+    <!-- Button grid: 4 columns × 4 rows. Bottom-right "=" is the
+         accent (amber); the rest are neutral mid-grey. -->
+    <!-- Row 1 -->
+    <path android:pathData="M38,50 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M48,50 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M58,50 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M68,50 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#F59E0B"/>
+    <!-- Row 2 -->
+    <path android:pathData="M38,60 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M48,60 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M58,60 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M68,60 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#F59E0B"/>
+    <!-- Row 3 -->
+    <path android:pathData="M38,70 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M48,70 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M58,70 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M68,70 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#F59E0B"/>
+    <!-- Row 4: '=' is the rightmost, stretched vertical -->
+    <path android:pathData="M38,80 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M48,80 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M58,80 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#9CA3AF"/>
+    <path android:pathData="M68,80 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" android:fillColor="#F59E0B"/>
+</vector>

@@ -65,6 +65,7 @@ fun InvitesTab(store: MessengerStore) {
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
+        InvitesHeader(store = store)
         if (health.selfNickIsDefault) {
             DefaultNickBanner(currentNick = health.selfNick.ifEmpty { "(unset)" })
         }
@@ -124,6 +125,28 @@ fun InvitesTab(store: MessengerStore) {
     }
 }
 
+
+@Composable
+private fun InvitesHeader(store: MessengerStore) {
+    
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(BG_CARD)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Invites",
+            color = FG_PRIMARY,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 17.sp,
+            modifier = Modifier.weight(1f),
+        )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
+    }
+}
 
 @Composable
 private fun Section(label: String, content: @Composable () -> Unit) {

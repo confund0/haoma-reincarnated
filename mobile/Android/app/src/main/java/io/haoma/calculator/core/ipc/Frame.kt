@@ -139,6 +139,16 @@ object FrameType {
     const val SyncSettings = "sync_settings"
 
     
+    const val StartCall = "start_call"
+    const val CallStarted = "call_started"
+    const val RespondCall = "respond_call"
+    const val CallResponded = "call_responded"
+    const val CallStateChanged = "call.state-changed"
+    const val CallControl = "call_control"      
+    const val CallControlled = "call_controlled" 
+    const val CallStreamEvent = "call.stream-event" 
+
+    
     const val SendFile = "send_file"
     const val FileSent = "file_sent"
     const val ListFiles = "list_files"

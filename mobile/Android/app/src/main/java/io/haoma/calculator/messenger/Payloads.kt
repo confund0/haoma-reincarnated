@@ -923,6 +923,159 @@ data class RotateLifecyclePush(
 }
 
 
+object CallAction {
+    const val Accept = "accept"
+    const val Reject = "reject"
+    const val End = "end"
+}
+
+
+object CallControlAction {
+    const val Mute = "mute"
+    const val Unmute = "unmute"
+}
+
+data class CallControlRequest(val callId: String, val action: String) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("call_id", callId)
+        put("action", action)
+    }
+}
+
+data class CallControlledResponse(val callId: String, val action: String) {
+    companion object {
+        fun fromJson(o: JSONObject): CallControlledResponse = CallControlledResponse(
+            callId = o.optStringOrEmpty("call_id"),
+            action = o.optStringOrEmpty("action"),
+        )
+    }
+}
+
+
+data class CallStreamEventPayload(
+    val callId: String,
+    val side: String,       
+    val type: String,       
+    val jitterMs: Double,
+    val reason: String,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): CallStreamEventPayload = CallStreamEventPayload(
+            callId = o.optStringOrEmpty("call_id"),
+            side = o.optStringOrEmpty("side"),
+            type = o.optStringOrEmpty("type"),
+            jitterMs = o.optDouble("jitter_ms", 0.0),
+            reason = o.optStringOrEmpty("reason"),
+        )
+    }
+}
+
+
+object CallDirection {
+    const val In = "in"
+    const val Out = "out"
+}
+
+
+object CallStatus {
+    const val Offered = "offered"
+    const val Ringing = "ringing"
+    const val Accepted = "accepted"
+    const val Rejected = "rejected"
+    const val Ended = "ended"
+    const val Failed = "failed"
+}
+
+data class StartCallRequest(val chatId: String) {
+    fun toJson(): JSONObject = JSONObject().apply { put("chat_id", chatId) }
+}
+
+data class CallStartedResponse(val callId: String, val call: CallEntry) {
+    companion object {
+        fun fromJson(o: JSONObject): CallStartedResponse = CallStartedResponse(
+            callId = o.optStringOrEmpty("call_id"),
+            call = o.optJSONObject("call")?.let(CallEntry::fromJson) ?: CallEntry.EMPTY,
+        )
+    }
+}
+
+data class RespondCallRequest(
+    val callId: String,
+    val action: String,
+    val reason: String = "",
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("call_id", callId)
+        put("action", action)
+        if (reason.isNotEmpty()) put("reason", reason)
+    }
+}
+
+data class CallRespondedResponse(val callId: String, val status: String) {
+    companion object {
+        fun fromJson(o: JSONObject): CallRespondedResponse = CallRespondedResponse(
+            callId = o.optStringOrEmpty("call_id"),
+            status = o.optStringOrEmpty("status"),
+        )
+    }
+}
+
+data class CallStateChangedPayload(val call: CallEntry) {
+    companion object {
+        fun fromJson(o: JSONObject): CallStateChangedPayload = CallStateChangedPayload(
+            call = o.optJSONObject("call")?.let(CallEntry::fromJson) ?: CallEntry.EMPTY,
+        )
+    }
+}
+
+
+data class CallEntry(
+    val callId: String,
+    val chatId: String,
+    val peerId: String,
+    val direction: String,
+    val status: String,
+    val modalities: List<String>,
+    val startedAt: Long,
+    val updatedAt: Long,
+    val endedAt: Long,
+    val failReason: String,
+) {
+    val isTerminal: Boolean
+        get() = status == CallStatus.Rejected ||
+            status == CallStatus.Ended ||
+            status == CallStatus.Failed
+
+    companion object {
+        val EMPTY = CallEntry(
+            callId = "",
+            chatId = "",
+            peerId = "",
+            direction = "",
+            status = "",
+            modalities = emptyList(),
+            startedAt = 0L,
+            updatedAt = 0L,
+            endedAt = 0L,
+            failReason = "",
+        )
+
+        fun fromJson(o: JSONObject): CallEntry = CallEntry(
+            callId = o.optStringOrEmpty("call_id"),
+            chatId = o.optStringOrEmpty("chat_id"),
+            peerId = o.optStringOrEmpty("peer_id"),
+            direction = o.optStringOrEmpty("direction"),
+            status = o.optStringOrEmpty("status"),
+            modalities = o.optStringList("modalities"),
+            startedAt = o.optLong("started_at", 0L),
+            updatedAt = o.optLong("updated_at", 0L),
+            endedAt = o.optLong("ended_at", 0L),
+            failReason = o.optStringOrEmpty("fail_reason"),
+        )
+    }
+}
+
+
 data class NotificationEmittedPayload(
     val chatId: String,
     val peerLabel: String,

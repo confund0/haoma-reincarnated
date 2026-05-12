@@ -6,4 +6,14 @@
     <string name="fgs_core_channel_description">Keeps the app responsive in the background.</string>
     <string name="messages_channel_name">Messages</string>
     <string name="messages_channel_description">Inbound message banners.</string>
+    <string name="calls_channel_name">Calls</string>
+    <string name="calls_channel_description">Incoming call ringers.</string>
+    <string name="calls_incoming_title">Incoming call</string>
+    <string name="calls_incoming_body">%1$s is calling</string>
+    <string name="calls_answer">Answer</string>
+    <string name="calls_decline">Decline</string>
+    <string name="oem_background_title">Keep %1$s running in the background</string>
+    <string name="oem_background_message">Your device (%1$s) restricts background apps more aggressively than stock Android. Without an extra allowlist entry, the app will lose connectivity within seconds of the screen turning off. The next screen lets you add it.</string>
+    <string name="oem_background_open">Open settings</string>
+    <string name="oem_background_skip">Skip</string>
 </resources>

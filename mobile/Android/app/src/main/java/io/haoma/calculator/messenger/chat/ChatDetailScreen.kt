@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.haoma.calculator.messenger.*
+import io.haoma.calculator.messenger.calls.InCallBar
 import io.haoma.calculator.messenger.EventKind
 import io.haoma.calculator.messenger.FileEventBody
 import io.haoma.calculator.messenger.MessengerStore
@@ -56,8 +57,18 @@ fun ChatDetailScreen(
     val cache by store.timelineFor(chatId).collectAsStateWithLifecycle()
     val chats by store.chats.collectAsStateWithLifecycle()
     val presenceMap by store.presence.collectAsStateWithLifecycle()
+    val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
+    val recordAudio by store.recordAudioGranted.collectAsStateWithLifecycle()
     val chat = chats.firstOrNull { it.chatId == chatId }
     val presence = chat?.peerId?.let { presenceMap[it] }
+    
+    
+    val callHere = activeCalls.values
+        .filter { it.chatId == chatId && it.status == CallStatus.Accepted }
+        .maxByOrNull { it.startedAt }
+    val callElsewhere = activeCalls.values.any {
+        it.chatId != chatId && it.status == CallStatus.Accepted
+    }
     var actionTarget by remember { mutableStateOf<TimelineEvent?>(null) }
     var reactPickerTarget by remember { mutableStateOf<TimelineEvent?>(null) }
     var editingTarget by remember { mutableStateOf<TimelineEvent?>(null) }
@@ -116,7 +127,12 @@ fun ChatDetailScreen(
             chat = chat,
             chatId = chatId,
             presence = presence,
+            inCall = callHere != null,
+            otherChatInCall = callElsewhere,
+            canCall = recordAudio,
             onBack = onBack,
+            onPlaceCall = { store.startCall(chatId) },
+            onHangup = { store.hangupLatest() },
             onRotateTor = { store.rotateTorForChat(chatId) },
             onToggleMute = {
                 val nextMuted = chat?.notificationsMuted != true
@@ -125,6 +141,7 @@ fun ChatDetailScreen(
             onOpenSettings = { store.openChatSettings(chatId) },
             onViewFiles = { filesPickerOpen = true },
         )
+        callHere?.let { InCallBar(call = it, store = store) }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             if (cache.events.isEmpty()) {
                 EmptyChatHint(loading = cache.loading)

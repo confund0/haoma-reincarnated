@@ -93,7 +93,7 @@ fun ChatSettingsScreen(
             .background(BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
-        Header(title = chatTitle(chat), onBack = onBack)
+        Header(title = chatTitle(chat), store = store, onBack = onBack)
 
         RetentionSection(
             currentIndex = retentionIndex,
@@ -158,7 +158,7 @@ fun ChatSettingsScreen(
 private enum class ChatConfirm { Clear, Delete }
 
 @Composable
-private fun Header(title: String, onBack: () -> Unit) {
+private fun Header(title: String, store: MessengerStore, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -183,6 +183,7 @@ private fun Header(title: String, onBack: () -> Unit) {
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
         )
+        io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
 
