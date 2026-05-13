@@ -337,6 +337,9 @@ func run(ctx context.Context, cfg config) error {
 		}()
 		cfg.torControl = torInst.ControlAddr
 		cfg.torSocks = torInst.SocksAddr
+
+		d.cfg.torControl = torInst.ControlAddr
+		d.cfg.torSocks = torInst.SocksAddr
 	}
 
 	d.torPoller = health.New(cfg.torControl, cfg.secrets.TorPassword)
