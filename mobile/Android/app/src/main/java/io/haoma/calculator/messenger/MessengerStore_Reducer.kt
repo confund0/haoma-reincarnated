@@ -227,8 +227,29 @@ internal fun MessengerStore.dispatch(frame: Frame) {
         FrameType.CallStreamEvent -> if (payload != null) {
             val ev = CallStreamEventPayload.fromJson(payload)
             when (ev.type) {
-                "stats" -> if (ev.callId.isNotEmpty() && ev.side == "spk") {
-                    _callJitter.update { it + (ev.callId to ev.jitterMs) }
+                "stats" -> if (ev.callId.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    _callStreamState.update { prev ->
+                        val cur = prev[ev.callId] ?: CallStreamState()
+                        val side = CallStreamSide(
+                            lastSampleAtMs = now,
+                            framesOut = ev.framesOut,
+                            prevFramesOut = when (ev.side) {
+                                "mic" -> cur.mic?.framesOut ?: ev.framesOut
+                                "spk" -> cur.spk?.framesOut ?: ev.framesOut
+                                else -> ev.framesOut
+                            },
+                            jitterMs = ev.jitterMs,
+                        )
+                        val next = when (ev.side) {
+                            "mic" -> cur.copy(mic = side)
+                            "spk" -> cur.copy(spk = side)
+                            else -> cur
+                        }.let { s ->
+                            if (ev.framesDropped > s.dropped) s.copy(dropped = ev.framesDropped) else s
+                        }
+                        prev + (ev.callId to next)
+                    }
                 }
                 "warn" -> appendStatus(
                     "call streamer warn (${shortCallId(ev.callId)}/${ev.side}): ${ev.reason}",

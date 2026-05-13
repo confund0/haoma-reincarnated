@@ -14,7 +14,7 @@ Do not use this for high-stakes adversaries yet.
 
 ## What it is
 
-- 1:1 messages, file attachments, voice calls, all routed
+- 1:1 messages, file attachments, voice calls (desktop), all routed
   end-to-end-encrypted (Signal Protocol Double Ratchet) over Tor
   ephemeral onion services.
 - Per-peer dedicated onion identities. No shared global address.

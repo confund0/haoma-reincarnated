@@ -199,6 +199,8 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleSendReaction(ctx, sess, f)
 	case ipc.FrameTorInfo:
 		sd.handleTorInfo(ctx, sess, f)
+	case ipc.FrameSystemInfo:
+		sd.handleSystemInfo(ctx, sess, f)
 	case ipc.FrameListPeers:
 		sd.handleListPeers(ctx, sess, f)
 	case ipc.FrameListTimeline:
@@ -959,6 +961,35 @@ func (sd *sessionDispatcher) handleTorInfo(ctx context.Context, sess *ipc.Sessio
 	}
 	if err := sess.Send(resp); err != nil {
 		slog.Warn("send tor_info_response frame failed", slog.Any("err", err))
+	}
+}
+
+func (sd *sessionDispatcher) handleSystemInfo(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
+	slog.Debug("handle system_info")
+	payload := ipc.SystemInfoResponsePayload{
+		Haoma: ipc.SystemInfoComponent{
+			Version:   version,
+			StartedAt: sd.d.startedAt.Format(time.RFC3339),
+		},
+	}
+	if sd.d.backendClient != nil {
+		info, err := sd.d.backendClient.SystemInfo(ctx)
+		if err == nil {
+			payload.Haomad = ipc.SystemInfoComponent{
+				Version:   info.Version,
+				StartedAt: info.StartedAt,
+			}
+		} else {
+			slog.Warn("system_info: backend fetch failed", slog.Any("err", err))
+		}
+	}
+	resp, err := ipc.NewFrame(ipc.FrameSystemInfoResponse, f.ID, payload)
+	if err != nil {
+		sendError(sess, f.ID, "encode_frame", err.Error())
+		return
+	}
+	if err := sess.Send(resp); err != nil {
+		slog.Warn("send system_info_response frame failed", slog.Any("err", err))
 	}
 }
 

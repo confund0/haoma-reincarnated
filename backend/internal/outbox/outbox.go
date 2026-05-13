@@ -16,6 +16,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
+	"haoma/internal/logid"
 	"haoma/internal/store"
 	"haoma/internal/xport"
 )
@@ -670,7 +671,7 @@ func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 			slog.String("dest", row.Dest),
 			slog.String("err", peerErr.Error()),
 		)
-		w.transition(row, StateFailed, time.Time{}, newAttempts, row.AckFailures, peerErr.Error(), now)
+		w.transition(row, StateFailed, time.Time{}, newAttempts, row.AckFailures, logid.RedactOnions(peerErr.Error()), now)
 		return
 	}
 
@@ -679,7 +680,7 @@ func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 	}
 
 	if newAttempts >= w.MaxAttempts || now.UnixNano()-row.FirstAt >= int64(w.DeadLetterAge) {
-		w.transition(row, StateFailed, time.Time{}, newAttempts, row.AckFailures, sendErr.Error(), now)
+		w.transition(row, StateFailed, time.Time{}, newAttempts, row.AckFailures, logid.RedactOnions(sendErr.Error()), now)
 		return
 	}
 
@@ -690,7 +691,7 @@ func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 		slog.Time("next_at", nextAt),
 		slog.Any("err", sendErr),
 	)
-	if err := w.store.Advance(row, StateEnqueued, nextAt, newAttempts, row.AckFailures, sendErr.Error(), now); err != nil {
+	if err := w.store.Advance(row, StateEnqueued, nextAt, newAttempts, row.AckFailures, logid.RedactOnions(sendErr.Error()), now); err != nil {
 		slog.Warn("outbox: advance (reschedule) failed",
 			slog.String("envelope_id", row.EnvelopeID),
 			slog.Any("err", err),
@@ -719,11 +720,12 @@ func (w *Worker) handleSendOK(ctx context.Context, row *OutboxRow, body []byte, 
 	}
 	if err := w.ackV.VerifyAck(ctx, trimmed, row.Dest); err != nil {
 		newAckFails := row.AckFailures + 1
+		redacted := "ack verify: " + logid.RedactOnions(err.Error())
 		if newAckFails >= w.AckVerifyMaxTries {
-			w.transition(row, StateFailed, time.Time{}, row.Attempts+1, newAckFails, "ack verify: "+err.Error(), now)
+			w.transition(row, StateFailed, time.Time{}, row.Attempts+1, newAckFails, redacted, now)
 		} else {
 			nextAt := now.Add(w.Backoff(row.Attempts + 1))
-			if err2 := w.store.Advance(row, StateEnqueued, nextAt, row.Attempts+1, newAckFails, "ack verify: "+err.Error(), now); err2 != nil {
+			if err2 := w.store.Advance(row, StateEnqueued, nextAt, row.Attempts+1, newAckFails, redacted, now); err2 != nil {
 				slog.Warn("outbox: advance (bad ack reschedule) failed",
 					slog.String("envelope_id", row.EnvelopeID),
 					slog.Any("err", err2),

@@ -54,6 +54,8 @@ object FrameType {
     const val BackendStatus = "backend_status"
     const val TorInfo = "tor_info"
     const val TorInfoResponse = "tor_info_response"
+    const val SystemInfo = "system_info"
+    const val SystemInfoResponse = "system_info_response"
 
     
     const val ListPeers = "list_peers"

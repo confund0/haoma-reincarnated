@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.mau.fi/libsignal/protocol"
+	"go.mau.fi/libsignal/signalerror"
 
 	"haoma-frontend/internal/backendapi"
 	"haoma-frontend/internal/calls"
@@ -389,6 +390,14 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 
 	plain, decErr := d.cipher.Decrypt(ctx, entry.PeerID, entry.Envelope.Payload)
 	if decErr != nil {
+
+		if errors.Is(decErr, signalerror.ErrOldCounter) {
+			slog.Debug("inbox decrypt skipped: benign old-counter re-delivery",
+				slog.String("envelope_id", entry.Envelope.ID),
+				slog.String("peer_id", entry.PeerID),
+			)
+			return
+		}
 		_, persistErr := d.events.AppendInbound(events.InboundParams{
 			ChatID:     chatID,
 			Kind:       events.KindText,

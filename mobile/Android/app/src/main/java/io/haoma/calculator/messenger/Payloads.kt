@@ -144,6 +144,33 @@ data class BackendStatusPayload(
 }
 
 
+data class SystemInfoComponent(
+    val version: String,
+    val startedAt: String,
+) {
+    companion object {
+        val EMPTY = SystemInfoComponent(version = "", startedAt = "")
+        fun fromJson(o: JSONObject): SystemInfoComponent = SystemInfoComponent(
+            version = o.optStringOrEmpty("version"),
+            startedAt = o.optStringOrEmpty("started_at"),
+        )
+    }
+}
+
+
+data class SystemInfoResponse(
+    val haoma: SystemInfoComponent,
+    val haomad: SystemInfoComponent,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): SystemInfoResponse = SystemInfoResponse(
+            haoma = o.optJSONObject("haoma")?.let { SystemInfoComponent.fromJson(it) } ?: SystemInfoComponent.EMPTY,
+            haomad = o.optJSONObject("haomad")?.let { SystemInfoComponent.fromJson(it) } ?: SystemInfoComponent.EMPTY,
+        )
+    }
+}
+
+
 data class PeerEntry(
     val id: String,
     val chatId: String,
@@ -1013,6 +1040,9 @@ data class CallStreamEventPayload(
     val side: String,       
     val type: String,       
     val jitterMs: Double,
+    val framesIn: Long,
+    val framesOut: Long,
+    val framesDropped: Long,
     val reason: String,
 ) {
     companion object {
@@ -1021,10 +1051,27 @@ data class CallStreamEventPayload(
             side = o.optStringOrEmpty("side"),
             type = o.optStringOrEmpty("type"),
             jitterMs = o.optDouble("jitter_ms", 0.0),
+            framesIn = o.optLong("frames_in", 0L),
+            framesOut = o.optLong("frames_out", 0L),
+            framesDropped = o.optLong("frames_dropped", 0L),
             reason = o.optStringOrEmpty("reason"),
         )
     }
 }
+
+
+data class CallStreamSide(
+    val lastSampleAtMs: Long,
+    val framesOut: Long,
+    val prevFramesOut: Long,
+    val jitterMs: Double,
+)
+
+data class CallStreamState(
+    val mic: CallStreamSide? = null,
+    val spk: CallStreamSide? = null,
+    val dropped: Long = 0L,
+)
 
 
 object CallDirection {

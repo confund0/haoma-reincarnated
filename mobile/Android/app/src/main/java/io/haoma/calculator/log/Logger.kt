@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 object Logger {
     private const val FILE = "haoma-gui.log"
     private const val PREV = "haoma-gui.log.prev"
+    private const val MAX_BYTES: Long = 4L shl 20
 
     private val TS = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
@@ -25,6 +26,9 @@ object Logger {
     private val rotated = HashSet<String>()
 
     @Volatile private var writer: Writer? = null
+    @Volatile private var current: File? = null
+    @Volatile private var prev: File? = null
+    @Volatile private var size: Long = 0
     @Volatile private var dir: File? = null
     @Volatile private var debugBuild: Boolean = false
 
@@ -40,10 +44,14 @@ object Logger {
                 File(context.filesDir, "logs")
             }
             target.mkdirs()
-            val current = File(target, FILE)
-            rotateInPlace(current, File(target, PREV))
+            val cur = File(target, FILE)
+            val prv = File(target, PREV)
+            rotateInPlace(cur, prv)
             rotated.add("haoma-gui")
-            writer = OutputStreamWriter(FileOutputStream(current, true), Charsets.UTF_8)
+            writer = OutputStreamWriter(FileOutputStream(cur, true), Charsets.UTF_8)
+            current = cur
+            prev = prv
+            size = cur.length()
             dir = target
             debugBuild = debug
         }
@@ -73,16 +81,37 @@ object Logger {
     }
 
     fun write(level: String, tag: String, msg: String) {
-        val w = writer ?: return
+        if (writer == null) return
         val line = "${TS.format(Date())} $level $tag $msg\n"
+        val bytes = line.toByteArray(Charsets.UTF_8).size.toLong()
         try {
             synchronized(lock) {
-                w.write(line)
-                w.flush()
+                val w = writer ?: return
+                if (size > 0 && size + bytes > MAX_BYTES) {
+                    rotateCurrentLocked()
+                }
+                val w2 = writer ?: return
+                w2.write(line)
+                w2.flush()
+                size += bytes
             }
         } catch (_: Throwable) {
             
         }
+    }
+
+    private fun rotateCurrentLocked() {
+        val cur = current ?: return
+        val prv = prev ?: return
+        try {
+            writer?.flush()
+            writer?.close()
+        } catch (_: Throwable) {
+            
+        }
+        rotateInPlace(cur, prv)
+        writer = OutputStreamWriter(FileOutputStream(cur, true), Charsets.UTF_8)
+        size = 0
     }
 
     fun d(tag: String, msg: String) = write("DEBUG", tag, msg)

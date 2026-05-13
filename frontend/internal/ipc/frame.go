@@ -43,6 +43,9 @@ const (
 	FrameTorInfo         FrameType = "tor_info"
 	FrameTorInfoResponse FrameType = "tor_info_response"
 
+	FrameSystemInfo         FrameType = "system_info"
+	FrameSystemInfoResponse FrameType = "system_info_response"
+
 	FrameListPeers    FrameType = "list_peers"
 	FramePeersListed  FrameType = "peers_listed"
 	FrameListTimeline FrameType = "list_timeline"
@@ -229,7 +232,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 33
+const ProtocolVersion = 34
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -363,6 +366,16 @@ type TorHealth struct {
 type TorInfoResponsePayload struct {
 	Slots  []TorSlot `json:"slots"`
 	Health TorHealth `json:"health"`
+}
+
+type SystemInfoComponent struct {
+	Version   string `json:"version"`
+	StartedAt string `json:"started_at"`
+}
+
+type SystemInfoResponsePayload struct {
+	Haoma  SystemInfoComponent `json:"haoma"`
+	Haomad SystemInfoComponent `json:"haomad"`
 }
 
 type PeerEntry struct {

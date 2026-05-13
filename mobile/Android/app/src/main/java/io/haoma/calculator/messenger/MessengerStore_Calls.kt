@@ -229,7 +229,7 @@ internal fun MessengerStore.upsertActiveCall(call: CallEntry) {
         
         
         _mutedCalls.update { it - call.callId }
-        _callJitter.update { it - call.callId }
+        _callStreamState.update { it - call.callId }
         return
     }
     _activeCalls.update { it + (call.callId to call) }

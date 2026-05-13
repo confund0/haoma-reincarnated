@@ -39,6 +39,7 @@ func main() {
 	logLevel := flag.String("log-level", "warn", "log level: debug|info|warn|error")
 	logFile := flag.String("log-file", "", "log destination: empty = silent (production), \"-\" = stderr (dev), else a file path (created with 0600)")
 	logFormat := flag.String("log-format", "text", "log format: text|json")
+	logMaxBytes := flag.Int64("log-max-bytes", 0, "rotate the log file when it would exceed this size (0 = 4 MiB default); ignored when --log-file is empty or \"-\"")
 	flag.Parse()
 
 	if *showVersion {
@@ -61,7 +62,7 @@ func main() {
 	}
 
 	logger, closeLog, errLog := logging.New(logging.Config{
-		Level: *logLevel, File: *logFile, Format: *logFormat, Service: "haomad",
+		Level: *logLevel, File: *logFile, Format: *logFormat, Service: "haomad", MaxBytes: *logMaxBytes,
 	})
 	if errLog != nil {
 		fmt.Fprintf(os.Stderr, "haomad: logging: %v\n", errLog)

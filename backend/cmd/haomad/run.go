@@ -80,6 +80,8 @@ type daemon struct {
 
 	attachedHaoma atomic.Int32
 
+	startedAt time.Time
+
 	files *files.Manager
 
 	fetchWorker atomic.Pointer[files.Worker]
@@ -298,6 +300,7 @@ func run(ctx context.Context, cfg config) error {
 		bgCtx:        ctx,
 		torPassword:  cfg.secrets.TorPassword,
 		torKick:      make(chan struct{}, 1),
+		startedAt:    time.Now().UTC(),
 	}
 
 	go bridgeIDSToBus(ctx, idsEngine, bus)

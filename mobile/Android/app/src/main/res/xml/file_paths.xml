@@ -20,4 +20,12 @@
       after the daemon's SendFile reply lands.
     -->
     <cache-path name="saf-in" path="saf-in/" />
+
+    <!--
+      log-export covers the per-tap zip the Status → [logs] viewer
+      stages before firing Intent.ACTION_SEND. Lives under cacheDir so
+      OS storage pressure can reclaim it; we also overwrite per export
+      (single file path reused across taps).
+    -->
+    <cache-path name="log-export" path="log-export/" />
 </paths>

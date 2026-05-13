@@ -37,6 +37,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.haoma.calculator.messenger.CallDirection
 import io.haoma.calculator.messenger.CallEntry
 import io.haoma.calculator.messenger.CallStatus
+import io.haoma.calculator.messenger.CallStreamSide
+import io.haoma.calculator.messenger.CallStreamState
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.toggleMute
 import kotlinx.coroutines.delay
@@ -49,8 +51,8 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
     val current = router?.currentDevice?.collectAsStateWithLifecycle()?.value
     val muted by store.mutedCalls.collectAsStateWithLifecycle()
     val isMuted = muted[call.callId] == true
-    val jitterMap by store.callJitter.collectAsStateWithLifecycle()
-    val jitterMs = jitterMap[call.callId]
+    val streamMap by store.callStreamState.collectAsStateWithLifecycle()
+    val stream = streamMap[call.callId]
     var pickerOpen by remember { mutableStateOf(false) }
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000L) }
@@ -115,16 +117,8 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
             )
             
             
-            if (jitterMs != null) {
-                Text(text = "·", color = BarTextDim, fontSize = 13.sp)
-                Text(
-                    text = "${jitterMs.toInt()}ms",
-                    color = BarTextDim,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                )
-            }
-            Text(text = "·", color = BarTextDim, fontSize = 13.sp)
+            StreamStatsChip(stream = stream, nowMs = now * 1000L)
+            Spacer(modifier = Modifier.weight(1f))
             
             
             val routeGlyph = glyphFor(current)
@@ -145,7 +139,6 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
                     fontFamily = if (isBrandsGlyph(routeGlyph)) brands else solid,
                 )
             }
-            Spacer(modifier = Modifier.weight(1f))
             
             
             Box(
@@ -188,6 +181,75 @@ internal fun glyphFor(route: AudioRoute?): String = when (route?.kind) {
 }
 
 
+@Composable
+private fun StreamStatsChip(stream: CallStreamState?, nowMs: Long) {
+    val micColor = micArrowColor(stream?.mic, nowMs)
+    val spkColor = spkArrowColor(stream?.spk, nowMs)
+    val jitter = stream?.spk?.jitterMs
+    val drops = stream?.dropped ?: 0L
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(percent = 50))
+            .background(BarRouteBg)
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "↑",
+                color = micColor,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Black,
+            )
+            Text(
+                text = "↓",
+                color = spkColor,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Black,
+            )
+            Text(
+                text = if (jitter != null) "${jitter.toInt()}ms" else "—",
+                color = BarText,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
+            )
+            Text(
+                text = "${drops}drp",
+                color = if (drops > 0) ArrowRed else BarText,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
+            )
+        }
+    }
+}
+
+
+private fun micArrowColor(mic: CallStreamSide?, nowMs: Long): Color {
+    if (mic == null) return ArrowRed
+    val ageMs = nowMs - mic.lastSampleAtMs
+    if (ageMs > 5_000L) return ArrowRed
+    val advanced = mic.framesOut > mic.prevFramesOut
+    if (ageMs > 2_000L) return ArrowYellow
+    if (!advanced && mic.prevFramesOut != 0L) return ArrowYellow
+    return ArrowGreen
+}
+
+
+private fun spkArrowColor(spk: CallStreamSide?, nowMs: Long): Color {
+    if (spk == null) return ArrowRed
+    val ageMs = nowMs - spk.lastSampleAtMs
+    if (ageMs > 5_000L) return ArrowRed
+    if (spk.jitterMs > 200.0) return ArrowRed
+    if (ageMs > 2_000L) return ArrowYellow
+    if (spk.jitterMs > 80.0) return ArrowYellow
+    return ArrowGreen
+}
+
+
 private val BarBg = Color(0xFFB05E0F)        
 private val BarBgPulse = Color(0xFFD97A1F)   
 private val BarAccent = Color(0xFFFB4934)    
@@ -195,3 +257,8 @@ private val BarText = Color(0xFFFBF1C7)
 private val BarTextDim = Color(0xFFFBEEC0)
 private val BarRouteBg = Color(0x33000000)   
 private val BarMuteBg = Color(0x66000000)    
+
+
+private val ArrowGreen = Color(0xFF388E3C)   
+private val ArrowYellow = Color(0xFFFABD2F)  
+private val ArrowRed = Color(0xFFFB4934)     

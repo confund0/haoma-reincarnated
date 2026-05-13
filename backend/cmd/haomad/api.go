@@ -22,6 +22,7 @@ func (d *daemon) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", d.handleHealth)
 	mux.HandleFunc("GET /tor", d.handleTor)
+	mux.HandleFunc("GET /system", d.handleSystem)
 	mux.HandleFunc("POST /tor-password", d.handleTorPassword)
 	mux.HandleFunc("POST /onion/mint", d.handleOnionMint)
 	mux.HandleFunc("POST /onion/del", d.handleOnionDel)
@@ -296,6 +297,13 @@ type torHealth struct {
 	Bootstrap   int  `json:"bootstrap"`
 	Ready       bool `json:"ready"`
 	Unreachable bool `json:"unreachable"`
+}
+
+func (d *daemon) handleSystem(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":    version,
+		"started_at": d.startedAt.UTC().Format(time.RFC3339),
+	})
 }
 
 func (d *daemon) handleTor(w http.ResponseWriter, _ *http.Request) {

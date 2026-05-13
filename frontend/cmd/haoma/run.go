@@ -51,6 +51,8 @@ type daemon struct {
 	backendClient *backendapi.Client
 	ipcSrv        *ipc.Server
 
+	startedAt time.Time
+
 	backendReachable atomic.Bool
 
 	latestStatus atomic.Pointer[ipc.BackendStatusPayload]
@@ -189,6 +191,7 @@ func run(ctx context.Context, cfg config) error {
 		streamers:     streamersMgr,
 		presenceCache: presence.New(),
 		notifier:      notify.New(nil, nil, ""),
+		startedAt:     time.Now().UTC(),
 	}
 
 	d.latestStatus.Store(&ipc.BackendStatusPayload{

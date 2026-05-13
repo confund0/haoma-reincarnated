@@ -33,6 +33,7 @@ func main() {
 	flag.StringVar(&cfg.logLevel, "log-level", "warn", "log level: debug|info|warn|error")
 	flag.StringVar(&cfg.logFile, "log-file", "", "log destination: empty = silent (production), \"-\" = stderr (dev), else a file path (created with 0600)")
 	flag.StringVar(&cfg.logFormat, "log-format", "text", "log format: text|json")
+	flag.Int64Var(&cfg.logMaxBytes, "log-max-bytes", 0, "rotate the log file when it would exceed this size (0 = 4 MiB default); ignored when --log-file is empty or \"-\"")
 	flag.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -49,7 +50,7 @@ func main() {
 	cfg.secrets = sec
 
 	logger, closeLog, err := logging.New(logging.Config{
-		Level: cfg.logLevel, File: cfg.logFile, Format: cfg.logFormat, Service: "haoma",
+		Level: cfg.logLevel, File: cfg.logFile, Format: cfg.logFormat, Service: "haoma", MaxBytes: cfg.logMaxBytes,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "haoma: logging: %v\n", err)
@@ -82,6 +83,7 @@ type config struct {
 	logLevel        string
 	logFile         string
 	logFormat       string
+	logMaxBytes     int64
 	showVersion     bool
 
 	secrets secrets.Secrets

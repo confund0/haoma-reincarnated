@@ -77,6 +77,19 @@ func (c *Client) TorInfo(ctx context.Context) (TorInfoResponse, error) {
 	return out, nil
 }
 
+type SystemInfo struct {
+	Version   string `json:"version"`
+	StartedAt string `json:"started_at"`
+}
+
+func (c *Client) SystemInfo(ctx context.Context) (SystemInfo, error) {
+	var out SystemInfo
+	if err := c.getJSON(ctx, "/system", &out); err != nil {
+		return SystemInfo{}, err
+	}
+	return out, nil
+}
+
 type MintedOnion struct {
 	Address    string `json:"address"`
 	PrivateKey string `json:"private_key"`

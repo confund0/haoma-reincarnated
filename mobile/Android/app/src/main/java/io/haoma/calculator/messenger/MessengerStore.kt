@@ -1,8 +1,10 @@
 package io.haoma.calculator.messenger
 
 import android.content.Context
+import io.haoma.calculator.core.BinaryFingerprints
 import io.haoma.calculator.core.DisguiseStore
 import io.haoma.calculator.core.VaultSession
+import io.haoma.calculator.core.computeFingerprints
 import io.haoma.calculator.core.ipc.IpcClient
 import io.haoma.calculator.log.Logger
 import java.io.File
@@ -56,6 +58,17 @@ class MessengerStore(
     internal val _statusLog = MutableStateFlow<List<StatusLine>>(emptyList())
     val statusLog: StateFlow<List<StatusLine>> = _statusLog.asStateFlow()
 
+    internal val _torInfoSnapshot = MutableStateFlow<TorInfoResponse?>(null)
+    val torInfoSnapshot: StateFlow<TorInfoResponse?> = _torInfoSnapshot.asStateFlow()
+
+    
+    internal val _fingerprints = MutableStateFlow<BinaryFingerprints?>(null)
+    val fingerprints: StateFlow<BinaryFingerprints?> = _fingerprints.asStateFlow()
+
+    
+    internal val _systemInfo = MutableStateFlow<SystemInfoResponse?>(null)
+    val systemInfo: StateFlow<SystemInfoResponse?> = _systemInfo.asStateFlow()
+
     internal val _backStack = MutableStateFlow<List<Screen>>(listOf(Screen.Tabbed(Tab.Chats)))
     val backStack: StateFlow<List<Screen>> = _backStack.asStateFlow()
 
@@ -77,8 +90,8 @@ class MessengerStore(
     val mutedCalls: StateFlow<Map<String, Boolean>> = _mutedCalls.asStateFlow()
 
     
-    internal val _callJitter = MutableStateFlow<Map<String, Double>>(emptyMap())
-    val callJitter: StateFlow<Map<String, Double>> = _callJitter.asStateFlow()
+    internal val _callStreamState = MutableStateFlow<Map<String, CallStreamState>>(emptyMap())
+    val callStreamState: StateFlow<Map<String, CallStreamState>> = _callStreamState.asStateFlow()
 
     
     internal val _recordAudioGranted = MutableStateFlow(false)
@@ -114,6 +127,21 @@ class MessengerStore(
 
     
     @Volatile internal var ipc: IpcClient? = null
+
+    init {
+        
+        
+        val ctx = appContext
+        if (ctx != null) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    _fingerprints.value = computeFingerprints(ctx)
+                } catch (t: Throwable) {
+                    Logger.w("messenger", "fingerprints compute failed: ${t.message}")
+                }
+            }
+        }
+    }
 
     
     @Volatile internal var currentFocusChatId: String = ""
@@ -203,6 +231,7 @@ class MessengerStore(
                 fetchPeers(c)
                 fetchChats(c)
                 fetchTorInfo(c)
+                fetchSystemInfo(c)
             } catch (t: Throwable) {
                 Logger.w("messenger", "bootstrap failed: ${t.message}")
                 appendStatus("bootstrap failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
@@ -232,10 +261,21 @@ class MessengerStore(
         }
     }
 
+    private suspend fun fetchSystemInfo(c: IpcClient) {
+        try {
+            val reply = c.request(type = io.haoma.calculator.core.ipc.FrameType.SystemInfo)
+            val info = reply.payload?.let(SystemInfoResponse::fromJson) ?: return
+            _systemInfo.value = info
+        } catch (t: Throwable) {
+            appendStatus("system_info failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+        }
+    }
+
     private suspend fun fetchTorInfo(c: IpcClient) {
         try {
             val reply = c.request(type = io.haoma.calculator.core.ipc.FrameType.TorInfo)
             val info = reply.payload?.let(TorInfoResponse::fromJson) ?: return
+            _torInfoSnapshot.value = info
             _health.update {
                 it.copy(
                     tor = info.health,
@@ -244,6 +284,18 @@ class MessengerStore(
             }
         } catch (t: Throwable) {
             appendStatus("tor_info failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+        }
+    }
+
+    
+    fun refreshTorInfo() {
+        scope.launch {
+            val c = ipc
+            if (c == null) {
+                appendStatus("tor_info refresh: ipc not connected", level = StatusLevel.WARN)
+                return@launch
+            }
+            fetchTorInfo(c)
         }
     }
 
@@ -341,13 +393,25 @@ class MessengerStore(
     }
 
     
-    internal fun appendStatus(text: String, level: StatusLevel = StatusLevel.INFO) {
-        val line = StatusLine(at = System.currentTimeMillis(), text = text, level = level)
+    internal fun appendStatus(
+        text: String,
+        level: StatusLevel = StatusLevel.INFO,
+        source: StatusSource = StatusSource.System,
+    ) {
+        val line = StatusLine(at = System.currentTimeMillis(), text = text, level = level, source = source)
         _statusLog.update { list ->
             val next = list + line
             
             
             if (next.size > STATUS_LOG_CAP) next.takeLast(STATUS_LOG_CAP) else next
+        }
+        
+        
+        if (source == StatusSource.System) {
+            when (level) {
+                StatusLevel.WARN -> Logger.w("status", text)
+                else -> Logger.i("status", text)
+            }
         }
     }
 
@@ -398,10 +462,14 @@ data class SelfReach(val onion: String, val ok: Boolean, val at: Long)
 
 enum class StatusLevel { INFO, WARN }
 
+
+enum class StatusSource { System, Cli }
+
 data class StatusLine(
     val at: Long,
     val text: String,
     val level: StatusLevel,
+    val source: StatusSource = StatusSource.System,
 ) {
     fun stamp(): String = TS_FMT.format(Date(at))
 
