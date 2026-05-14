@@ -40,6 +40,10 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+
+private const val HARD_LOCK_HANGUP_GRACE_MS = 200L
 
 class HaomaApp : Application(), ImageLoaderFactory {
     
@@ -77,6 +81,10 @@ class HaomaApp : Application(), ImageLoaderFactory {
         private set
 
     
+    lateinit var proximityController: io.haoma.calculator.messenger.calls.ProximityController
+        private set
+
+    
     lateinit var disguiseSkin: DisguiseSkin
         private set
 
@@ -93,6 +101,9 @@ class HaomaApp : Application(), ImageLoaderFactory {
 
     
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    
+    internal val hangupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     
     @Volatile
@@ -131,6 +142,16 @@ class HaomaApp : Application(), ImageLoaderFactory {
                 idlePolicy = null
                 vaultSession = null
             },
+            
+            
+            onWillLock = { action ->
+                val job = messengerStore.hangupAllActive(hangupScope)
+                if (action == IdlePolicy.Hard) {
+                    runBlocking {
+                        withTimeoutOrNull(HARD_LOCK_HANGUP_GRACE_MS) { job.join() }
+                    }
+                }
+            },
         )
         idleTimer = ForegroundIdleTimer(
             state = appState,
@@ -159,6 +180,12 @@ class HaomaApp : Application(), ImageLoaderFactory {
             app = applicationContext,
             activeCallsSource = messengerStore.activeCalls,
             bluetoothConnectGrantedSource = messengerStore.bluetoothConnectGranted,
+        ).also { it.start() }
+
+        
+        proximityController = io.haoma.calculator.messenger.calls.ProximityController(
+            app = applicationContext,
+            activeCallsSource = messengerStore.activeCalls,
         ).also { it.start() }
 
         

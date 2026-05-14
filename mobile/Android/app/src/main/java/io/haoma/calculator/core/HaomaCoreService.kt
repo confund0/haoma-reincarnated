@@ -79,6 +79,13 @@ class HaomaCoreService : Service() {
         
         
         try {
+            (application as? HaomaApp)?.proximityController?.releaseLockIfHeld()
+        } catch (t: Throwable) {
+            Logger.e("fgs", "proximity release", t)
+        }
+        
+        
+        try {
             (application as? HaomaApp)?.messengerStore?.onDaemonsStopped()
         } catch (t: Throwable) {
             Logger.e("fgs", "messenger store teardown", t)

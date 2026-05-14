@@ -9,6 +9,9 @@ class IdleLockDispatcher(
     private val state: AppStateRepository,
     private val policySource: () -> IdlePolicy?,
     private val stopFgs: () -> Unit,
+    
+
+    private val onWillLock: (action: String) -> Unit = {},
 ) {
     
     fun fire(reason: String): Boolean {
@@ -21,6 +24,13 @@ class IdleLockDispatcher(
         if (policy == null) {
             Logger.i("idle", "fire reason=$reason skipped (no policy — vault never opened this process)")
             return false
+        }
+        
+        
+        try {
+            onWillLock(policy.action)
+        } catch (t: Throwable) {
+            Logger.e("idle", "onWillLock threw — proceeding with lock anyway", t)
         }
         return when (policy.action) {
             IdlePolicy.Soft -> {

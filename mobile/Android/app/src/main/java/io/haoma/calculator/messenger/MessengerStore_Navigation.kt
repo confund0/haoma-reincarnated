@@ -35,6 +35,11 @@ fun MessengerStore.openAccept(type: PairType) {
 
 
 fun MessengerStore.openChatForPeer(peerId: String) {
+    val cached = _chats.value.firstOrNull { it.peerId == peerId }
+    if (cached != null) {
+        openChatDetail(cached.chatId)
+        return
+    }
     scope.launch {
         val c = ipc ?: run {
             appendStatus("open chat: ipc not connected", level = StatusLevel.WARN)
@@ -62,6 +67,9 @@ fun MessengerStore.openChatForPeer(peerId: String) {
                 appendStatus("ensure_chat: blank chat_id", level = StatusLevel.WARN)
                 return@launch
             }
+            
+            
+            upsertChat(resp.chat)
             openChatDetail(resp.chat.chatId)
         } catch (t: Throwable) {
             appendStatus("ensure_chat failed: ${t.message ?: "?"}", level = StatusLevel.WARN)

@@ -10,19 +10,28 @@ messenger.
 1. Sideload the APK (verify it first — see `HOWTO-VERIFY.md`).
 2. Open the app — you'll see a gruvbox-dark calculator. Try `2+2=`
    to confirm it works as advertised.
-3. To reveal the messenger:
-   - Press and hold `[5]` for ~2 seconds. A small green dot lights
-     up in the display = "armed".
-   - Without lifting, slide across the keypad in the pattern
-     `7 → 8 → 9 → 6 → 3` (the default). Lift = submit.
+3. To reveal the messenger you can use either path — both check the
+   same secret (default `78963`):
+
+   **Slide path** — press and hold `[5]` for ~2 seconds. A small green
+   dot lights up in the display = "armed". Without lifting, slide
+   across the keypad in the pattern `7 → 8 → 9 → 6 → 3`. Lift = submit.
+
+   **Tap-PIN path** (use this if you can't or don't want to slide) —
+   press and hold `[1]` for ~2 seconds. A small blue dot lights up =
+   "PIN-armed". Lift, tap the digits one by one (`7`, `8`, `9`, `6`,
+   `3`), then press and hold `[=]` for 2 seconds to submit. A short
+   tap of `[=]` cancels; touching any operator (`+`, `−`, `×`, `÷`,
+   `C`, etc.) also cancels.
+
 4. The disguise strips. You'll be prompted for a passphrase. The
    shipped default is `good-girls-go-to-heaven`. Tap **Use default
    passphrase** to one-tap it.
-5. Change the passphrase + the unlock pattern from Settings → Lock
-   once you're in.
+5. Change the passphrase + the unlock secret from Settings → Lock
+   once you're in. The same digit secret unlocks both ways.
 
-If you fat-finger the slide, the calc silently reverts. No counter,
-no error. Re-do the 2-second hold to retry.
+If you fat-finger either gesture, the calc silently reverts. No
+counter, no error. Re-do the 2-second hold to retry.
 
 ## Tabs
 
@@ -57,7 +66,7 @@ Joiner:
 
 - **Soft-lock** — screen-off / app-swiped-away. Cover surface returns;
   both daemons keep running so messages keep arriving in the
-  background. Re-reveal = slide pattern.
+  background. Re-reveal = slide pattern OR tap-PIN.
 - **Safe-lock** — same as soft-lock on this build (mobile collapses
   the two; full safe-lock partial-teardown is post-beta wishlist).
 - **Hard-lock** — both daemons die. No notifications until you
@@ -127,6 +136,8 @@ Per-component:
   picker handles the WHERE.
 - **Lock** → threat-preset bundle (Domestic / Privacy) +
   individually-tunable idle-action, idle-timeout, PIN-validity,
-  panic-action. Change unlock pattern + passphrase live here too.
+  panic-action. Change unlock secret + passphrase live here too. The
+  unlock secret is the same digit string for both slide and tap-PIN
+  paths.
 - **Advanced** → security warnings (currently always empty by
   design; producer ships post-beta).

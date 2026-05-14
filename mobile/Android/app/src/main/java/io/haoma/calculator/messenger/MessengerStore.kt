@@ -207,6 +207,9 @@ class MessengerStore(
         lastSoftLocked = false
         
         
+        _activeCalls.value = emptyMap()
+        _mutedCalls.value = emptyMap()
+        _callStreamState.value = emptyMap()
     }
 
     

@@ -211,8 +211,10 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
                 Text("Change unlock pattern…")
             }
             Text(
-                text = "The calculator slide pattern that reveals the messenger from " +
-                    "soft-lock. Default `78963` is in effect until you change it here.",
+                text = "The digit secret that reveals the messenger from soft-lock. " +
+                    "Two ways to enter it: long-hold [5] then slide through the digits, " +
+                    "or long-hold [1] then tap the digits and long-hold [=] to submit. " +
+                    "Default `78963` is in effect until you change it here.",
                 color = FG_DIM,
                 fontSize = 12.sp,
             )

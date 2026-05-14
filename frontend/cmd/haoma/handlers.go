@@ -166,7 +166,8 @@ func (sd *sessionDispatcher) run(ctx context.Context, sess *ipc.Session) {
 		case <-readErrs:
 			return
 		case f := <-reads:
-			sd.dispatch(ctx, sess, f)
+
+			go sd.dispatch(ctx, sess, f)
 		case <-pings.C:
 			ping, _ := ipc.NewFrame(ipc.FramePing, "", nil)
 			if err := sess.Send(ping); err != nil {

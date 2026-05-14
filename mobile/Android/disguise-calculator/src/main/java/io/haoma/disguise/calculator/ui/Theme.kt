@@ -12,5 +12,6 @@ internal object GruvboxDark {
     val Fg2 = Color(0xFFD5C4A1)         
     val Accent = Color(0xFF83A598)      
     val ErrorFg = Color(0xFFCC241D)     
-    val ArmedDot = Color(0xFF8EC07C)    
+    val ArmedDot = Color(0xFF22C55E)    
+    val ArmedDotPin = Color(0xFF1F4FE8) 
 }

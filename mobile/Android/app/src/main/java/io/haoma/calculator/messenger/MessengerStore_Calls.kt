@@ -2,6 +2,8 @@ package io.haoma.calculator.messenger
 
 import io.haoma.calculator.core.ipc.FrameType
 import io.haoma.calculator.log.Logger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -50,6 +52,37 @@ fun MessengerStore.hangupLatest() {
         .maxByOrNull { it.startedAt }
         ?: return
     respondCall(target.callId, CallAction.End)
+}
+
+
+fun MessengerStore.hangupAllActive(launchScope: CoroutineScope): Job {
+    val targets = _activeCalls.value.values
+        .filter { !it.isTerminal }
+        .toList()
+    if (targets.isEmpty()) {
+        return launchScope.launch {  }
+    }
+    Logger.i("call", "hangupAllActive dispatching ${targets.size} call(s)")
+    return launchScope.launch {
+        val c = ipc ?: run {
+            Logger.w("call", "hangupAllActive: ipc not connected; cannot ship End frames")
+            return@launch
+        }
+        for (target in targets) {
+            try {
+                val reply = c.request(
+                    type = FrameType.RespondCall,
+                    payload = RespondCallRequest(target.callId, CallAction.End, "").toJson(),
+                )
+                if (reply.type == FrameType.Error) {
+                    val err = reply.payload?.let(ErrorPayload::fromJson)
+                    Logger.w("call", "hangupAllActive: call=${shortCallId(target.callId)} err=${err?.message ?: "?"}")
+                }
+            } catch (t: Throwable) {
+                Logger.w("call", "hangupAllActive: call=${shortCallId(target.callId)} failed: ${t.message ?: "?"}")
+            }
+        }
+    }
 }
 
 

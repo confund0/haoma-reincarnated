@@ -47,6 +47,9 @@ import io.haoma.disguise.calculator.TokenAccumulator
 import kotlinx.coroutines.withTimeoutOrNull
 
 
+internal enum class ArmState { None, Slide, Pin }
+
+
 @Composable
 fun CalculatorScreen(
     reveal: RevealController,
@@ -57,7 +60,7 @@ fun CalculatorScreen(
 ) {
     var state by remember { mutableStateOf(CalculatorState()) }
     val onAction: (CalcAction) -> Unit = { state = reduce(state, it) }
-    var armed by remember { mutableStateOf(false) }
+    var armState by remember { mutableStateOf(ArmState.None) }
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(
@@ -68,7 +71,7 @@ fun CalculatorScreen(
             Display(
                 text = state.display,
                 error = state.error,
-                armed = armed,
+                armState = armState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -77,7 +80,7 @@ fun CalculatorScreen(
                 onAction = onAction,
                 reveal = reveal,
                 config = config,
-                onArmedChanged = { armed = it },
+                onArmStateChanged = { armState = it },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(2.2f),
@@ -143,19 +146,24 @@ private fun TipOverlay(tip: DisguiseTip, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun Display(text: String, error: Boolean, armed: Boolean, modifier: Modifier) {
+private fun Display(text: String, error: Boolean, armState: ArmState, modifier: Modifier) {
     Box(
         modifier = modifier
             .background(GruvboxDark.Bg0)
             .padding(horizontal = 24.dp, vertical = 16.dp),
     ) {
-        if (armed) {
+        val dotColor = when (armState) {
+            ArmState.None  -> null
+            ArmState.Slide -> GruvboxDark.ArmedDot
+            ArmState.Pin   -> GruvboxDark.ArmedDotPin
+        }
+        if (dotColor != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(GruvboxDark.ArmedDot),
+                    .background(dotColor),
             )
         }
         Text(
@@ -221,7 +229,7 @@ private fun Keypad(
     onAction: (CalcAction) -> Unit,
     reveal: RevealController,
     config: RevealConfig,
-    onArmedChanged: (Boolean) -> Unit,
+    onArmStateChanged: (ArmState) -> Unit,
     modifier: Modifier,
 ) {
     val keyCoords = remember { mutableStateMapOf<String, LayoutCoordinates>() }
@@ -267,7 +275,7 @@ private fun Keypad(
                     keysByLabel = keysByLabel,
                     reveal = reveal,
                     onAction = onAction,
-                    onArmedChanged = onArmedChanged,
+                    onArmStateChanged = onArmStateChanged,
                 )
             },
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -327,25 +335,33 @@ private suspend fun PointerInputScope.runRevealGesture(
     keysByLabel: Map<String, Key>,
     reveal: RevealController,
     onAction: (CalcAction) -> Unit,
-    onArmedChanged: (Boolean) -> Unit,
+    onArmStateChanged: (ArmState) -> Unit,
 ) {
     awaitPointerEventScope {
         while (true) {
             val down = awaitFirstDown(requireUnconsumed = false)
             val downKey = keyAt(down.position)
 
-            if (downKey != config.triggerKey) {
+            val armCandidate: ArmState? = when (downKey) {
+                config.triggerKey    -> ArmState.Slide
+                config.pinTriggerKey -> ArmState.Pin
+                else                 -> null
+            }
+            if (armCandidate == null) {
                 handleTap(downKey, keyAt, keysByLabel, onAction)
                 continue
             }
 
+            val triggerKey = if (armCandidate == ArmState.Slide) config.triggerKey else config.pinTriggerKey
+            val holdMs = if (armCandidate == ArmState.Slide) config.holdMillis else config.pinHoldMillis
+
             
-            val holdOutcome = withTimeoutOrNull(config.holdMillis) {
+            val holdOutcome = withTimeoutOrNull(holdMs) {
                 while (true) {
                     val ev = awaitPointerEvent()
                     val change = ev.changes.first()
                     if (!change.pressed) return@withTimeoutOrNull HoldOutcome.LiftedBeforeArm
-                    if (keyAt(change.position) != config.triggerKey) {
+                    if (keyAt(change.position) != triggerKey) {
                         return@withTimeoutOrNull HoldOutcome.MovedBeforeArm
                     }
                 }
@@ -353,9 +369,13 @@ private suspend fun PointerInputScope.runRevealGesture(
             }
 
             when (holdOutcome) {
-                null -> handleArmed(config, keyAtSlide, reveal, onArmedChanged)
+                null -> when (armCandidate) {
+                    ArmState.Slide -> handleArmedSlide(config, keyAtSlide, reveal, onArmStateChanged)
+                    ArmState.Pin   -> handleArmedPin(config, keyAt, reveal, onArmStateChanged)
+                    ArmState.None  -> {} 
+                }
                 HoldOutcome.LiftedBeforeArm -> {
-                    keysByLabel[config.triggerKey]?.action?.let(onAction)
+                    keysByLabel[triggerKey]?.action?.let(onAction)
                 }
                 HoldOutcome.MovedBeforeArm -> drainUntilLift()
             }
@@ -385,13 +405,13 @@ private suspend fun AwaitPointerEventScope.handleTap(
 }
 
 
-private suspend fun AwaitPointerEventScope.handleArmed(
+private suspend fun AwaitPointerEventScope.handleArmedSlide(
     config: RevealConfig,
     keyAt: (Offset) -> String?,
     reveal: RevealController,
-    onArmedChanged: (Boolean) -> Unit,
+    onArmStateChanged: (ArmState) -> Unit,
 ) {
-    onArmedChanged(true)
+    onArmStateChanged(ArmState.Slide)
     reveal.arm()
     val acc = TokenAccumulator(config.triggerKey)
 
@@ -405,7 +425,7 @@ private suspend fun AwaitPointerEventScope.handleArmed(
         @Suppress("UNREACHABLE_CODE") ArmedOutcome.Lifted
     }
 
-    onArmedChanged(false)
+    onArmStateChanged(ArmState.None)
 
     when (outcome) {
         null -> {
@@ -420,6 +440,90 @@ private suspend fun AwaitPointerEventScope.handleArmed(
 }
 
 private enum class ArmedOutcome { Lifted }
+
+
+private suspend fun AwaitPointerEventScope.handleArmedPin(
+    config: RevealConfig,
+    keyAt: (Offset) -> String?,
+    reveal: RevealController,
+    onArmStateChanged: (ArmState) -> Unit,
+) {
+    onArmStateChanged(ArmState.Pin)
+    reveal.arm()
+    drainUntilLift()
+
+    val pin = StringBuilder()
+
+    while (true) {
+        val downOrNull = withTimeoutOrNull(config.pinIdleCancelMillis) {
+            awaitFirstDown(requireUnconsumed = false)
+        }
+        if (downOrNull == null) {
+            onArmStateChanged(ArmState.None)
+            reveal.cancel()
+            return
+        }
+
+        val tapKey = keyAt(downOrNull.position)
+        when {
+            tapKey == null -> {
+                
+                drainUntilLift()
+            }
+            tapKey == config.pinSubmitKey -> {
+                val submitOutcome = raceHold(config.pinSubmitHoldMillis, tapKey, keyAt)
+                onArmStateChanged(ArmState.None)
+                when (submitOutcome) {
+                    HoldOutcome.LiftedBeforeArm,
+                    HoldOutcome.MovedBeforeArm -> {
+                        reveal.cancel()
+                    }
+                    null -> {
+                        if (pin.isEmpty()) reveal.cancel() else reveal.submit(pin.toString())
+                        drainUntilLift()
+                    }
+                }
+                return
+            }
+            tapKey.length == 1 && tapKey[0].isDigit() -> {
+                
+                
+                var endKey: String? = tapKey
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    val change = ev.changes.first()
+                    endKey = keyAt(change.position)
+                    if (!change.pressed) break
+                }
+                if (endKey == tapKey) pin.append(tapKey)
+            }
+            else -> {
+                
+                drainUntilLift()
+                onArmStateChanged(ArmState.None)
+                reveal.cancel()
+                return
+            }
+        }
+    }
+}
+
+
+private suspend fun AwaitPointerEventScope.raceHold(
+    holdMs: Long,
+    key: String,
+    keyAt: (Offset) -> String?,
+): HoldOutcome? = withTimeoutOrNull(holdMs) {
+    while (true) {
+        val ev = awaitPointerEvent()
+        val change = ev.changes.first()
+        if (!change.pressed) return@withTimeoutOrNull HoldOutcome.LiftedBeforeArm
+        if (keyAt(change.position) != key) {
+            return@withTimeoutOrNull HoldOutcome.MovedBeforeArm
+        }
+    }
+    @Suppress("UNREACHABLE_CODE") HoldOutcome.LiftedBeforeArm
+}
 
 
 private suspend fun AwaitPointerEventScope.drainUntilLift() {
