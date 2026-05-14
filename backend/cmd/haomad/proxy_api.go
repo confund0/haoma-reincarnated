@@ -96,7 +96,13 @@ func (d *daemon) handleProxyFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hc, err := xport.NewTorHTTPClient(d.cfg.torSocks, "haomad-proxy:"+req.Token)
+	var hc *http.Client
+	if peerID, ok := d.peerIDByDest(req.PeerURL); ok {
+		hc, err = d.httpClientForPeer(peerID)
+	} else {
+
+		hc, err = xport.NewTorHTTPClient(d.cfg.torSocks, "haomad-proxy:"+req.Token)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

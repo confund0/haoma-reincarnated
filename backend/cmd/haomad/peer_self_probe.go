@@ -103,13 +103,19 @@ func (d *daemon) probePeerSelf(ctx context.Context, peerID, onion string, force 
 	if err != nil {
 		state.Err = err.Error()
 	} else {
-		resp, err := d.torHTTP.Do(req)
-		if err != nil {
-			state.Err = err.Error()
+
+		hc, herr := d.httpClientForPeer(peerID)
+		if herr != nil {
+			state.Err = herr.Error()
 		} else {
-			defer resp.Body.Close()
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<14))
-			state.Ok = true
+			resp, err := hc.Do(req)
+			if err != nil {
+				state.Err = err.Error()
+			} else {
+				defer resp.Body.Close()
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<14))
+				state.Ok = true
+			}
 		}
 	}
 	d.selfProbe.store(state)

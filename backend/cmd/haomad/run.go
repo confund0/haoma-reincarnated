@@ -345,12 +345,7 @@ func run(ctx context.Context, cfg config) error {
 	d.torPoller = health.New(cfg.torControl, cfg.secrets.TorPassword)
 	go d.torPoller.Run(ctx)
 
-	hc, err := xport.NewTorHTTPClient(cfg.torSocks, "haomad-outbound")
-	if err != nil {
-		return fmt.Errorf("tor SOCKS client: %w", err)
-	}
-	hc.Timeout = 60 * time.Second
-	xportClient := &xport.Client{HTTP: hc}
+	xportSender := &perPeerSender{d: d}
 
 	pairHTTP, err := xport.NewTorHTTPClient(cfg.torSocks, "haomad-pair")
 	if err != nil {
@@ -381,7 +376,7 @@ func run(ctx context.Context, cfg config) error {
 
 	outboxStore := outbox.NewStore(s)
 	outboxBus := &outbox.Bus{}
-	d.worker = outbox.NewWorker(outboxStore, xportClient, ackVerifier, outboxBus)
+	d.worker = outbox.NewWorker(outboxStore, xportSender, ackVerifier, outboxBus)
 	d.worker.Gate = d.torPoller.Ready
 	d.worker.OnDialFailure = func(dest string) {
 		if onion := onionFromDest(dest); onion != "" {
@@ -411,7 +406,7 @@ func run(ctx context.Context, cfg config) error {
 	torTierDone := make(chan struct{})
 	go func() {
 		defer close(torTierDone)
-		bringUpTorTier(ctx, d, cfg, xportLn, xportClient, idsEngine, torReady, torCleanup)
+		bringUpTorTier(ctx, d, cfg, xportLn, idsEngine, torReady, torCleanup)
 	}()
 
 	defer func() {
@@ -532,7 +527,6 @@ func bringUpTorTier(
 	d *daemon,
 	cfg config,
 	xportLn net.Listener,
-	xportClient *xport.Client,
 	idsEngine *ids.IDS,
 	readyClose chan<- struct{},
 	cleanupOut chan<- func(),
@@ -541,7 +535,7 @@ func bringUpTorTier(
 		if ctx.Err() != nil {
 			return
 		}
-		cleanup, err := tryBringUpTorTier(ctx, d, cfg, xportLn, xportClient, idsEngine)
+		cleanup, err := tryBringUpTorTier(ctx, d, cfg, xportLn, idsEngine)
 		if err == nil {
 
 			select {
@@ -568,7 +562,6 @@ func tryBringUpTorTier(
 	d *daemon,
 	cfg config,
 	xportLn net.Listener,
-	xportClient *xport.Client,
 	idsEngine *ids.IDS,
 ) (cleanup func(), err error) {
 
@@ -684,7 +677,7 @@ func tryBringUpTorTier(
 		return p.KnownAddresses, nil
 	})
 	clientForPeer := files.HTTPClientForPeer(func(peerID string) (*http.Client, error) {
-		hc, err := xport.NewTorHTTPClient(cfg.torSocks, "haomad-file-fetch:"+peerID)
+		hc, err := d.httpClientForPeer(peerID)
 		if err != nil {
 			return nil, err
 		}

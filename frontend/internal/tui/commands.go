@@ -154,6 +154,8 @@ func (a *App) handleInput(_ tcell.Key) {
 		a.cmdCall()
 	case "/rotate-tor":
 		a.cmdRotateTor()
+	case "/new-circuit", "/renew-circuit":
+		a.cmdNewCircuit()
 	case "/answer":
 		a.cmdAnswer()
 	case "/decline", "/reject":
@@ -200,6 +202,7 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/decline, /reject[white]                    — decline the incoming call")
 	a.log("  [yellow]/hangup[white]                              — end the active call (works on offered, ringing, or accepted)")
 	a.log("  [yellow]/rotate-tor[white]                          — rotate this chat's onion address (refuses during a call or when one is in flight)")
+	a.log("  [yellow]/new-circuit, /renew-circuit[white]         — flush this chat's tor circuit; next outbound rebuilds (peer identity stays put)")
 	a.log("  [yellow]/status [available|away|busy][white]        — set your presence; broadcasts (status pane) or targets the chat peer (chat pane). No arg = reset to available.")
 	a.log("  [yellow]/nick [name][white]                          — set your self-nick (embedded in outgoing invites). No arg = show current.")
 	a.log("  [yellow]/inspect <msg_id>[white]                     — dev: dump the event row for a msg_id")

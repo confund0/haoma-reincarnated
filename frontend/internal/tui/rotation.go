@@ -241,6 +241,47 @@ func (a *App) refreshAfterRotationChange() {
 	a.sysBar.SetText(a.sysBarText())
 }
 
+func (a *App) cmdNewCircuit() {
+	front, _ := a.pages.GetFrontPage()
+	if !strings.HasPrefix(front, "chat:") {
+		a.log("[red]/new-circuit[white] only works inside a chat window")
+		return
+	}
+	peerID := a.activeChat()
+	if peerID == "" {
+		a.log("[red]/new-circuit[white] no active chat page")
+		return
+	}
+	if a.peerRetiredAt(peerID) != 0 {
+		a.log("[red]peer retired[white] — can't request new circuit")
+		return
+	}
+	label := a.peerLabelFromID(peerID)
+	a.sendRequest(ipc.FrameNewCircuitForPeer, ipc.NewCircuitForPeerRequest{PeerID: peerID}, func(f ipc.Frame) {
+		if f.Type == ipc.FrameError {
+			a.renderError(f)
+			return
+		}
+		if f.Type != ipc.FrameNewCircuitClosed {
+			a.log("[red]/new-circuit[white] unexpected response: %s", f.Type)
+			return
+		}
+		var p ipc.NewCircuitClosedResponse
+		if err := json.Unmarshal(f.Payload, &p); err != nil {
+			a.log("[red]/new-circuit[white] decode: %v", err)
+			return
+		}
+		switch p.Closed {
+		case 0:
+			a.log("/new-circuit %s: no live circuit to close — next outbound builds one", label)
+		case 1:
+			a.log("/new-circuit %s: closed 1 circuit; next outbound rebuilds", label)
+		default:
+			a.log("/new-circuit %s: closed %d circuits; next outbound rebuilds", label, p.Closed)
+		}
+	})
+}
+
 func shortRotationID(id string) string {
 	if len(id) <= 12 {
 		return id
