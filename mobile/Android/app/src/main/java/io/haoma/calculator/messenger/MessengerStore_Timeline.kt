@@ -67,6 +67,11 @@ fun MessengerStore.sendText(chatId: String, text: String) {
     val trimmed = text.trim()
     if (chatId.isEmpty() || trimmed.isEmpty()) return
     val peerId = peerIdOrWarn(chatId, "send") ?: return
+    val replyMsgId = replyTargets.value[chatId]?.msgId.orEmpty()
+    
+    
+    clearDraft(chatId)
+    clearReplyTarget(chatId)
     scope.launch {
         val c = ipc ?: run {
             appendStatus("send: ipc not connected", level = StatusLevel.WARN)
@@ -75,7 +80,7 @@ fun MessengerStore.sendText(chatId: String, text: String) {
         try {
             val reply = c.request(
                 type = FrameType.SendText,
-                payload = SendTextRequest(peerId, trimmed).toJson(),
+                payload = SendTextRequest(peerId, trimmed, replyMsgId).toJson(),
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)

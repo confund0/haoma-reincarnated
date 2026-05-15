@@ -353,6 +353,20 @@ func (m *Manager) WipeOpenTransient() error {
 	return nil
 }
 
+func (m *Manager) WipeOpenTransientFor(msgID string) error {
+	if msgID == "" {
+		return nil
+	}
+	p, err := m.OpenPath(msgID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("files: wipe open transient %s: %w", msgID, err)
+	}
+	return nil
+}
+
 func (m *Manager) DeleteStaging(msgID string) error {
 	dst, err := m.StagingPath(msgID)
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 const testMsgID = "0123456789abcdef0123456789abcdef"
 
 func TestBuildText_RoundTrip(t *testing.T) {
-	w, err := msg.BuildText(7, 1742643890, testMsgID, "hello world", 0, "", "")
+	w, err := msg.BuildText(7, 1742643890, testMsgID, "hello world", 0, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestBuildText_RoundTrip(t *testing.T) {
 }
 
 func TestBuildText_CarriesExpireSeconds(t *testing.T) {
-	w, err := msg.BuildText(1, 1, testMsgID, "t", 60, "", "")
+	w, err := msg.BuildText(1, 1, testMsgID, "t", 60, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +58,44 @@ func TestBuildText_CarriesExpireSeconds(t *testing.T) {
 	got, _ := msg.Unmarshal(raw)
 	if got.ExpireSeconds != 60 {
 		t.Errorf("ExpireSeconds = %d, want 60", got.ExpireSeconds)
+	}
+}
+
+func TestBuildText_CarriesReplyTo(t *testing.T) {
+	rt := &msg.ReplyTo{MsgID: "abc123", Text: "the original message"}
+	w, err := msg.BuildText(1, 1, testMsgID, "reply!", 0, "", "", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	got, _ := msg.Unmarshal(raw)
+	body, err := got.Text()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.ReplyTo == nil {
+		t.Fatalf("ReplyTo nil after round-trip; body=%+v", body)
+	}
+	if body.ReplyTo.MsgID != "abc123" || body.ReplyTo.Text != "the original message" {
+		t.Errorf("ReplyTo drift: %+v", body.ReplyTo)
+	}
+}
+
+func TestBuildText_RejectsReplyToMissingMsgID(t *testing.T) {
+	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", &msg.ReplyTo{MsgID: "", Text: "x"})
+	if !errors.Is(err, msg.ErrMissingField) {
+		t.Fatalf("err = %v, want ErrMissingField", err)
+	}
+}
+
+func TestBuildText_OmitsReplyToWhenNil(t *testing.T) {
+	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	if bytes.Contains(raw, []byte("reply_to")) {
+		t.Errorf("nil ReplyTo leaked reply_to key to wire: %s", raw)
 	}
 }
 
@@ -77,21 +115,21 @@ func TestNewID_Length(t *testing.T) {
 }
 
 func TestBuildText_RejectsZeroSeq(t *testing.T) {
-	_, err := msg.BuildText(0, 1, testMsgID, "hi", 0, "", "")
+	_, err := msg.BuildText(0, 1, testMsgID, "hi", 0, "", "", nil)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildText_RejectsZeroTs(t *testing.T) {
-	_, err := msg.BuildText(1, 0, testMsgID, "hi", 0, "", "")
+	_, err := msg.BuildText(1, 0, testMsgID, "hi", 0, "", "", nil)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildText_RejectsEmptyMsgID(t *testing.T) {
-	_, err := msg.BuildText(1, 1, "", "hi", 0, "", "")
+	_, err := msg.BuildText(1, 1, "", "hi", 0, "", "", nil)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
@@ -460,7 +498,7 @@ func TestRead_RejectsEmptyTargets(t *testing.T) {
 
 func TestBuildText_CarriesPresenceState(t *testing.T) {
 	for _, state := range []string{msg.PresenceAvailable, msg.PresenceAway, msg.PresenceBusy} {
-		w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, state, "")
+		w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, state, "", nil)
 		if err != nil {
 			t.Fatalf("state=%q: %v", state, err)
 		}
@@ -477,7 +515,7 @@ func TestBuildText_CarriesPresenceState(t *testing.T) {
 }
 
 func TestBuildText_EmptyPresenceState_OmitsField(t *testing.T) {
-	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "")
+	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +531,7 @@ func TestBuildText_EmptyPresenceState_OmitsField(t *testing.T) {
 }
 
 func TestBuildText_RejectsUnknownPresenceState(t *testing.T) {
-	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "lurking", "")
+	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "lurking", "", nil)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}

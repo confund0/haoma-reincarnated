@@ -59,6 +59,10 @@ fun ChatDetailScreen(
     val presenceMap by store.presence.collectAsStateWithLifecycle()
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val recordAudio by store.recordAudioGranted.collectAsStateWithLifecycle()
+    val drafts by store.drafts.collectAsStateWithLifecycle()
+    val composeDraft = drafts[chatId] ?: ""
+    val replyTargets by store.replyTargets.collectAsStateWithLifecycle()
+    val replyTarget = replyTargets[chatId]
     val chat = chats.firstOrNull { it.chatId == chatId }
     val presence = chat?.peerId?.let { presenceMap[it] }
     
@@ -76,9 +80,10 @@ fun ChatDetailScreen(
     var infoTarget by remember { mutableStateOf<TimelineEvent?>(null) }
     var filesPickerOpen by remember { mutableStateOf(false) }
     var fileActionTarget by remember { mutableStateOf<FileActionTarget?>(null) }
-    var imageOpenWarn by remember { mutableStateOf<OpenWarnState?>(null) }
-    var imageOpenWarnMime by remember { mutableStateOf("") }
     var imageSaveTarget by remember { mutableStateOf<TimelineEvent?>(null) }
+    
+    
+    var fullReplyTarget by remember { mutableStateOf<ReplyToSnapshot?>(null) }
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -115,7 +120,18 @@ fun ChatDetailScreen(
         store.setClientFocus(chatId, 0)
     }
     DisposableEffect(chatId) {
-        onDispose { store.setClientFocus("", 0) }
+        onDispose {
+            store.setClientFocus("", 0)
+            
+            
+            store.wipeAllOpenTransients()
+        }
+    }
+
+    
+    val viewerTarget by store.viewerTarget.collectAsStateWithLifecycle()
+    viewerTarget?.let { target ->
+        if (target.chatId == chatId) FullScreenImageViewer(store, target)
     }
 
     Column(
@@ -153,20 +169,12 @@ fun ChatDetailScreen(
                     onLongPress = { actionTarget = it },
                     onTapReaction = { ev, emoji -> store.toggleReaction(chatId, ev.msgId, emoji) },
                     onTapImage = { ev ->
-                        scope.launch {
-                            val res = store.openFile(chatId, ev.msgId) ?: return@launch
-                            val mime = FileEventBody.fromJson(ev.body).mime
-                            if (!res.matches) {
-                                imageOpenWarnMime = mime
-                                imageOpenWarn = OpenWarnState(
-                                    path = res.path,
-                                    sniffedMime = res.sniffedMime,
-                                )
-                            } else {
-                                launchView(context, res.path, mime)
-                            }
-                        }
+                        
+                        
+                        val name = FileEventBody.fromJson(ev.body).name
+                        store.openImageViewer(chatId, ev.msgId, name)
                     },
+                    onTapReplyChip = { snapshot -> fullReplyTarget = snapshot },
                     onScrolledToBottom = {
                         
                         
@@ -177,6 +185,8 @@ fun ChatDetailScreen(
             }
         }
         ChatInput(
+            composeDraft = composeDraft,
+            onComposeChange = { text -> store.setDraft(chatId, text) },
             onSend = { text -> store.sendText(chatId, text) },
             editingTarget = editingTarget,
             onSubmitEdit = { target, text ->
@@ -184,6 +194,8 @@ fun ChatDetailScreen(
                 editingTarget = null
             },
             onCancelEdit = { editingTarget = null },
+            replyTarget = replyTarget,
+            onCancelReply = { store.clearReplyTarget(chatId) },
             
             
             onAttach = { attachLauncher.launch(arrayOf("*/*")) },
@@ -198,7 +210,16 @@ fun ChatDetailScreen(
                 reactPickerTarget = target
                 actionTarget = null
             },
+            onReply = {
+                
+                
+                editingTarget = null
+                store.setReplyTarget(chatId, target)
+                actionTarget = null
+            },
             onEdit = {
+                
+                store.clearReplyTarget(chatId)
                 editingTarget = target
                 actionTarget = null
             },
@@ -232,17 +253,6 @@ fun ChatDetailScreen(
                 }
                 actionTarget = null
             },
-        )
-    }
-    imageOpenWarn?.let { state ->
-        OpenMimeWarnDialog(
-            claimedMime = imageOpenWarnMime,
-            sniffedMime = state.sniffedMime,
-            onConfirm = {
-                launchView(context, state.path, imageOpenWarnMime)
-                imageOpenWarn = null
-            },
-            onDismiss = { imageOpenWarn = null },
         )
     }
     reactPickerTarget?.let { target ->
@@ -286,6 +296,9 @@ fun ChatDetailScreen(
             store = store,
             onDismiss = { fileActionTarget = null },
         )
+    }
+    fullReplyTarget?.let { snapshot ->
+        FullReplyOverlay(snapshot = snapshot, onDismiss = { fullReplyTarget = null })
     }
 }
 
@@ -338,6 +351,7 @@ private fun MessageList(
     onLongPress: (TimelineEvent) -> Unit,
     onTapReaction: (TimelineEvent, String) -> Unit,
     onTapImage: (TimelineEvent) -> Unit,
+    onTapReplyChip: (ReplyToSnapshot) -> Unit,
     onScrolledToBottom: () -> Unit,
 ) {
     val state = rememberLazyListState()
@@ -374,6 +388,7 @@ private fun MessageList(
                     onLongPress = onLongPress,
                     onTapReaction = onTapReaction,
                     onTapImage = onTapImage,
+                    onTapReplyChip = onTapReplyChip,
                 )
                 else -> SystemBreadcrumb(event = ev)
             }

@@ -1,0 +1,6 @@
+kotlin version: 2.0.21
+error message: The daemon has terminated unexpectedly on startup attempt #1 with error code: 0. The daemon process output:
+    1. Picked up JAVA_TOOL_OPTIONS: -XX:-FlightRecorder
+    2. OpenJDK 64-Bit Server VM warning: Option FlightRecorder was deprecated in version 13.0 and will likely be removed in a future release.
+    3. Kotlin compile daemon is ready
+

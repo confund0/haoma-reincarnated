@@ -53,10 +53,16 @@ type Wrapper struct {
 	Body          json.RawMessage `json:"body,omitempty"`
 }
 
+type ReplyTo struct {
+	MsgID string `json:"msg_id"`
+	Text  string `json:"text"`
+}
+
 type TextBody struct {
-	Text          string `json:"text"`
-	PresenceState string `json:"presence_state,omitempty"`
-	SenderNick    string `json:"sender_nick,omitempty"`
+	Text          string   `json:"text"`
+	PresenceState string   `json:"presence_state,omitempty"`
+	SenderNick    string   `json:"sender_nick,omitempty"`
+	ReplyTo       *ReplyTo `json:"reply_to,omitempty"`
 }
 
 type EditBody struct {
@@ -113,7 +119,7 @@ func NewID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-func BuildText(seq uint64, ts int64, msgID, text string, expireSeconds uint32, presenceState, senderNick string) (*Wrapper, error) {
+func BuildText(seq uint64, ts int64, msgID, text string, expireSeconds uint32, presenceState, senderNick string, replyTo *ReplyTo) (*Wrapper, error) {
 	if seq == 0 {
 		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
 	}
@@ -128,7 +134,10 @@ func BuildText(seq uint64, ts int64, msgID, text string, expireSeconds uint32, p
 	default:
 		return nil, fmt.Errorf("%w: presence_state must be empty|available|away|busy, got %q", ErrMissingField, presenceState)
 	}
-	body, err := json.Marshal(TextBody{Text: text, PresenceState: presenceState, SenderNick: senderNick})
+	if replyTo != nil && replyTo.MsgID == "" {
+		return nil, fmt.Errorf("%w: reply_to msg_id required", ErrMissingField)
+	}
+	body, err := json.Marshal(TextBody{Text: text, PresenceState: presenceState, SenderNick: senderNick, ReplyTo: replyTo})
 	if err != nil {
 		return nil, fmt.Errorf("msg: marshal text body: %w", err)
 	}

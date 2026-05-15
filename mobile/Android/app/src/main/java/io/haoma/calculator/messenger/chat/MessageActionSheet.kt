@@ -24,6 +24,7 @@ internal fun MessageActionSheet(
     target: TimelineEvent,
     onDismiss: () -> Unit,
     onReact: () -> Unit,
+    onReply: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onCopy: () -> Unit,
@@ -83,6 +84,7 @@ internal fun MessageActionSheet(
                 }
                 else -> {
                     ActionItem(label = "React", enabled = canReact(target), onClick = onReact)
+                    ActionItem(label = "Reply", enabled = canReply(target), onClick = onReply)
                     ActionItem(label = "Edit", enabled = canEdit(target), onClick = onEdit)
                     ActionItem(
                         label = "Delete",
@@ -105,6 +107,10 @@ private const val MUTATION_WINDOW_SEC = 86_400L
 private fun nowSec(): Long = System.currentTimeMillis() / 1000L
 
 private fun canReact(t: TimelineEvent): Boolean =
+    t.kind == EventKind.TEXT && !t.isTombstoned
+
+
+private fun canReply(t: TimelineEvent): Boolean =
     t.kind == EventKind.TEXT && !t.isTombstoned
 
 private fun canEdit(t: TimelineEvent): Boolean {

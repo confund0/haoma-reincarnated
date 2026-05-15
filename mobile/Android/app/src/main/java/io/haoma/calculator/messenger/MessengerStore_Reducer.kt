@@ -110,6 +110,8 @@ internal fun MessengerStore.dispatch(frame: Frame) {
             if (u.chatId.isNotEmpty()) {
                 _chats.update { list -> list.filterNot { it.chatId == u.chatId } }
                 _timelines.update { it - u.chatId }
+                _drafts.update { if (u.chatId in it) it - u.chatId else it }
+                _replyTargets.update { if (u.chatId in it) it - u.chatId else it }
                 forgetEnvelopesFor(u.chatId)
                 appendStatus("chat deleted: ${shortChat(u.chatId)} (${u.deletedCount} events)")
             }

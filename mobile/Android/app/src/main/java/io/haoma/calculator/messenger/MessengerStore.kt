@@ -107,8 +107,15 @@ class MessengerStore(
         internal set
 
     
-    internal val _imagePathByMsgId = MutableStateFlow<Map<String, String>>(emptyMap())
-    val imagePathByMsgId: StateFlow<Map<String, String>> = _imagePathByMsgId.asStateFlow()
+    internal val _imageBytesByMsgId = MutableStateFlow<Map<String, ByteArray>>(emptyMap())
+    val imageBytesByMsgId: StateFlow<Map<String, ByteArray>> = _imageBytesByMsgId.asStateFlow()
+
+    
+    internal val _openTransientMsgIds = MutableStateFlow<Set<String>>(emptySet())
+
+    
+    internal val _viewerTarget = MutableStateFlow<ViewerTarget?>(null)
+    val viewerTarget: StateFlow<ViewerTarget?> = _viewerTarget.asStateFlow()
 
     
     internal val _imageDimsByMsgId = MutableStateFlow<Map<String, Pair<Int, Int>>>(emptyMap())
@@ -116,6 +123,14 @@ class MessengerStore(
 
     
     internal val _timelines = MutableStateFlow<Map<String, TimelineCache>>(emptyMap())
+
+    
+    internal val _drafts = MutableStateFlow<Map<String, String>>(emptyMap())
+    val drafts: StateFlow<Map<String, String>> = _drafts.asStateFlow()
+
+    
+    internal val _replyTargets = MutableStateFlow<Map<String, TimelineEvent>>(emptyMap())
+    val replyTargets: StateFlow<Map<String, TimelineEvent>> = _replyTargets.asStateFlow()
 
     
     private val envelopeIndex = HashMap<String, String>()
@@ -210,6 +225,10 @@ class MessengerStore(
         _activeCalls.value = emptyMap()
         _mutedCalls.value = emptyMap()
         _callStreamState.value = emptyMap()
+        
+        
+        _drafts.value = emptyMap()
+        _replyTargets.value = emptyMap()
     }
 
     
@@ -326,6 +345,34 @@ class MessengerStore(
             val next = transform(current)
             if (next === current) map else map + (chatId to next)
         }
+    }
+
+    internal fun setDraft(chatId: String, text: String) {
+        if (chatId.isEmpty()) return
+        _drafts.update { map ->
+            if (text.isEmpty()) {
+                if (chatId in map) map - chatId else map
+            } else {
+                if (map[chatId] == text) map else map + (chatId to text)
+            }
+        }
+    }
+
+    internal fun clearDraft(chatId: String) {
+        if (chatId.isEmpty()) return
+        _drafts.update { if (chatId in it) it - chatId else it }
+    }
+
+    internal fun setReplyTarget(chatId: String, target: TimelineEvent) {
+        if (chatId.isEmpty()) return
+        _replyTargets.update { map ->
+            if (map[chatId]?.msgId == target.msgId) map else map + (chatId to target)
+        }
+    }
+
+    internal fun clearReplyTarget(chatId: String) {
+        if (chatId.isEmpty()) return
+        _replyTargets.update { if (chatId in it) it - chatId else it }
     }
 
     internal fun mapPeer(peerId: String, transform: (PeerEntry) -> PeerEntry) {
@@ -462,6 +509,13 @@ data class ExternalReach(val ok: Boolean, val lastTarget: String, val at: Long)
 
 
 data class SelfReach(val onion: String, val ok: Boolean, val at: Long)
+
+
+data class ViewerTarget(
+    val chatId: String,
+    val msgId: String,
+    val displayName: String,
+)
 
 enum class StatusLevel { INFO, WARN }
 

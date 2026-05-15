@@ -150,6 +150,12 @@ const (
 	FrameOpenFile      FrameType = "open_file"
 	FrameFileOpenReady FrameType = "file_open_ready"
 
+	FrameImageStream      FrameType = "image_stream"
+	FrameImageStreamReady FrameType = "image_stream_ready"
+
+	FrameWipeOpenTransient  FrameType = "wipe_open_transient"
+	FrameOpenTransientWiped FrameType = "open_transient_wiped"
+
 	FrameRetryFiles         FrameType = "retry_files"
 	FrameRetryFilesResponse FrameType = "retry_files_result"
 
@@ -232,7 +238,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 34
+const ProtocolVersion = 36
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -269,8 +275,9 @@ type InviteAcceptedResponse struct {
 }
 
 type SendTextRequest struct {
-	PeerID string `json:"peer_id"`
-	Text   string `json:"text"`
+	PeerID       string `json:"peer_id"`
+	Text         string `json:"text"`
+	ReplyToMsgID string `json:"reply_to_msg_id,omitempty"`
 }
 
 type SendTextResponse struct {
@@ -730,6 +737,23 @@ type OpenFileReadyResponse struct {
 	SniffedMIME string `json:"sniffed_mime"`
 	MIMEMatches bool   `json:"mime_matches"`
 }
+
+type ImageStreamRequest struct {
+	ChatID string `json:"chat_id"`
+	MsgID  string `json:"msg_id"`
+}
+
+type ImageStreamReadyResponse struct {
+	BytesB64    string `json:"bytes_b64"`
+	SniffedMIME string `json:"sniffed_mime"`
+	MIMEMatches bool   `json:"mime_matches"`
+}
+
+type WipeOpenTransientRequest struct {
+	MsgID string `json:"msg_id"`
+}
+
+type OpenTransientWipedResponse struct{}
 
 type SetTorPasswordRequest struct {
 	Password string `json:"password"`

@@ -2,6 +2,7 @@ package io.haoma.calculator.messenger.chat
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -9,13 +10,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,7 +50,6 @@ import io.haoma.calculator.messenger.FileState
 import io.haoma.calculator.messenger.Reaction
 import io.haoma.calculator.messenger.TimelineEvent
 import io.haoma.calculator.messenger.humanBytes
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -59,6 +63,7 @@ internal fun MessageBubble(
     onLongPress: (TimelineEvent) -> Unit = {},
     onTapReaction: (TimelineEvent, String) -> Unit = { _, _ -> },
     onTapImage: (TimelineEvent) -> Unit = {},
+    onTapReplyChip: (ReplyToSnapshot) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val outbound = event.isOutbound
@@ -102,6 +107,11 @@ internal fun MessageBubble(
                 .padding(BubblePadding),
         ) {
             Column {
+                val replyChip = event.replyToOrNull()
+                if (replyChip != null) {
+                    ReplyQuoteChip(snapshot = replyChip, onTap = { onTapReplyChip(replyChip) })
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
                 MessageBody(event = event, textColor = textColor)
                 MessageFooter(event = event)
             }
@@ -117,6 +127,37 @@ internal fun MessageBubble(
                     .offset(y = ReactionOverlap),
             )
         }
+    }
+}
+
+
+@Composable
+private fun ReplyQuoteChip(snapshot: ReplyToSnapshot, onTap: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 28.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(ChatPalette.TextFaint)
+            .clickable(onClick = onTap),
+    ) {
+        
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .heightIn(min = 28.dp)
+                .background(ChatPalette.Accent),
+        )
+        Text(
+            text = snapshot.text.ifEmpty { "(empty)" },
+            color = ChatPalette.TextDim,
+            fontSize = 12.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .fillMaxWidth(),
+        )
     }
 }
 
@@ -163,17 +204,16 @@ private fun ImageBody(event: TimelineEvent, body: FileEventBody) {
     val context = LocalContext.current
     val app = context.applicationContext as HaomaApp
     val store = app.messengerStore
-    val pathMap by store.imagePathByMsgId.collectAsStateWithLifecycle()
-    val path = pathMap[event.msgId]
+    val bytesMap by store.imageBytesByMsgId.collectAsStateWithLifecycle()
+    val bytes = bytesMap[event.msgId]
 
     LaunchedEffect(event.msgId) {
-        if (path != null) return@LaunchedEffect
-        val res = store.openFile(event.chatId, event.msgId) ?: return@LaunchedEffect
-        store.recordImagePath(event.msgId, res.path)
+        if (bytes != null) return@LaunchedEffect
+        store.openImageBytes(event.chatId, event.msgId)
     }
 
     val displayName = body.name.ifEmpty { "(image)" }
-    if (path == null) {
+    if (bytes == null) {
         Box(
             modifier = Modifier.size(ImagePlaceholderSize),
             contentAlignment = Alignment.Center,
@@ -187,9 +227,11 @@ private fun ImageBody(event: TimelineEvent, body: FileEventBody) {
         return
     }
 
-    val request = remember(path) {
+    
+    val request = remember(event.msgId, bytes) {
         ImageRequest.Builder(context)
-            .data(File(path))
+            .data(bytes)
+            .memoryCacheKey("image-bubble-${event.msgId}")
             .crossfade(false)
             .build()
     }
@@ -210,7 +252,7 @@ private fun ImageBody(event: TimelineEvent, body: FileEventBody) {
         onError = {
             Logger.w(
                 "image-bubble",
-                "decode failed msg=${event.msgId} path=$path err=${it.result.throwable.message ?: "?"}",
+                "decode failed msg=${event.msgId} err=${it.result.throwable.message ?: "?"}",
             )
         },
     )

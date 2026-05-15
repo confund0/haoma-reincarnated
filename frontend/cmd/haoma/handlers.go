@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -212,6 +213,10 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleSaveFile(ctx, sess, f)
 	case ipc.FrameOpenFile:
 		sd.handleOpenFile(ctx, sess, f)
+	case ipc.FrameImageStream:
+		sd.handleImageStream(ctx, sess, f)
+	case ipc.FrameWipeOpenTransient:
+		sd.handleWipeOpenTransient(ctx, sess, f)
 	case ipc.FrameSetAlias:
 		sd.handleSetAlias(ctx, sess, f)
 	case ipc.FramePeerAction:
@@ -479,6 +484,43 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 		return
 	}
 
+	var replyToWire *msg.ReplyTo
+	var replyToEvent *events.ReplyToSnapshot
+	if req.ReplyToMsgID != "" {
+		if sd.d.events == nil {
+			sendError(sess, f.ID, "not_ready", "events log unavailable for reply lookup")
+			return
+		}
+		target, lookupErr := sd.d.events.GetByMsgID(req.ReplyToMsgID)
+		if lookupErr != nil {
+			if errors.Is(lookupErr, events.ErrEventNotFound) {
+				sendError(sess, f.ID, "unknown_target", "reply target message not found")
+				return
+			}
+			sendError(sess, f.ID, "lookup_failed", lookupErr.Error())
+			return
+		}
+		if target.ChatID != dc.ID {
+			sendError(sess, f.ID, "wrong_chat", "reply target belongs to a different chat")
+			return
+		}
+		if target.Kind != events.KindText {
+			sendError(sess, f.ID, "unsupported_kind", "can only reply to text messages")
+			return
+		}
+		if target.DeletedAt != 0 {
+			sendError(sess, f.ID, "reply_target_deleted", "reply target has been deleted")
+			return
+		}
+		var tb events.TextBody
+		if perr := json.Unmarshal(target.Body, &tb); perr != nil {
+			sendError(sess, f.ID, "lookup_failed", fmt.Sprintf("decode reply target body: %v", perr))
+			return
+		}
+		replyToWire = &msg.ReplyTo{MsgID: req.ReplyToMsgID, Text: tb.Text}
+		replyToEvent = &events.ReplyToSnapshot{MsgID: req.ReplyToMsgID, Text: tb.Text}
+	}
+
 	seq, err := sd.d.peerSeq.NextSendSeq(req.PeerID)
 	if err != nil {
 		sendError(sess, f.ID, "seq_failed", err.Error())
@@ -496,7 +538,7 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 	presenceState := sd.d.effectivePresenceState()
 
 	senderNick := sd.d.selfNick()
-	wrapper, err := msg.BuildText(seq, time.Now().Unix(), msgID, req.Text, expireSeconds, presenceState, senderNick)
+	wrapper, err := msg.BuildText(seq, time.Now().Unix(), msgID, req.Text, expireSeconds, presenceState, senderNick, replyToWire)
 	if err != nil {
 		sendError(sess, f.ID, "build_failed", err.Error())
 		return
@@ -524,7 +566,7 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 	}
 
 	if sd.d.events != nil {
-		body, marshalErr := json.Marshal(events.TextBody{Text: req.Text})
+		body, marshalErr := json.Marshal(events.TextBody{Text: req.Text, ReplyTo: replyToEvent})
 		if marshalErr != nil {
 			slog.Warn("send text: marshal body for timeline failed", slog.Any("err", marshalErr))
 		} else if _, persistErr := sd.d.events.AppendOutbound(events.OutboundParams{
@@ -1559,6 +1601,117 @@ func (sd *sessionDispatcher) handleOpenFile(ctx context.Context, sess *ipc.Sessi
 	}
 	if err := sess.Send(resp); err != nil {
 		slog.Warn("send file_open_ready frame failed", slog.Any("err", err))
+	}
+}
+
+func (sd *sessionDispatcher) handleImageStream(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
+	slog.Debug("handle image_stream")
+	_ = ctx
+	var req ipc.ImageStreamRequest
+	if len(f.Payload) > 0 {
+		if err := json.Unmarshal(f.Payload, &req); err != nil {
+			sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
+			return
+		}
+	}
+	if req.ChatID == "" {
+		sendError(sess, f.ID, "bad_request", "chat_id empty")
+		return
+	}
+	if req.MsgID == "" {
+		sendError(sess, f.ID, "bad_request", "msg_id empty")
+		return
+	}
+	if sd.d.files == nil {
+		sendError(sess, f.ID, "not_ready", "files manager not wired")
+		return
+	}
+
+	meta, err := sd.d.files.GetMeta(req.MsgID)
+	if err != nil {
+		if errors.Is(err, files.ErrMetaNotFound) {
+			sendError(sess, f.ID, "unknown_msg", "no file metadata for msg_id")
+			return
+		}
+		sendError(sess, f.ID, "storage_error", err.Error())
+		return
+	}
+	if string(meta.ChatID) != req.ChatID {
+		sendError(sess, f.ID, "wrong_chat", "msg_id belongs to a different chat")
+		return
+	}
+	if meta.State != files.StateReady {
+		sendError(sess, f.ID, "not_ready",
+			fmt.Sprintf("file state %q — only ready files can be streamed", meta.State))
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(meta.Mime), "image/") {
+		sendError(sess, f.ID, "not_an_image",
+			"image_stream only ships image MIMEs; use open_file for other types")
+		return
+	}
+
+	plaintext, err := sd.d.files.UnsealAtRest(chat.ChatID(req.ChatID), req.MsgID)
+	if err != nil {
+		sendError(sess, f.ID, "unseal_failed", err.Error())
+		return
+	}
+
+	sniffed, matches, err := files.SniffPlaintextMIME(plaintext, meta.Mime)
+	if err != nil {
+
+		slog.Warn("image_stream: SniffPlaintextMIME failed",
+			slog.String("chat_id", req.ChatID),
+			slog.String("msg_id", req.MsgID),
+			slog.Any("err", err))
+		sniffed, matches = "", true
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(plaintext)
+
+	for i := range plaintext {
+		plaintext[i] = 0
+	}
+
+	resp, err := ipc.NewFrame(ipc.FrameImageStreamReady, f.ID, ipc.ImageStreamReadyResponse{
+		BytesB64:    encoded,
+		SniffedMIME: sniffed,
+		MIMEMatches: matches,
+	})
+	if err != nil {
+		sendError(sess, f.ID, "encode_frame", err.Error())
+		return
+	}
+	if err := sess.Send(resp); err != nil {
+		slog.Warn("send image_stream_ready frame failed", slog.Any("err", err))
+	}
+}
+
+func (sd *sessionDispatcher) handleWipeOpenTransient(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
+	slog.Debug("handle wipe_open_transient")
+	_ = ctx
+	var req ipc.WipeOpenTransientRequest
+	if len(f.Payload) > 0 {
+		if err := json.Unmarshal(f.Payload, &req); err != nil {
+			sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
+			return
+		}
+	}
+	if sd.d.files == nil {
+		sendError(sess, f.ID, "not_ready", "files manager not wired")
+		return
+	}
+	if err := sd.d.files.WipeOpenTransientFor(req.MsgID); err != nil {
+		sendError(sess, f.ID, "wipe_failed", err.Error())
+		return
+	}
+	resp, err := ipc.NewFrame(ipc.FrameOpenTransientWiped, f.ID, ipc.OpenTransientWipedResponse{})
+	if err != nil {
+		sendError(sess, f.ID, "encode_frame", err.Error())
+		return
+	}
+	if err := sess.Send(resp); err != nil {
+		slog.Warn("send open_transient_wiped frame failed", slog.Any("err", err))
 	}
 }
 

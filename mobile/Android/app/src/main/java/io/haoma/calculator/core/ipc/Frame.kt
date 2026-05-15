@@ -172,4 +172,12 @@ object FrameType {
     const val OpenFile = "open_file"
     const val FileOpenReady = "file_open_ready"
     const val FileProgress = "msg.file-progress"
+
+    
+    const val ImageStream = "image_stream"
+    const val ImageStreamReady = "image_stream_ready"
+
+    
+    const val WipeOpenTransient = "wipe_open_transient"
+    const val OpenTransientWiped = "open_transient_wiped"
 }

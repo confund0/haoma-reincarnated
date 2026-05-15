@@ -22,7 +22,10 @@ func (m *Manager) ReSniffMIME(chatID chat.ChatID, msgID, declared string) (sniff
 		return "", false, err
 	}
 	defer zero(plaintext)
+	return SniffPlaintextMIME(plaintext, declared)
+}
 
+func SniffPlaintextMIME(plaintext []byte, declared string) (sniffed string, matchesDeclared bool, err error) {
 	head := plaintext
 	if len(head) > mimeSniffBytes {
 		head = head[:mimeSniffBytes]

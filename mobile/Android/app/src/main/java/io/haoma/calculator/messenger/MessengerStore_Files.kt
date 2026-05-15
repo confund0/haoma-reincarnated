@@ -1,6 +1,7 @@
 package io.haoma.calculator.messenger
 
 import android.net.Uri
+import android.util.Base64
 import io.haoma.calculator.core.ipc.FrameType
 import io.haoma.calculator.saf.SafBridge
 import kotlinx.coroutines.Dispatchers
@@ -139,6 +140,9 @@ suspend fun MessengerStore.openFile(chatId: String, msgId: String): OpenResult? 
             null
         } else {
             val resp = reply.payload?.let(OpenFileReadyResponse::fromJson) ?: return null
+            
+            
+            _openTransientMsgIds.update { it + msgId }
             OpenResult(
                 path = resp.fullPath,
                 sniffedMime = resp.sniffedMime,
@@ -152,9 +156,39 @@ suspend fun MessengerStore.openFile(chatId: String, msgId: String): OpenResult? 
 }
 
 
-fun MessengerStore.recordImagePath(msgId: String, path: String) {
-    if (msgId.isEmpty() || path.isEmpty()) return
-    _imagePathByMsgId.update { it + (msgId to path) }
+suspend fun MessengerStore.openImageBytes(chatId: String, msgId: String): ByteArray? {
+    if (chatId.isEmpty() || msgId.isEmpty()) return null
+    _imageBytesByMsgId.value[msgId]?.let { return it }
+    val c = ipc ?: run {
+        appendStatus("image: ipc not connected", level = StatusLevel.WARN)
+        return null
+    }
+    return try {
+        val reply = c.request(
+            type = FrameType.ImageStream,
+            payload = ImageStreamRequest(chatId, msgId).toJson(),
+        )
+        if (reply.type == FrameType.Error) {
+            val err = reply.payload?.let(ErrorPayload::fromJson)
+            appendStatus("image error: ${err?.message ?: "?"}", level = StatusLevel.WARN)
+            null
+        } else {
+            val resp = reply.payload?.let(ImageStreamReadyResponse::fromJson) ?: return null
+            val bytes = withContext(Dispatchers.Default) {
+                Base64.decode(resp.bytesB64, Base64.DEFAULT)
+            }
+            if (bytes.isEmpty()) {
+                appendStatus("image: empty payload", level = StatusLevel.WARN)
+                null
+            } else {
+                _imageBytesByMsgId.update { it + (msgId to bytes) }
+                bytes
+            }
+        }
+    } catch (t: Throwable) {
+        appendStatus("image failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+        null
+    }
 }
 
 
@@ -164,7 +198,44 @@ fun MessengerStore.recordImageDims(msgId: String, width: Int, height: Int) {
 }
 
 
+fun MessengerStore.openImageViewer(chatId: String, msgId: String, displayName: String) {
+    if (chatId.isEmpty() || msgId.isEmpty()) return
+    _viewerTarget.value = ViewerTarget(chatId, msgId, displayName)
+}
+
+
+fun MessengerStore.closeImageViewer() {
+    _viewerTarget.value = null
+}
+
+
+fun MessengerStore.wipeAllOpenTransients() {
+    val ids = _openTransientMsgIds.value
+    if (ids.isEmpty()) return
+    _openTransientMsgIds.value = emptySet()
+    val c = ipc ?: return
+    scope.launch {
+        for (id in ids) {
+            try {
+                c.request(
+                    type = FrameType.WipeOpenTransient,
+                    payload = WipeOpenTransientRequest(id).toJson(),
+                )
+            } catch (_: Throwable) {
+                
+                
+            }
+        }
+    }
+}
+
+
 internal fun MessengerStore.clearImageCaches() {
-    _imagePathByMsgId.value = emptyMap()
+    _imageBytesByMsgId.update { current ->
+        for (b in current.values) b.fill(0)
+        emptyMap()
+    }
     _imageDimsByMsgId.value = emptyMap()
+    _viewerTarget.value = null
+    wipeAllOpenTransients()
 }

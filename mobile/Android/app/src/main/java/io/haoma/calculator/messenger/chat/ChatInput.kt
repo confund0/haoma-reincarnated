@@ -41,29 +41,38 @@ import io.haoma.calculator.messenger.TimelineEvent
 
 @Composable
 internal fun ChatInput(
+    composeDraft: String,
+    onComposeChange: (String) -> Unit,
     onSend: (String) -> Unit,
     editingTarget: TimelineEvent? = null,
     onSubmitEdit: (TimelineEvent, String) -> Unit = { _, _ -> },
     onCancelEdit: () -> Unit = {},
+    replyTarget: TimelineEvent? = null,
+    onCancelReply: () -> Unit = {},
     onAttach: () -> Unit = {},
 ) {
-    var draft by remember { mutableStateOf("") }
-    val hasText = draft.isNotBlank()
+    
+    
+    var editBuffer by remember { mutableStateOf("") }
     val editing = editingTarget != null
+    val visible = if (editing) editBuffer else composeDraft
+    val hasText = visible.isNotBlank()
 
     
     LaunchedEffect(editingTarget?.msgId) {
-        draft = editingTarget?.bodyTextOrEmpty() ?: ""
+        editBuffer = editingTarget?.bodyTextOrEmpty() ?: ""
     }
 
     fun submit() {
         if (!hasText) return
         if (editingTarget != null) {
-            onSubmitEdit(editingTarget, draft)
+            onSubmitEdit(editingTarget, editBuffer)
+            editBuffer = ""
         } else {
-            onSend(draft)
+            
+            
+            onSend(visible)
         }
-        draft = ""
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -71,9 +80,16 @@ internal fun ChatInput(
             EditingBanner(
                 preview = editingTarget?.bodyTextOrEmpty().orEmpty(),
                 onCancel = {
-                    draft = ""
+                    editBuffer = ""
                     onCancelEdit()
                 },
+            )
+        } else if (replyTarget != null) {
+            
+            
+            ReplyComposingBanner(
+                preview = replyTarget.bodyTextOrEmpty(),
+                onCancel = onCancelReply,
             )
         }
         Row(
@@ -95,8 +111,10 @@ internal fun ChatInput(
                 ),
             ) {
                 BasicTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
+                    value = visible,
+                    onValueChange = {
+                        if (editing) editBuffer = it else onComposeChange(it)
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 8.dp),
@@ -107,7 +125,7 @@ internal fun ChatInput(
                         
                         
                         Box(modifier = Modifier.fillMaxWidth()) {
-                            if (draft.isEmpty()) {
+                            if (visible.isEmpty()) {
                                 BasicText(
                                     text = if (editing) "Edit message…" else "Type a message",
                                     style = TextStyle(
@@ -126,6 +144,35 @@ internal fun ChatInput(
                 editing = editing,
                 onSend = ::submit,
                 onAttach = onAttach,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReplyComposingBanner(preview: String, onCancel: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ChatPalette.Surface)
+            .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 0.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Reply: ${preview.take(40)}${if (preview.length > 40) "…" else ""}",
+            color = ChatPalette.Accent,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        IconButton(
+            onClick = onCancel,
+            modifier = Modifier.size(28.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Cancel reply",
+                tint = ChatPalette.TextDim,
             )
         }
     }

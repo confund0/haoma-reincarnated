@@ -129,8 +129,14 @@ func (e Event) Deletable(now int64) bool {
 	return true
 }
 
+type ReplyToSnapshot struct {
+	MsgID string `json:"msg_id"`
+	Text  string `json:"text"`
+}
+
 type TextBody struct {
-	Text string `json:"text"`
+	Text    string           `json:"text"`
+	ReplyTo *ReplyToSnapshot `json:"reply_to,omitempty"`
 }
 
 type Deletion struct {

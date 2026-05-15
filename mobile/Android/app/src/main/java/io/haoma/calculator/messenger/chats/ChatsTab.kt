@@ -44,6 +44,7 @@ fun ChatsTab(store: MessengerStore) {
     val chats by store.chats.collectAsStateWithLifecycle()
     val presence by store.presence.collectAsStateWithLifecycle()
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
+    val drafts by store.drafts.collectAsStateWithLifecycle()
     val nowSeconds = System.currentTimeMillis() / 1000L
     
     
@@ -68,6 +69,7 @@ fun ChatsTab(store: MessengerStore) {
                     presenceLabel = presence[chat.peerId].orEmpty(),
                     nowSeconds = nowSeconds,
                     inCall = chat.peerId.isNotEmpty() && chat.peerId in inCallPeers,
+                    hasDraft = chat.chatId in drafts,
                     onOpen = { store.openChatDetail(chat.chatId) },
                     onEdit = { store.openChatSettings(chat.chatId) },
                 )
@@ -103,6 +105,7 @@ private fun ChatRow(
     presenceLabel: String,
     nowSeconds: Long,
     inCall: Boolean,
+    hasDraft: Boolean,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
 ) {
@@ -159,6 +162,15 @@ private fun ChatRow(
                     fontSize = 15.sp,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                if (hasDraft) {
+                    
+                    
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "✏️",
+                        fontSize = 12.sp,
+                    )
+                }
                 if (chat.notificationsMuted) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(

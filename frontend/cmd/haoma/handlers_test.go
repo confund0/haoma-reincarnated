@@ -949,7 +949,7 @@ func makeInboundCiphertext(t *testing.T, d *daemon, fromPeerID, text string, seq
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrapper, err := msg.BuildText(seq, ts, testMsgID, text, 0, "", "")
+	wrapper, err := msg.BuildText(seq, ts, testMsgID, text, 0, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

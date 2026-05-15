@@ -613,6 +613,12 @@ data class TimelineEvent(
     fun bodyTextOrEmpty(): String =
         body?.optStringOrEmpty("text").orEmpty()
 
+    
+    fun replyToOrNull(): ReplyToSnapshot? =
+        if (kind == EventKind.TEXT && !isTombstoned)
+            ReplyToSnapshot.fromJson(body?.optJSONObject("reply_to"))
+        else null
+
     val isOutbound: Boolean get() = direction == EventDirection.OUT
     val isInbound: Boolean get() = direction == EventDirection.IN
     val isTombstoned: Boolean get() = deletedAt > 0L
@@ -728,10 +734,30 @@ data class TimelineEventDeletedPayload(
     }
 }
 
-data class SendTextRequest(val peerId: String, val text: String) {
+data class SendTextRequest(
+    val peerId: String,
+    val text: String,
+    val replyToMsgId: String = "",
+) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("peer_id", peerId)
         put("text", text)
+        if (replyToMsgId.isNotEmpty()) put("reply_to_msg_id", replyToMsgId)
+    }
+}
+
+
+data class ReplyToSnapshot(val msgId: String, val text: String) {
+    companion object {
+        fun fromJson(o: JSONObject?): ReplyToSnapshot? {
+            if (o == null) return null
+            val mid = o.optStringOrEmpty("msg_id")
+            if (mid.isEmpty()) return null
+            return ReplyToSnapshot(
+                msgId = mid,
+                text = o.optStringOrEmpty("text"),
+            )
+        }
     }
 }
 
@@ -1374,6 +1400,36 @@ data class OpenFileReadyResponse(
             sniffedMime = o.optStringOrEmpty("sniffed_mime"),
             mimeMatches = o.optBoolean("mime_matches", false),
         )
+    }
+}
+
+
+data class ImageStreamRequest(val chatId: String, val msgId: String) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("chat_id", chatId)
+        put("msg_id", msgId)
+    }
+}
+
+
+data class ImageStreamReadyResponse(
+    val bytesB64: String,
+    val sniffedMime: String,
+    val mimeMatches: Boolean,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ImageStreamReadyResponse = ImageStreamReadyResponse(
+            bytesB64 = o.optStringOrEmpty("bytes_b64"),
+            sniffedMime = o.optStringOrEmpty("sniffed_mime"),
+            mimeMatches = o.optBoolean("mime_matches", false),
+        )
+    }
+}
+
+
+data class WipeOpenTransientRequest(val msgId: String) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("msg_id", msgId)
     }
 }
 
