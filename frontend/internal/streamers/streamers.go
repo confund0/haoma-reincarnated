@@ -19,6 +19,8 @@ type Side string
 const (
 	SideMic Side = "mic"
 	SideSpk Side = "spk"
+	SideCam Side = "cam"
+	SideVid Side = "vid"
 )
 
 type Event struct {
@@ -28,6 +30,8 @@ type Event struct {
 	Bytes   uint64 `json:"bytes,omitempty"`
 	Muted   bool   `json:"muted,omitempty"`
 
+	RawUnix string `json:"raw_unix,omitempty"`
+
 	BytesIn       uint64  `json:"bytes_in,omitempty"`
 	BytesOut      uint64  `json:"bytes_out,omitempty"`
 	FramesIn      uint64  `json:"frames_in,omitempty"`
@@ -35,11 +39,16 @@ type Event struct {
 	FramesDropped uint64  `json:"frames_dropped,omitempty"`
 	JitterMs      float64 `json:"jitter_ms,omitempty"`
 	CpuPct        float64 `json:"cpu_pct,omitempty"`
+
+	LocalNs     int64 `json:"local_ns,omitempty"`
+	SenderPtsNs int64 `json:"sender_pts_ns,omitempty"`
 }
 
 type Stream struct {
 	Side   Side
 	CallID string
+
+	RawUnix string
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -62,12 +71,16 @@ type Session struct {
 	CallID string
 	Mic    *Stream
 	Spk    *Stream
+	Cam    *Stream
+	Vid    *Stream
 }
 
 type Manager struct {
 	logger      *slog.Logger
 	micPath     string
 	spkPath     string
+	camPath     string
+	vidPath     string
 	tracingFlag bool
 
 	mu       sync.Mutex
@@ -78,6 +91,8 @@ type Config struct {
 	Logger  *slog.Logger
 	MicPath string
 	SpkPath string
+	CamPath string
+	VidPath string
 	Trace   bool
 }
 
@@ -95,6 +110,8 @@ func New(cfg Config) (*Manager, error) {
 		logger:      cfg.Logger,
 		micPath:     cfg.MicPath,
 		spkPath:     cfg.SpkPath,
+		camPath:     cfg.CamPath,
+		vidPath:     cfg.VidPath,
 		tracingFlag: cfg.Trace,
 		sessions:    map[string]*Session{},
 	}, nil
@@ -102,6 +119,8 @@ func New(cfg Config) (*Manager, error) {
 
 func (m *Manager) MicPath() string { return m.micPath }
 func (m *Manager) SpkPath() string { return m.spkPath }
+func (m *Manager) CamPath() string { return m.camPath }
+func (m *Manager) VidPath() string { return m.vidPath }
 
 func (m *Manager) Sessions() []string {
 	m.mu.Lock()
@@ -131,12 +150,44 @@ func (m *Manager) Spk(callID string) *Stream {
 	return nil
 }
 
+func (m *Manager) Cam(callID string) *Stream {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess := m.sessions[callID]; sess != nil {
+		return sess.Cam
+	}
+	return nil
+}
+
+func (m *Manager) Vid(callID string) *Stream {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess := m.sessions[callID]; sess != nil {
+		return sess.Vid
+	}
+	return nil
+}
+
 func (m *Manager) SpawnMic(ctx context.Context, callID string, port int, key []byte, streamID string) (*Stream, error) {
 	return m.spawn(ctx, callID, SideMic, m.micPath, port, key, streamID)
 }
 
 func (m *Manager) SpawnSpk(ctx context.Context, callID string, port int, key []byte, streamID string) (*Stream, error) {
 	return m.spawn(ctx, callID, SideSpk, m.spkPath, port, key, streamID)
+}
+
+func (m *Manager) SpawnCam(ctx context.Context, callID string, port int, key []byte, streamID string) (*Stream, error) {
+	if m.camPath == "" {
+		return nil, errors.New("streamers: CamPath not configured (haoma-cam binary missing)")
+	}
+	return m.spawn(ctx, callID, SideCam, m.camPath, port, key, streamID)
+}
+
+func (m *Manager) SpawnVid(ctx context.Context, callID string, port int, key []byte, streamID string) (*Stream, error) {
+	if m.vidPath == "" {
+		return nil, errors.New("streamers: VidPath not configured (haoma-vid binary missing)")
+	}
+	return m.spawn(ctx, callID, SideVid, m.vidPath, port, key, streamID)
 }
 
 func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath string, port int, key []byte, streamID string) (*Stream, error) {
@@ -225,6 +276,10 @@ func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath s
 		sess.Mic = s
 	case SideSpk:
 		sess.Spk = s
+	case SideCam:
+		sess.Cam = s
+	case SideVid:
+		sess.Vid = s
 	}
 	m.mu.Unlock()
 
@@ -245,6 +300,12 @@ func (s *Stream) readEvents(stdout io.Reader) {
 			} else {
 				switch ev.Type {
 				case "ready":
+					if ev.RawUnix != "" {
+						s.RawUnix = ev.RawUnix
+					}
+					s.logger.Debug("streamer ready",
+						slog.String("raw_unix", ev.RawUnix),
+					)
 					s.readyOnce.Do(func() { close(s.readyCh) })
 				case "error":
 					s.readyOnce.Do(func() {
@@ -427,6 +488,16 @@ func (m *Manager) Teardown(callID string) error {
 	if sess.Spk != nil {
 		if err := sess.Spk.teardown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("spk: %w", err))
+		}
+	}
+	if sess.Cam != nil {
+		if err := sess.Cam.teardown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("cam: %w", err))
+		}
+	}
+	if sess.Vid != nil {
+		if err := sess.Vid.teardown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("vid: %w", err))
 		}
 	}
 	return errors.Join(errs...)

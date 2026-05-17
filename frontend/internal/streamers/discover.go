@@ -8,36 +8,46 @@ import (
 	"path/filepath"
 )
 
-func Discover(flagDir string) (mic, spk string, err error) {
-	micName := micBinaryName
-	spkName := spkBinaryName
+func Discover(flagDir string) (mic, spk, cam, vid string, err error) {
 	dirs := candidateDirs(flagDir)
 	for _, dir := range dirs {
 		if dir == "" {
 			continue
 		}
-		mic = pickIfExecutable(dir, micName)
-		spk = pickIfExecutable(dir, spkName)
-		if mic != "" && spk != "" {
-			return mic, spk, nil
+		if mic == "" {
+			mic = pickIfExecutable(dir, micBinaryName)
+		}
+		if spk == "" {
+			spk = pickIfExecutable(dir, spkBinaryName)
+		}
+		if cam == "" {
+			cam = pickIfExecutable(dir, camBinaryName)
+		}
+		if vid == "" {
+			vid = pickIfExecutable(dir, vidBinaryName)
+		}
+		if mic != "" && spk != "" && cam != "" && vid != "" {
+			return mic, spk, cam, vid, nil
 		}
 	}
 
-	if mic == "" {
-		if p, perr := exec.LookPath(micName); perr == nil {
-			mic = p
-		}
-	}
-	if spk == "" {
-		if p, perr := exec.LookPath(spkName); perr == nil {
-			spk = p
+	for name, dst := range map[string]*string{
+		micBinaryName: &mic,
+		spkBinaryName: &spk,
+		camBinaryName: &cam,
+		vidBinaryName: &vid,
+	} {
+		if *dst == "" {
+			if p, perr := exec.LookPath(name); perr == nil {
+				*dst = p
+			}
 		}
 	}
 	if mic == "" || spk == "" {
-		return "", "", fmt.Errorf("streamers: discover: mic=%q spk=%q (set --streamer-dir or $HAOMA_STREAMER_DIR)",
+		return "", "", "", "", fmt.Errorf("streamers: discover: mic=%q spk=%q (set --streamer-dir or $HAOMA_STREAMER_DIR)",
 			mic, spk)
 	}
-	return mic, spk, nil
+	return mic, spk, cam, vid, nil
 }
 
 func candidateDirs(flagDir string) []string {
@@ -71,4 +81,6 @@ var ErrNoBinary = errors.New("streamers: streamer binary not found")
 var (
 	micBinaryName = "haoma-mic"
 	spkBinaryName = "haoma-spk"
+	camBinaryName = "haoma-cam"
+	vidBinaryName = "haoma-vid"
 )

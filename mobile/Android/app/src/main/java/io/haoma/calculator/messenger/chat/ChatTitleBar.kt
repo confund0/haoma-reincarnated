@@ -1,13 +1,16 @@
 package io.haoma.calculator.messenger.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
@@ -30,9 +33,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.ChatEntry
 
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ChatTitleBar(
     chat: ChatEntry?,
@@ -41,8 +46,11 @@ internal fun ChatTitleBar(
     inCall: Boolean,
     otherChatInCall: Boolean,
     canCall: Boolean,
+    cameraGranted: Boolean,
     onBack: () -> Unit,
     onPlaceCall: () -> Unit,
+    onPlaceVideoCall: () -> Unit,
+    onRequestCamera: () -> Unit,
     onHangup: () -> Unit,
     onRotateTor: () -> Unit,
     onNewTorCircuit: () -> Unit,
@@ -54,7 +62,18 @@ internal fun ChatTitleBar(
     val effective = presence.orEmpty().ifEmpty { chat?.effective.orEmpty() }
     val muted = chat?.notificationsMuted == true
     var menuOpen by remember { mutableStateOf(false) }
+    var startCallModeOpen by remember { mutableStateOf(false) }
     val (presenceGlyph, presenceColor) = presenceGlyphFor(effective)
+
+    StartCallModeDialog(
+        open = startCallModeOpen,
+        chatId = chatId,
+        cameraGranted = cameraGranted,
+        onPlaceAudioCall = onPlaceCall,
+        onPlaceVideoCall = onPlaceVideoCall,
+        onRequestCamera = onRequestCamera,
+        onDismiss = { startCallModeOpen = false },
+    )
 
     Row(
         modifier = Modifier
@@ -99,13 +118,26 @@ internal fun ChatTitleBar(
             canCall -> ChatPalette.Accent
             else -> ChatPalette.TextFaint
         }
-        IconButton(
-            onClick = { if (inCall) onHangup() else if (canCall) onPlaceCall() },
-            enabled = inCall || canCall,
+        
+        
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .combinedClickable(
+                    enabled = inCall || canCall,
+                    onClick = { if (inCall) onHangup() else if (canCall) onPlaceCall() },
+                    onLongClick = {
+                        if (!inCall && canCall) {
+                            Logger.d("call", "long-press call affordance chat=${chatId.take(8)}")
+                            startCallModeOpen = true
+                        }
+                    },
+                ),
+            contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = Icons.Filled.Call,
-                contentDescription = if (inCall) "Hang up" else "Voice call",
+                contentDescription = if (inCall) "Hang up" else "Voice call (long-press for modes)",
                 tint = phoneTint,
             )
         }

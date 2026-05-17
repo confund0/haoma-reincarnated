@@ -931,6 +931,8 @@ func (a *App) routeFrame(f ipc.Frame) {
 	case ipc.FrameCallStreamEvent:
 		a.routeCallStreamEvent(f)
 
+	case ipc.FrameCallStreamRawTransport:
+
 	case ipc.FrameRotateRequested:
 		a.routeRotateRequested(f)
 

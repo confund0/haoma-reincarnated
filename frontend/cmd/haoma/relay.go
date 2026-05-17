@@ -729,6 +729,45 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		}
 		applyCallTransition(d, body.CallID, calls.StatusEnded, "", "call_end")
 
+	case msg.KindCallControl:
+
+		body, err := wrapper.CallControl()
+		if err != nil {
+			slog.Warn("inbound call_control: body parse failed",
+				slog.String("envelope_id", entry.Envelope.ID),
+				slog.String("peer_id", entry.PeerID),
+				slog.Any("err", err),
+			)
+			return
+		}
+		callState, lookupErr := d.calls.GetState(body.CallID)
+		if lookupErr != nil {
+			slog.Debug("inbound call_control: no call-state — dropping (post-hangup or unknown call)",
+				slog.String("call_id", body.CallID),
+				slog.String("peer_id", entry.PeerID),
+				slog.Any("err", lookupErr),
+			)
+			return
+		}
+		if callState.PeerID != entry.PeerID {
+			slog.Warn("inbound call_control: peer-id mismatch — dropping (possible spoof attempt)",
+				slog.String("call_id", body.CallID),
+				slog.String("call_peer_id", callState.PeerID),
+				slog.String("sender_peer_id", entry.PeerID),
+			)
+			return
+		}
+		slog.Debug("inbound call_control: broadcasting peer cam-off signal",
+			slog.String("call_id", body.CallID),
+			slog.String("peer_id", entry.PeerID),
+			slog.String("action", body.Action),
+		)
+		push(d.ipcSrv, ipc.FrameCallStreamEvent, "", ipc.CallStreamEventPayload{
+			CallID: body.CallID,
+			Side:   "cam",
+			Type:   body.Action,
+		})
+
 	case msg.KindRotateRequest:
 		dispatchRotateRequest(ctx, d, entry.PeerID, wrapper)
 

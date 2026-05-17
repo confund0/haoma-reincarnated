@@ -1,18 +1,19 @@
 # Call-streamer deps cross-compile recipe (Android)
 
-Builds the two native libraries the call streamers (`haoma-mic`,
-`haoma-spk`) link against — **libopus** (Opus audio codec) and
-**libsodium** (ChaCha20-Poly1305 AEAD) — as static archives for
-Android arm64-v8a.
+Builds the native libraries the call streamers (`haoma-mic`,
+`haoma-spk`, `haoma-cam`, `haoma-vid`) link against — **libopus**
+(Opus audio codec), **libsodium** (ChaCha20-Poly1305 AEAD), and
+**libvpx** (VP8 video codec; V-1 of M-CALLS-VIDEO) — as static
+archives for Android arm64-v8a.
 
 ## Output shape
 
 `prebuilt/<abi>/`:
 
-- `lib/libopus.a` + `lib/libsodium.a` — static archives the C++
-  streamers link against at compile-time.
-- `include/opus/*` + `include/sodium.h` + `include/sodium/*` —
-  matching headers.
+- `lib/libopus.a` + `lib/libsodium.a` + `lib/libvpx.a` — static
+  archives the C++ streamers link against at compile-time.
+- `include/opus/*` + `include/sodium.h` + `include/sodium/*` +
+  `include/vpx/*` — matching headers.
 
 These are **link-time only**. They are NOT runtime artifacts and do
 NOT go in `jniLibs/`. The C++ streamers consume them via CMake in
@@ -46,3 +47,19 @@ satisfies both recipes.
   inside the Debian chroot for native-glibc autotools + clang).
 - Inside chroot: `gcc make pkg-config build-essential autoconf
   automake libtool git python3`.
+
+## Linux host build deps (sibling concern — building `streams/` on the host)
+
+The Android cross-compile above stages the libs into `prebuilt/`. The
+host-side Linux build of the same streamers (used for dev + tests,
+output at `tmp/bins/`) instead pulls deps via system `pkg-config`.
+Install once per host:
+
+| Distro | Packages |
+|---|---|
+| Alpine | `apk add libopus-dev libsodium-dev libvpx-dev pipewire-dev pkgconf socat` |
+| Debian / Ubuntu | `apt install libopus-dev libsodium-dev libvpx-dev libpipewire-0.3-dev pkg-config socat` |
+
+`socat` is only needed if you want to drive `streams/smoke.sh` (audio
+loopback) or do a cam→vid loopback through a TCP bridge — both are
+manual smoke aids, not unit-test deps.

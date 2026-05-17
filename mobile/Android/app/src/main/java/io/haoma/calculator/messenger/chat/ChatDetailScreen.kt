@@ -59,6 +59,7 @@ fun ChatDetailScreen(
     val presenceMap by store.presence.collectAsStateWithLifecycle()
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val recordAudio by store.recordAudioGranted.collectAsStateWithLifecycle()
+    val cameraGranted by store.cameraGranted.collectAsStateWithLifecycle()
     val drafts by store.drafts.collectAsStateWithLifecycle()
     val composeDraft = drafts[chatId] ?: ""
     val replyTargets by store.replyTargets.collectAsStateWithLifecycle()
@@ -146,8 +147,17 @@ fun ChatDetailScreen(
             inCall = callHere != null,
             otherChatInCall = callElsewhere,
             canCall = recordAudio,
+            cameraGranted = cameraGranted,
             onBack = onBack,
             onPlaceCall = { store.startCall(chatId) },
+            onPlaceVideoCall = {
+                store.startCall(chatId, listOf(CallModality.Audio, CallModality.Video))
+            },
+            onRequestCamera = {
+                
+                
+                (context as? io.haoma.calculator.MainActivity)?.requestCameraIfNeeded()
+            },
             onHangup = { store.hangupCallInChat(chatId) },
             onRotateTor = { store.rotateTorForChat(chatId) },
             onNewTorCircuit = { store.newTorCircuitForChat(chatId) },

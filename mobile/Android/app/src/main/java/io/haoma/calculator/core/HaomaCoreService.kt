@@ -233,8 +233,18 @@ class HaomaCoreService : Service() {
             this,
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
+        val cameraGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        val videoCallActive =
+            (application as? HaomaApp)?.messengerStore?.videoCallActive?.value == true
         if (micGranted) {
-            return ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            var bitmap = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (cameraGranted && videoCallActive) {
+                bitmap = bitmap or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            return bitmap
         }
         val dozeExempt = (getSystemService(POWER_SERVICE) as? PowerManager)
             ?.isIgnoringBatteryOptimizations(packageName) == true
@@ -244,12 +254,15 @@ class HaomaCoreService : Service() {
         return ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
     }
 
-    private fun typeName(type: Int): String = when (type) {
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE -> "microphone"
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED -> "systemExempted"
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING -> "remoteMessaging"
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE -> "specialUse"
-        else -> "0x${type.toString(16)}"
+    private fun typeName(type: Int): String {
+        if (type == 0) return "none"
+        val parts = mutableListOf<String>()
+        if (type and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0) parts += "microphone"
+        if (type and ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA != 0) parts += "camera"
+        if (type and ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED != 0) parts += "systemExempted"
+        if (type and ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING != 0) parts += "remoteMessaging"
+        if (type and ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE != 0) parts += "specialUse"
+        return if (parts.isEmpty()) "0x${type.toString(16)}" else parts.joinToString("|")
     }
 
     private fun acquireWakeLock() {

@@ -161,6 +161,8 @@ object FrameType {
     const val CallControl = "call_control"      
     const val CallControlled = "call_controlled" 
     const val CallStreamEvent = "call.stream-event" 
+    const val CallStreamRawTransport = "call.stream-raw-transport" 
+    const val CallClockSample = "call.clock-sample"      
 
     
     const val SendFile = "send_file"

@@ -157,12 +157,12 @@ func TestUnmarshal_RejectsMissingFields(t *testing.T) {
 	cases := []struct {
 		name, body string
 	}{
-		{"seq=0", `{"v":2,"seq":0,"ts":1,"msg_id":"` + id + `","kind":"text","body":{"text":"x"}}`},
-		{"ts=0", `{"v":2,"seq":1,"ts":0,"msg_id":"` + id + `","kind":"text","body":{"text":"x"}}`},
-		{"ts negative", `{"v":2,"seq":1,"ts":-5,"msg_id":"` + id + `","kind":"text","body":{"text":"x"}}`},
-		{"empty kind", `{"v":2,"seq":1,"ts":1,"msg_id":"` + id + `","kind":"","body":{"text":"x"}}`},
-		{"empty msg_id", `{"v":2,"seq":1,"ts":1,"msg_id":"","kind":"text","body":{"text":"x"}}`},
-		{"missing msg_id", `{"v":2,"seq":1,"ts":1,"kind":"text","body":{"text":"x"}}`},
+		{"seq=0", `{"v":3,"seq":0,"ts":1,"msg_id":"` + id + `","kind":"text","body":{"text":"x"}}`},
+		{"ts=0", `{"v":3,"seq":1,"ts":0,"msg_id":"` + id + `","kind":"text","body":{"text":"x"}}`},
+		{"ts negative", `{"v":3,"seq":1,"ts":-5,"msg_id":"` + id + `","kind":"text","body":{"text":"x"}}`},
+		{"empty kind", `{"v":3,"seq":1,"ts":1,"msg_id":"` + id + `","kind":"","body":{"text":"x"}}`},
+		{"empty msg_id", `{"v":3,"seq":1,"ts":1,"msg_id":"","kind":"text","body":{"text":"x"}}`},
+		{"missing msg_id", `{"v":3,"seq":1,"ts":1,"kind":"text","body":{"text":"x"}}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -537,8 +537,8 @@ func TestBuildText_RejectsUnknownPresenceState(t *testing.T) {
 	}
 }
 
-func TestText_DecodesPreC3WrapperWithoutPresenceState(t *testing.T) {
-	raw := `{"v":2,"seq":1,"ts":1,"msg_id":"` + testMsgID + `","kind":"text","body":{"text":"x"}}`
+func TestText_DecodesWrapperWithoutPresenceState(t *testing.T) {
+	raw := `{"v":3,"seq":1,"ts":1,"msg_id":"` + testMsgID + `","kind":"text","body":{"text":"x"}}`
 	got, err := msg.Unmarshal([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -872,7 +872,7 @@ func TestBuildCallOffer_RejectsBadKeyLength(t *testing.T) {
 
 func TestCallOffer_RejectsBadKeyOnDecode(t *testing.T) {
 
-	raw := []byte(`{"v":2,"seq":1,"ts":1,"msg_id":"` + testMsgID + `","kind":"call_offer","body":{"call_id":"` + testCallID + `","modalities":["audio"],"outbound_key":"AQID"}}`)
+	raw := []byte(`{"v":3,"seq":1,"ts":1,"msg_id":"` + testMsgID + `","kind":"call_offer","body":{"call_id":"` + testCallID + `","modalities":["audio"],"outbound_key":"AQID"}}`)
 	w, err := msg.Unmarshal(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -948,6 +948,51 @@ func TestCallOffer_RejectsWrongKind(t *testing.T) {
 	w := &msg.Wrapper{V: msg.Version, Seq: 1, Ts: 1, MsgID: testMsgID, Kind: msg.KindText, Body: json.RawMessage(`{}`)}
 	if _, err := w.CallOffer(); err == nil || !strings.Contains(err.Error(), "not \"call_offer\"") {
 		t.Fatalf("err = %v, want kind-mismatch error", err)
+	}
+}
+
+func TestBuildCallControl_RoundTripBothActions(t *testing.T) {
+	for _, action := range []string{msg.CallControlActionVideoMute, msg.CallControlActionVideoUnmute} {
+		w, err := msg.BuildCallControl(5, 1, testMsgID, testCallID, action, 0)
+		if err != nil {
+			t.Fatalf("action %q: %v", action, err)
+		}
+		if w.Kind != msg.KindCallControl {
+			t.Errorf("kind = %q, want %q", w.Kind, msg.KindCallControl)
+		}
+		raw, _ := msg.Marshal(w)
+		got, _ := msg.Unmarshal(raw)
+		body, err := got.CallControl()
+		if err != nil {
+			t.Fatalf("action %q: decode: %v", action, err)
+		}
+		if body.CallID != testCallID {
+			t.Errorf("call_id = %q, want %q", body.CallID, testCallID)
+		}
+		if body.Action != action {
+			t.Errorf("action = %q, want %q", body.Action, action)
+		}
+	}
+}
+
+func TestBuildCallControl_RejectsUnknownAction(t *testing.T) {
+	_, err := msg.BuildCallControl(1, 1, testMsgID, testCallID, "mute_my_cat", 0)
+	if !errors.Is(err, msg.ErrMissingField) {
+		t.Errorf("unknown action err = %v, want ErrMissingField sentinel", err)
+	}
+}
+
+func TestCallControl_RejectsUnknownActionOnDecode(t *testing.T) {
+	w := &msg.Wrapper{
+		V:     msg.Version,
+		Seq:   1,
+		Ts:    1,
+		MsgID: testMsgID,
+		Kind:  msg.KindCallControl,
+		Body:  json.RawMessage(`{"call_id":"` + testCallID + `","action":"flip_the_table"}`),
+	}
+	if _, err := w.CallControl(); err == nil || !strings.Contains(err.Error(), "not in allow-list") {
+		t.Fatalf("err = %v, want allow-list rejection", err)
 	}
 }
 

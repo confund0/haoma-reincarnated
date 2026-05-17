@@ -87,6 +87,18 @@ func spawnSenderLeg(ctx context.Context, d *daemon, callID, modality, token stri
 	if streamID == "" {
 		return 0, fmt.Errorf("calls: unsupported modality %q", modality)
 	}
+	var (
+		side    streamers.Side
+		spawnFn func(context.Context, string, int, []byte, string) (*streamers.Stream, error)
+	)
+	switch modality {
+	case msg.ModalityAudio:
+		side, spawnFn = streamers.SideMic, d.streamers.SpawnMic
+	case msg.ModalityVideo:
+		side, spawnFn = streamers.SideCam, d.streamers.SpawnCam
+	default:
+		return 0, fmt.Errorf("calls: unsupported modality %q", modality)
+	}
 	subkey, err := streamers.DeriveStreamKey(outboundKey, streamID)
 	if err != nil {
 		return 0, fmt.Errorf("calls: derive sender subkey: %w", err)
@@ -95,18 +107,29 @@ func spawnSenderLeg(ctx context.Context, d *daemon, callID, modality, token stri
 	if err != nil {
 		return 0, err
 	}
+	slog.Debug("call sender leg port picked",
+		slog.String("call_id", callID),
+		slog.String("side", string(side)),
+		slog.Int("port", port),
+	)
 	spawnCtx, spawnCancel := context.WithTimeout(ctx, spawnReadyBudget)
 	defer spawnCancel()
-	stream, err := d.streamers.SpawnMic(spawnCtx, callID, port, subkey, streamID)
+	stream, err := spawnFn(spawnCtx, callID, port, subkey, streamID)
 	if err != nil {
-		return 0, fmt.Errorf("calls: spawn mic: %w", err)
+		return 0, fmt.Errorf("calls: spawn %s: %w", side, err)
 	}
 	readyCtx, readyCancel := context.WithTimeout(ctx, streamerReadyTimeout)
 	defer readyCancel()
 	if rerr := stream.WaitReady(readyCtx); rerr != nil {
 		_ = d.streamers.Teardown(callID)
-		return 0, fmt.Errorf("calls: mic ready: %w", rerr)
+		return 0, fmt.Errorf("calls: %s ready: %w", side, rerr)
 	}
+	slog.Debug("call sender leg streamer ready",
+		slog.String("call_id", callID),
+		slog.String("side", string(side)),
+		slog.String("raw_unix", stream.RawUnix),
+	)
+	pushRawTransportIfVideo(d, callID, side, stream.RawUnix)
 	if perr := d.backendClient.ProxyServe(ctx, backendapi.ProxyServeRequest{
 		Token:     token,
 		Modality:  modality,
@@ -115,10 +138,16 @@ func spawnSenderLeg(ctx context.Context, d *daemon, callID, modality, token stri
 		_ = d.streamers.Teardown(callID)
 		return 0, fmt.Errorf("calls: proxy serve: %w", perr)
 	}
-	pumpStreamEvents(d, callID, streamers.SideMic, stream)
+	slog.Debug("call sender leg proxy serve registered",
+		slog.String("call_id", callID),
+		slog.String("modality", modality),
+		slog.Int("port", port),
+	)
+	pumpStreamEvents(d, callID, side, stream)
 	slog.Info("call sender leg up",
 		slog.String("call_id", callID),
 		slog.String("modality", modality),
+		slog.String("side", string(side)),
 		slog.Int("port", port),
 	)
 	return port, nil
@@ -133,6 +162,18 @@ func spawnReceiverLeg(ctx context.Context, d *daemon, callID, peerID, modality, 
 	}
 	streamID := streamIDForModality(modality)
 	if streamID == "" {
+		return 0, fmt.Errorf("calls: unsupported modality %q", modality)
+	}
+	var (
+		side    streamers.Side
+		spawnFn func(context.Context, string, int, []byte, string) (*streamers.Stream, error)
+	)
+	switch modality {
+	case msg.ModalityAudio:
+		side, spawnFn = streamers.SideSpk, d.streamers.SpawnSpk
+	case msg.ModalityVideo:
+		side, spawnFn = streamers.SideVid, d.streamers.SpawnVid
+	default:
 		return 0, fmt.Errorf("calls: unsupported modality %q", modality)
 	}
 	if len(peerOutboundKey) != msg.CallOutboundKeyBytes {
@@ -153,18 +194,29 @@ func spawnReceiverLeg(ctx context.Context, d *daemon, callID, peerID, modality, 
 	if err != nil {
 		return 0, err
 	}
+	slog.Debug("call receiver leg port picked",
+		slog.String("call_id", callID),
+		slog.String("side", string(side)),
+		slog.Int("port", port),
+	)
 	spawnCtx, spawnCancel := context.WithTimeout(ctx, spawnReadyBudget)
 	defer spawnCancel()
-	stream, err := d.streamers.SpawnSpk(spawnCtx, callID, port, subkey, streamID)
+	stream, err := spawnFn(spawnCtx, callID, port, subkey, streamID)
 	if err != nil {
-		return 0, fmt.Errorf("calls: spawn spk: %w", err)
+		return 0, fmt.Errorf("calls: spawn %s: %w", side, err)
 	}
 	readyCtx, readyCancel := context.WithTimeout(ctx, streamerReadyTimeout)
 	defer readyCancel()
 	if rerr := stream.WaitReady(readyCtx); rerr != nil {
 		_ = d.streamers.Teardown(callID)
-		return 0, fmt.Errorf("calls: spk ready: %w", rerr)
+		return 0, fmt.Errorf("calls: %s ready: %w", side, rerr)
 	}
+	slog.Debug("call receiver leg streamer ready",
+		slog.String("call_id", callID),
+		slog.String("side", string(side)),
+		slog.String("raw_unix", stream.RawUnix),
+	)
+	pushRawTransportIfVideo(d, callID, side, stream.RawUnix)
 	if perr := d.backendClient.ProxyFetch(ctx, backendapi.ProxyFetchRequest{
 		Token:     peerToken,
 		Modality:  modality,
@@ -174,10 +226,17 @@ func spawnReceiverLeg(ctx context.Context, d *daemon, callID, peerID, modality, 
 		_ = d.streamers.Teardown(callID)
 		return 0, fmt.Errorf("calls: proxy fetch: %w", perr)
 	}
-	pumpStreamEvents(d, callID, streamers.SideSpk, stream)
+	slog.Debug("call receiver leg proxy fetch registered",
+		slog.String("call_id", callID),
+		slog.String("modality", modality),
+		slog.Int("port", port),
+		slog.String("peer_url", peerURL),
+	)
+	pumpStreamEvents(d, callID, side, stream)
 	slog.Info("call receiver leg up",
 		slog.String("call_id", callID),
 		slog.String("modality", modality),
+		slog.String("side", string(side)),
 		slog.String("peer_url", peerURL),
 		slog.Int("port", port),
 	)
@@ -190,6 +249,10 @@ func teardownCall(d *daemon, state calls.State) {
 			slog.Warn("teardown streamers failed",
 				slog.String("call_id", state.CallID),
 				slog.Any("err", err),
+			)
+		} else {
+			slog.Debug("teardown streamers ok",
+				slog.String("call_id", state.CallID),
 			)
 		}
 	}
@@ -208,6 +271,11 @@ func teardownCall(d *daemon, state calls.State) {
 				slog.String("modality", modality),
 				slog.Any("err", err),
 			)
+		} else {
+			slog.Debug("teardown ProxyCancel(local) ok",
+				slog.String("call_id", state.CallID),
+				slog.String("modality", modality),
+			)
 		}
 	}
 	for modality, tok := range state.RemoteTokens {
@@ -219,6 +287,11 @@ func teardownCall(d *daemon, state calls.State) {
 				slog.String("call_id", state.CallID),
 				slog.String("modality", modality),
 				slog.Any("err", err),
+			)
+		} else {
+			slog.Debug("teardown ProxyCancel(remote) ok",
+				slog.String("call_id", state.CallID),
+				slog.String("modality", modality),
 			)
 		}
 	}
@@ -250,6 +323,25 @@ func rememberLocalTokens(d *daemon, callID string, tokens map[string]string) {
 	}
 }
 
+func pushRawTransportIfVideo(d *daemon, callID string, side streamers.Side, rawUnix string) {
+	if d == nil || d.ipcSrv == nil {
+		return
+	}
+	if rawUnix == "" || (side != streamers.SideCam && side != streamers.SideVid) {
+		return
+	}
+	slog.Debug("call raw_transport emit",
+		slog.String("call_id", callID),
+		slog.String("side", string(side)),
+		slog.String("raw_unix", rawUnix),
+	)
+	push(d.ipcSrv, ipc.FrameCallStreamRawTransport, "", ipc.CallStreamRawTransportPayload{
+		CallID:  callID,
+		Side:    string(side),
+		RawUnix: rawUnix,
+	})
+}
+
 func pumpStreamEvents(d *daemon, callID string, side streamers.Side, stream *streamers.Stream) {
 	if d == nil || d.ipcSrv == nil || stream == nil {
 		return
@@ -259,6 +351,28 @@ func pumpStreamEvents(d *daemon, callID string, side streamers.Side, stream *str
 			if ev.Type == "" || ev.Type == "ready" {
 				continue
 			}
+			if ev.Type == "clock_sample" {
+
+				if side != streamers.SideSpk {
+					continue
+				}
+				slog.Debug("call clock_sample emit",
+					slog.String("call_id", callID),
+					slog.Int64("local_ns", ev.LocalNs),
+					slog.Int64("sender_pts_ns", ev.SenderPtsNs),
+				)
+				push(d.ipcSrv, ipc.FrameCallClockSample, "", ipc.CallStreamClockSamplePayload{
+					CallID:      callID,
+					LocalNs:     ev.LocalNs,
+					SenderPtsNs: ev.SenderPtsNs,
+				})
+				continue
+			}
+			slog.Debug("call stream event",
+				slog.String("call_id", callID),
+				slog.String("side", string(side)),
+				slog.String("type", ev.Type),
+			)
 			push(d.ipcSrv, ipc.FrameCallStreamEvent, "", ipc.CallStreamEventPayload{
 				CallID:        callID,
 				Side:          string(side),

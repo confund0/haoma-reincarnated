@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -28,6 +29,17 @@ public:
   virtual ~AudioPlayback() = default;
   virtual bool open(std::function<size_t(float* out, size_t n_samples)> on_need) = 0;
   virtual void close() = 0;
+
+  // Returns a calibrated mapping (frame_position_samples, monotonic_ns)
+  // describing "frame N was/will be rendered at the device at
+  // monotonic_ns". `frame_position` counts mono float samples since
+  // stream open. Used by spk to anchor the A/V sync clock.
+  //
+  // Returns false if the backend can't provide it (PipeWire) or hasn't
+  // warmed up (AAudio INVALID_STATE, ~first 50–200ms). Caller skips
+  // emitting clock_sample in that case.
+  virtual bool query_render_timestamp(int64_t* frame_position,
+                                      int64_t* monotonic_ns) = 0;
 };
 
 std::unique_ptr<AudioCapture>  make_capture();

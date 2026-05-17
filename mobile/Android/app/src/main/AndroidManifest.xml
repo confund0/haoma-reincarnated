@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <!--
         Conversations' "FGS-type cascade" trick: if the user has granted
         RECORD_AUDIO (eagerly at first unlock — see MainActivity) we run
@@ -16,6 +17,13 @@
         within seconds of screen-off" and "stays alive". The mic isn't
         actually opened until a real call starts — Android's permission
         model trusts mic-grant holders to maintain the FGS longer.
+
+        CAMERA is the same cascade applied to video calls: once the user
+        has granted CAMERA (lazily on first long-press → Video call) and
+        a live call carries a video modality, we OR camera into the type
+        bitmap. Without it the OS can blacklist the camera mid-call when
+        the activity backgrounds. The camera isn't opened until a video
+        call accepts — haoma-cam owns the capture (V-1.5).
 
         SYSTEM_EXEMPTED is the fallback when the user is on the doze
         allowlist (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS exemption).
@@ -26,6 +34,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <!--
         Required on API 31+ before AudioManager will hand us user-friendly
         Bluetooth device names from getAvailableCommunicationDevices() and
@@ -60,7 +69,7 @@
         <service
             android:name=".core.HaomaCoreService"
             android:exported="false"
-            android:foregroundServiceType="remoteMessaging|microphone|systemExempted|specialUse">
+            android:foregroundServiceType="remoteMessaging|microphone|camera|systemExempted|specialUse">
             <!--
                 Android 14 mandates a SPECIAL_USE subtype when the FGS
                 declares specialUse in its type bitmap. The value is a

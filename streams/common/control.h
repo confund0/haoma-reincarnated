@@ -66,6 +66,14 @@ struct Stats {
 // ready to push or pull frames.
 void emit_ready();
 
+// V-3b overload: same banner, plus a raw_unix field naming the AF_UNIX
+// abstract-namespace listener that cam/vid bind for the raw-I420 second
+// channel (cam: pre-encode capture; vid: post-decode peer frames). Audio
+// paths use the no-arg form. Go-side parses optional raw_unix off the
+// ready event and forwards it to the Kotlin renderer (which connects via
+// LocalSocket(ABSTRACT) on Android, native AF_UNIX on Linux).
+void emit_ready(const std::string& raw_unix);
+
 // Periodic stats event.  cpu_pct comes from CpuSampler::sample().
 void emit_stats(const Stats& s, double cpu_pct);
 
@@ -76,6 +84,13 @@ void emit_error(const std::string& reason);
 // Per-frame trace line, only when --trace is passed.  Encode/decode
 // hot path; keep field set minimal.
 void emit_trace_frame(uint64_t counter, uint32_t bytes, bool muted);
+
+// A/V sync anchor — spk emits one per ~100 ms once playback has warmed
+// up. local_ns is receiver CLOCK_MONOTONIC at the sample being rendered
+// right now; sender_pts_ns is that sample's sender-side pts. Renderer
+// uses (local_ns, sender_pts_ns) to slave video display to the audio
+// clock.
+void emit_clock_sample(int64_t local_ns, int64_t sender_pts_ns);
 
 // /proc/self/stat sampler.  Returns process CPU% over the interval
 // since the previous sample().  First call returns 0.  Returns 0 on

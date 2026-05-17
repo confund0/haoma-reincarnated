@@ -153,6 +153,11 @@ struct PWPlayback final : AudioPlayback {
 
   bool open(std::function<size_t(float*, size_t)> cb) override;
   void close() override;
+  bool query_render_timestamp(int64_t* /*fp*/, int64_t* /*mono_ns*/) override {
+    // No A/V sync on desktop (haoma-text has no video tile yet —
+    // wishlisted). Returning false makes spk skip clock_sample.
+    return false;
+  }
   ~PWPlayback() override { close(); }
 };
 

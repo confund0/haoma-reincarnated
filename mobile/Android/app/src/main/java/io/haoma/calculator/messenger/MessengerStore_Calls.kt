@@ -2,6 +2,7 @@ package io.haoma.calculator.messenger
 
 import io.haoma.calculator.core.ipc.FrameType
 import io.haoma.calculator.log.Logger
+import io.haoma.calculator.messenger.calls.video.VideoFrameStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
@@ -15,6 +16,12 @@ fun MessengerStore.updateRecordAudioGranted(granted: Boolean) {
 
 fun MessengerStore.updateBluetoothConnectGranted(granted: Boolean) {
     _bluetoothConnectGranted.value = granted
+}
+
+
+fun MessengerStore.updateCameraGranted(granted: Boolean) {
+    Logger.d("call", "updateCameraGranted=$granted")
+    _cameraGranted.value = granted
 }
 
 
@@ -118,11 +125,55 @@ fun MessengerStore.toggleMute(callId: String) {
 }
 
 
-fun MessengerStore.startCall(chatId: String) {
-    Logger.i("call", "startCall dispatch chat=${shortChat(chatId)} rec_audio=${recordAudioGranted.value}")
+fun MessengerStore.toggleVideoMute(callId: String) {
+    if (callId.isEmpty()) return
+    val nowMuted = _videoMutedCalls.value[callId] ?: false
+    val action = if (nowMuted) CallControlAction.VideoUnmute else CallControlAction.VideoMute
+    Logger.i("call", "toggleVideoMute dispatch call=${shortCallId(callId)} -> $action")
+    scope.launch {
+        val c = ipc ?: run {
+            appendStatus("video mute: ipc not connected", level = StatusLevel.WARN)
+            return@launch
+        }
+        try {
+            val reply = c.request(
+                type = FrameType.CallControl,
+                payload = CallControlRequest(callId, action).toJson(),
+            )
+            if (reply.type == FrameType.Error) {
+                val err = reply.payload?.let(ErrorPayload::fromJson)
+                appendStatus("video mute error: ${err?.message ?: "?"}", level = StatusLevel.WARN)
+                return@launch
+            }
+            val ok = reply.payload?.let(CallControlledResponse::fromJson)
+            val applied = ok?.action == action
+            if (applied) {
+                _videoMutedCalls.update { it + (callId to (action == CallControlAction.VideoMute)) }
+            }
+        } catch (t: Throwable) {
+            appendStatus("video mute failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+        }
+    }
+}
+
+
+fun MessengerStore.startCall(chatId: String, modalities: List<String> = listOf(CallModality.Audio)) {
+    val wantsVideo = CallModality.Video in modalities
+    Logger.i(
+        "call",
+        "startCall dispatch chat=${shortChat(chatId)} rec_audio=${recordAudioGranted.value} " +
+            "cam=${cameraGranted.value} modalities=$modalities",
+    )
     if (!recordAudioGranted.value) {
         appendStatus(
             "call: microphone permission not granted — grant RECORD_AUDIO in system Settings first",
+            level = StatusLevel.WARN,
+        )
+        return
+    }
+    if (wantsVideo && !cameraGranted.value) {
+        appendStatus(
+            "call: camera permission not granted — grant CAMERA in system Settings first",
             level = StatusLevel.WARN,
         )
         return
@@ -143,7 +194,7 @@ fun MessengerStore.startCall(chatId: String) {
         try {
             val reply = c.request(
                 type = FrameType.StartCall,
-                payload = StartCallRequest(chatId).toJson(),
+                payload = StartCallRequest(chatId, modalities).toJson(),
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)
@@ -261,11 +312,72 @@ internal fun MessengerStore.upsertActiveCall(call: CallEntry) {
         _activeCalls.update { it - call.callId }
         
         
+        closeVideoStreamsForCall(call.callId)
         _mutedCalls.update { it - call.callId }
         _callStreamState.update { it - call.callId }
+        _videoRawUnixNames.update { it - call.callId }
+        _callClockSamples.update { it - call.callId }
+        _videoMutedCalls.update { it - call.callId }
+        _peerVideoMutedCalls.update { it - call.callId }
+        
+        
+        if (CallModality.Video in call.modalities && _callWindowOpen.value) {
+            Logger.i(
+                "call",
+                "callwindow dismiss call=${shortCallId(call.callId)} reason=terminal",
+            )
+            _callWindowOpen.value = false
+        }
         return
     }
     _activeCalls.update { it + (call.callId to call) }
+}
+
+
+internal fun MessengerStore.ensureVideoStreams(callId: String) {
+    if (callId.isEmpty()) return
+    val names = _videoRawUnixNames.value[callId] ?: return
+    val cam = names["cam"]
+    val vid = names["vid"]
+    if (cam.isNullOrEmpty() || vid.isNullOrEmpty()) {
+        
+        return
+    }
+    val existing = _videoStreams.value[callId].orEmpty()
+    val updated = existing.toMutableMap()
+    for ((side, unixName) in listOf("cam" to cam, "vid" to vid)) {
+        if (updated.containsKey(side)) continue
+        Logger.d("call", "video_stream spawn call=${shortCallId(callId)} side=$side unix=$unixName")
+        val vs = VideoFrameStream(
+            callId = callId,
+            side = side,
+            unixName = unixName,
+            parentScope = scope,
+        )
+        vs.start()
+        updated[side] = vs
+    }
+    if (updated.size != existing.size) {
+        _videoStreams.update { prev -> prev + (callId to updated.toMap()) }
+        Logger.d("call", "ensureVideoStreams call=${shortCallId(callId)} sides=${updated.keys}")
+    }
+}
+
+
+internal fun MessengerStore.closeVideoStreamsForCall(callId: String) {
+    val streams = _videoStreams.value[callId] ?: return
+    streams.values.forEach { it.close() }
+    _videoStreams.update { it - callId }
+}
+
+
+internal fun MessengerStore.closeAllVideoStreams() {
+    val snapshot = _videoStreams.value
+    if (snapshot.isEmpty() && _videoRawUnixNames.value.isEmpty()) return
+    snapshot.values.forEach { sideMap -> sideMap.values.forEach { it.close() } }
+    _videoStreams.value = emptyMap()
+    _videoRawUnixNames.value = emptyMap()
+    Logger.d("call", "video_streams wiped count=${snapshot.size}")
 }
 
 

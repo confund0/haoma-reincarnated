@@ -165,9 +165,11 @@ const (
 	FrameCallResponded    FrameType = "call_responded"
 	FrameCallStateChanged FrameType = "call.state-changed"
 
-	FrameCallStreamEvent FrameType = "call.stream-event"
-	FrameCallControl     FrameType = "call_control"
-	FrameCallControlled  FrameType = "call_controlled"
+	FrameCallStreamEvent        FrameType = "call.stream-event"
+	FrameCallStreamRawTransport FrameType = "call.stream-raw-transport"
+	FrameCallClockSample        FrameType = "call.clock-sample"
+	FrameCallControl            FrameType = "call_control"
+	FrameCallControlled         FrameType = "call_controlled"
 
 	FrameNewCircuitForPeer FrameType = "new_circuit_for_peer"
 	FrameNewCircuitClosed  FrameType = "new_circuit_closed"
@@ -238,7 +240,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 36
+const ProtocolVersion = 39
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -857,6 +859,8 @@ const (
 
 type StartCallRequest struct {
 	ChatID string `json:"chat_id"`
+
+	Modalities []string `json:"modalities,omitempty"`
 }
 
 type CallStartedResponse struct {
@@ -893,8 +897,10 @@ type CallEntry struct {
 }
 
 const (
-	CallControlMute   = "mute"
-	CallControlUnmute = "unmute"
+	CallControlMute        = "mute"
+	CallControlUnmute      = "unmute"
+	CallControlVideoMute   = "video_mute"
+	CallControlVideoUnmute = "video_unmute"
 )
 
 type CallStreamEventPayload struct {
@@ -915,6 +921,18 @@ type CallStreamEventPayload struct {
 	Muted   bool   `json:"muted,omitempty"`
 
 	Reason string `json:"reason,omitempty"`
+}
+
+type CallStreamRawTransportPayload struct {
+	CallID  string `json:"call_id"`
+	Side    string `json:"side"`
+	RawUnix string `json:"raw_unix"`
+}
+
+type CallStreamClockSamplePayload struct {
+	CallID      string `json:"call_id"`
+	LocalNs     int64  `json:"local_ns"`
+	SenderPtsNs int64  `json:"sender_pts_ns"`
 }
 
 type CallControlRequest struct {

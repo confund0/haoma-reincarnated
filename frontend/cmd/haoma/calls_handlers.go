@@ -19,8 +19,32 @@ var callOfferTimeout = 30 * time.Second
 
 var callTimeoutShipBudget = 5 * time.Second
 
+func resolveStartCallModalities(req []string) ([]string, error) {
+	if len(req) == 0 {
+		return []string{msg.ModalityAudio}, nil
+	}
+	seen := make(map[string]struct{}, len(req))
+	out := make([]string, 0, len(req))
+	for _, m := range req {
+		switch m {
+		case msg.ModalityAudio, msg.ModalityVideo:
+			if _, dup := seen[m]; dup {
+				continue
+			}
+			seen[m] = struct{}{}
+			out = append(out, m)
+		default:
+			return nil, fmt.Errorf("unsupported modality %q (allowed: audio, video)", m)
+		}
+	}
+
+	if len(out) == 2 {
+		out[0], out[1] = msg.ModalityAudio, msg.ModalityVideo
+	}
+	return out, nil
+}
+
 func (sd *sessionDispatcher) handleStartCall(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
-	slog.Debug("handle start_call")
 	var req ipc.StartCallRequest
 	if err := json.Unmarshal(f.Payload, &req); err != nil {
 		sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
@@ -30,6 +54,10 @@ func (sd *sessionDispatcher) handleStartCall(ctx context.Context, sess *ipc.Sess
 		sendError(sess, f.ID, "bad_request", "chat_id empty")
 		return
 	}
+	slog.Debug("start_call request",
+		slog.String("chat_id", req.ChatID),
+		slog.Any("modalities_req", req.Modalities),
+	)
 	if sd.d.calls == nil || sd.d.cipher == nil || sd.d.peerSeq == nil || sd.d.backendClient == nil || sd.d.chats == nil {
 		sendError(sess, f.ID, "not_ready", "frontend wiring incomplete (calls / cipher / peer-seq / chats / backend client missing)")
 		return
@@ -62,7 +90,11 @@ func (sd *sessionDispatcher) handleStartCall(ctx context.Context, sess *ipc.Sess
 		return
 	}
 
-	modalities := []string{msg.ModalityAudio}
+	modalities, mErr := resolveStartCallModalities(req.Modalities)
+	if mErr != nil {
+		sendError(sess, f.ID, "bad_request", mErr.Error())
+		return
+	}
 	outboundKey, tokens, err := mintCallSecrets(modalities)
 	if err != nil {
 		sendError(sess, f.ID, "build_failed", err.Error())
@@ -342,7 +374,7 @@ func shipCallEnvelope(ctx context.Context, d *daemon, peerID, callID string, kin
 	return nil
 }
 
-func (sd *sessionDispatcher) handleCallControl(_ context.Context, sess *ipc.Session, f ipc.Frame) {
+func (sd *sessionDispatcher) handleCallControl(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
 	slog.Debug("handle call_control")
 	var req ipc.CallControlRequest
 	if err := json.Unmarshal(f.Payload, &req); err != nil {
@@ -353,30 +385,77 @@ func (sd *sessionDispatcher) handleCallControl(_ context.Context, sess *ipc.Sess
 		sendError(sess, f.ID, "bad_request", "call_id empty")
 		return
 	}
+	var side, streamerCmd string
 	switch req.Action {
-	case ipc.CallControlMute, ipc.CallControlUnmute:
-
+	case ipc.CallControlMute:
+		side, streamerCmd = "mic", "mute"
+	case ipc.CallControlUnmute:
+		side, streamerCmd = "mic", "unmute"
+	case ipc.CallControlVideoMute:
+		side, streamerCmd = "cam", "mute"
+	case ipc.CallControlVideoUnmute:
+		side, streamerCmd = "cam", "unmute"
 	default:
-		sendError(sess, f.ID, "bad_request", fmt.Sprintf("action %q must be mute|unmute", req.Action))
+		sendError(sess, f.ID, "bad_request", fmt.Sprintf("action %q must be mute|unmute|video_mute|video_unmute", req.Action))
 		return
 	}
 	if sd.d.streamers == nil {
 		sendError(sess, f.ID, "not_ready", "streamers manager not configured")
 		return
 	}
-	mic := sd.d.streamers.Mic(req.CallID)
-	if mic == nil {
-		sendError(sess, f.ID, "unknown_call", fmt.Sprintf("no mic streamer for call %s", req.CallID))
+	var stream interface {
+		SendCommand(map[string]any) error
+	}
+	switch side {
+	case "mic":
+		if s := sd.d.streamers.Mic(req.CallID); s != nil {
+			stream = s
+		}
+	case "cam":
+		if s := sd.d.streamers.Cam(req.CallID); s != nil {
+			stream = s
+		}
+	}
+	if stream == nil {
+		sendError(sess, f.ID, "unknown_call", fmt.Sprintf("no %s streamer for call %s", side, req.CallID))
 		return
 	}
-	if err := mic.SendCommand(map[string]any{"cmd": req.Action}); err != nil {
+	if err := stream.SendCommand(map[string]any{"cmd": streamerCmd}); err != nil {
 		sendError(sess, f.ID, "internal", err.Error())
 		return
 	}
 	slog.Info("call control dispatched",
 		slog.String("call_id", req.CallID),
+		slog.String("side", side),
 		slog.String("action", req.Action),
 	)
+
+	if side == "cam" {
+		state, lookupErr := sd.d.calls.GetState(req.CallID)
+		if lookupErr != nil || state.PeerID == "" {
+			slog.Warn("call control: no call-state for peer-signal ship",
+				slog.String("call_id", req.CallID),
+				slog.String("action", req.Action),
+				slog.Any("err", lookupErr),
+			)
+		} else {
+			if err := shipCallControl(ctx, sd.d, state.PeerID, req.CallID, req.Action); err != nil {
+				slog.Warn("call control: peer-signal ship failed (receiver falls back to heuristic)",
+					slog.String("call_id", req.CallID),
+					slog.String("peer_id", state.PeerID),
+					slog.String("action", req.Action),
+					slog.Any("err", err),
+				)
+			} else {
+				slog.Debug("call control: peer-signal shipped",
+					slog.String("call_id", req.CallID),
+					slog.String("peer_id", state.PeerID),
+					slog.String("action", req.Action),
+				)
+			}
+		}
+	}
+
 	resp, err := ipc.NewFrame(ipc.FrameCallControlled, f.ID, ipc.CallControlledResponse(req))
 	if err != nil {
 		sendError(sess, f.ID, "encode_frame", err.Error())
@@ -385,6 +464,37 @@ func (sd *sessionDispatcher) handleCallControl(_ context.Context, sess *ipc.Sess
 	if err := sess.Send(resp); err != nil {
 		slog.Warn("send call_controlled reply failed", slog.Any("err", err))
 	}
+}
+
+func shipCallControl(ctx context.Context, d *daemon, peerID, callID, action string) error {
+	seq, err := d.peerSeq.NextSendSeq(peerID)
+	if err != nil {
+		return fmt.Errorf("seq: %w", err)
+	}
+	msgID, err := msg.NewID()
+	if err != nil {
+		return fmt.Errorf("msg id: %w", err)
+	}
+	wrapper, err := msg.BuildCallControl(seq, time.Now().Unix(), msgID, callID, action, 0)
+	if err != nil {
+		return fmt.Errorf("build wrapper: %w", err)
+	}
+	plaintext, err := msg.Marshal(wrapper)
+	if err != nil {
+		return fmt.Errorf("marshal wrapper: %w", err)
+	}
+	blob, err := d.cipher.Encrypt(ctx, peerID, plaintext)
+	if err != nil {
+		return fmt.Errorf("encrypt: %w", err)
+	}
+	if _, err := d.backendClient.Send(ctx, backendapi.SendRequest{
+		PeerID:         peerID,
+		Payload:        blob,
+		PresenceSource: backendapi.PresenceSourceHaoma,
+	}); err != nil {
+		return fmt.Errorf("backend send: %w", err)
+	}
+	return nil
 }
 
 func scheduleCallOfferTimeout(d *daemon, callID, peerID string) {

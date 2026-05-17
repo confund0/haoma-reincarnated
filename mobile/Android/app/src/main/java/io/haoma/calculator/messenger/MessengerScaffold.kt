@@ -1,5 +1,7 @@
 package io.haoma.calculator.messenger
 
+import android.app.Activity
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
@@ -22,12 +24,15 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.messenger.calls.CallWindowHost
 import io.haoma.calculator.messenger.chat.ChatDetailScreen
 import io.haoma.calculator.messenger.chat.ChatSettingsScreen
 import io.haoma.calculator.messenger.chats.ChatsTab
@@ -57,6 +62,8 @@ fun MessengerScaffold(store: MessengerStore) {
             store.requestExternalProbeBurst()
         }
     }
+
+    KeepScreenOnDuringCalls(store = store)
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -95,6 +102,28 @@ fun MessengerScaffold(store: MessengerStore) {
             
             
             RingerDialogHost(store = store)
+            
+            
+            CallWindowHost(store = store)
+        }
+    }
+}
+
+
+@Composable
+private fun KeepScreenOnDuringCalls(store: MessengerStore) {
+    val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
+    val anyCall = activeCalls.isNotEmpty()
+    val view = LocalView.current
+    DisposableEffect(anyCall) {
+        val window = (view.context as? Activity)?.window
+        if (anyCall) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 }

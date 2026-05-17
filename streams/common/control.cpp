@@ -110,6 +110,11 @@ void emit_ready() {
   emit_line("{\"type\":\"ready\"}");
 }
 
+void emit_ready(const std::string& raw_unix) {
+  std::string s = "{\"type\":\"ready\",\"raw_unix\":\"" + esc(raw_unix) + "\"}";
+  emit_line(s.c_str());
+}
+
 void emit_stats(const Stats& s, double cpu_pct) {
   char buf[256];
   std::snprintf(buf, sizeof(buf),
@@ -143,6 +148,14 @@ void emit_trace_frame(uint64_t counter, uint32_t bytes, bool muted) {
   std::snprintf(buf, sizeof(buf),
     "{\"type\":\"trace\",\"counter\":%llu,\"bytes\":%u,\"muted\":%s}",
     (unsigned long long)counter, bytes, muted ? "true" : "false");
+  emit_line(buf);
+}
+
+void emit_clock_sample(int64_t local_ns, int64_t sender_pts_ns) {
+  char buf[128];
+  std::snprintf(buf, sizeof(buf),
+    "{\"type\":\"clock_sample\",\"local_ns\":%lld,\"sender_pts_ns\":%lld}",
+    (long long)local_ns, (long long)sender_pts_ns);
   emit_line(buf);
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ func main() {
 	ignoreExit := flag.Bool("ignore-exit", false, "")
 	emitError := flag.Bool("emit-error", false, "")
 	keyFile := flag.String("keyfile", "", "")
+	readyRawUnix := flag.String("ready-raw-unix", "", "")
 	port := flag.Int("port", 0, "")
 	streamID := flag.String("stream-id", "", "")
 	trace := flag.Bool("trace", false, "")
@@ -59,7 +61,15 @@ func main() {
 	}
 
 	if !*noReady && !*emitError {
-		fmt.Println("{\"type\":\"ready\"}")
+		rawUnix := *readyRawUnix
+		if env := os.Getenv("STREAMERS_TEST_RAW_UNIX"); env != "" {
+			rawUnix = env
+		}
+		if rawUnix != "" {
+			fmt.Printf("{\"type\":\"ready\",\"raw_unix\":\"%s\"}\n", rawUnix)
+		} else {
+			fmt.Println("{\"type\":\"ready\"}")
+		}
 		os.Stdout.Sync()
 	}
 	if *emitError {
@@ -186,6 +196,200 @@ func TestSpawn_KeyfileDump(t *testing.T) {
 	}
 }
 
+func TestSpawn_ReadyRawUnixPropagates(t *testing.T) {
+	stub := buildStub(t)
+	t.Setenv("STREAMERS_TEST_RAW_UNIX", "haoma-test-mic-9999")
+
+	mgr, err := streamers.New(streamers.Config{
+		Logger:  discardLogger(),
+		MicPath: stub,
+		SpkPath: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stream, err := mgr.SpawnMic(ctx, "callRP", 33333, bytes.Repeat([]byte{2}, 32), "cam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if stream.RawUnix != "haoma-test-mic-9999" {
+		t.Errorf("Stream.RawUnix = %q, want %q", stream.RawUnix, "haoma-test-mic-9999")
+	}
+	if err := mgr.Teardown("callRP"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+}
+
+func TestSpawn_NoRawUnix_StaysEmpty(t *testing.T) {
+	stub := buildStub(t)
+
+	mgr, err := streamers.New(streamers.Config{
+		Logger:  discardLogger(),
+		MicPath: stub,
+		SpkPath: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stream, err := mgr.SpawnMic(ctx, "callNR", 33334, bytes.Repeat([]byte{3}, 32), "mic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if stream.RawUnix != "" {
+		t.Errorf("Stream.RawUnix = %q, want empty for audio path", stream.RawUnix)
+	}
+	if err := mgr.Teardown("callNR"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+}
+
+func TestSpawnCam_RegistersSessionAndRawUnix(t *testing.T) {
+	stub := buildStub(t)
+	t.Setenv("STREAMERS_TEST_RAW_UNIX", "haoma-cam-test-61001")
+
+	mgr, err := streamers.New(streamers.Config{
+		Logger:  discardLogger(),
+		MicPath: stub,
+		SpkPath: stub,
+		CamPath: stub,
+		VidPath: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stream, err := mgr.SpawnCam(ctx, "callC", 41001, bytes.Repeat([]byte{4}, 32), "cam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if stream.Side != streamers.SideCam {
+		t.Errorf("Stream.Side = %q, want %q", stream.Side, streamers.SideCam)
+	}
+	if stream.RawUnix != "haoma-cam-test-61001" {
+		t.Errorf("Stream.RawUnix = %q, want %q", stream.RawUnix, "haoma-cam-test-61001")
+	}
+	if got := mgr.Cam("callC"); got != stream {
+		t.Errorf("mgr.Cam(callC) returned %v, want %v", got, stream)
+	}
+	if got := mgr.Mic("callC"); got != nil {
+		t.Errorf("mgr.Mic(callC) should be nil, got %v", got)
+	}
+	if err := mgr.Teardown("callC"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+}
+
+func TestSpawnVid_RegistersSessionAndRawUnix(t *testing.T) {
+	stub := buildStub(t)
+	t.Setenv("STREAMERS_TEST_RAW_UNIX", "haoma-vid-test-61002")
+
+	mgr, err := streamers.New(streamers.Config{
+		Logger:  discardLogger(),
+		MicPath: stub,
+		SpkPath: stub,
+		CamPath: stub,
+		VidPath: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stream, err := mgr.SpawnVid(ctx, "callD", 41002, bytes.Repeat([]byte{5}, 32), "cam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if stream.Side != streamers.SideVid {
+		t.Errorf("Stream.Side = %q, want %q", stream.Side, streamers.SideVid)
+	}
+	if stream.RawUnix != "haoma-vid-test-61002" {
+		t.Errorf("Stream.RawUnix = %q, want %q", stream.RawUnix, "haoma-vid-test-61002")
+	}
+	if got := mgr.Vid("callD"); got != stream {
+		t.Errorf("mgr.Vid(callD) returned %v, want %v", got, stream)
+	}
+	if err := mgr.Teardown("callD"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+}
+
+func TestSpawnCam_RequiresCamPath(t *testing.T) {
+	stub := buildStub(t)
+	mgr, err := streamers.New(streamers.Config{
+		Logger:  discardLogger(),
+		MicPath: stub,
+		SpkPath: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err = mgr.SpawnCam(ctx, "callX", 41003, bytes.Repeat([]byte{6}, 32), "cam")
+	if err == nil {
+		t.Fatal("SpawnCam without CamPath should fail")
+	}
+	if !strings.Contains(err.Error(), "CamPath not configured") {
+		t.Errorf("SpawnCam err = %v, want substring %q", err, "CamPath not configured")
+	}
+}
+
+func TestSpawnVid_RequiresVidPath(t *testing.T) {
+	stub := buildStub(t)
+	mgr, err := streamers.New(streamers.Config{
+		Logger:  discardLogger(),
+		MicPath: stub,
+		SpkPath: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err = mgr.SpawnVid(ctx, "callY", 41004, bytes.Repeat([]byte{7}, 32), "cam")
+	if err == nil {
+		t.Fatal("SpawnVid without VidPath should fail")
+	}
+	if !strings.Contains(err.Error(), "VidPath not configured") {
+		t.Errorf("SpawnVid err = %v, want substring %q", err, "VidPath not configured")
+	}
+}
+
 func TestTeardown_GracefulExit(t *testing.T) {
 	stub := buildStub(t)
 	mgr, err := streamers.New(streamers.Config{
@@ -268,6 +472,59 @@ func TestTeardown_EscalatesPastIgnoreExit(t *testing.T) {
 	}
 }
 
+func TestTeardown_StopsCamAndVid(t *testing.T) {
+	stub := buildStub(t)
+
+	mgr, err := streamers.New(streamers.Config{
+		Logger:  discardLogger(),
+		MicPath: stub,
+		SpkPath: stub,
+		CamPath: stub,
+		VidPath: stub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := mgr.SpawnMic(ctx, "callQ", 51001, bytes.Repeat([]byte{1}, 32), "mic"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SpawnSpk(ctx, "callQ", 51002, bytes.Repeat([]byte{2}, 32), "mic"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SpawnCam(ctx, "callQ", 51003, bytes.Repeat([]byte{3}, 32), "cam"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.SpawnVid(ctx, "callQ", 51004, bytes.Repeat([]byte{4}, 32), "cam"); err != nil {
+		t.Fatal(err)
+	}
+
+	if mgr.Mic("callQ") == nil || mgr.Spk("callQ") == nil ||
+		mgr.Cam("callQ") == nil || mgr.Vid("callQ") == nil {
+		t.Fatal("one or more sides missing from session before teardown")
+	}
+
+	start := time.Now()
+	if err := mgr.Teardown("callQ"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+
+		t.Errorf("teardown took %v (want <3s with graceful exit)", elapsed)
+	}
+	if mgr.Mic("callQ") != nil || mgr.Spk("callQ") != nil ||
+		mgr.Cam("callQ") != nil || mgr.Vid("callQ") != nil {
+		t.Errorf("getters still resolve after Teardown")
+	}
+	if got := mgr.Sessions(); len(got) != 0 {
+		t.Errorf("sessions after Teardown: %v", got)
+	}
+}
+
 func TestSpawn_ErrorEvent_FailsWaitReady(t *testing.T) {
 	stub := buildStub(t)
 	wrapper := filepath.Join(t.TempDir(), "err.sh")
@@ -301,24 +558,49 @@ func TestDiscover_FromDir(t *testing.T) {
 	dir := t.TempDir()
 	mic := filepath.Join(dir, "haoma-mic")
 	spk := filepath.Join(dir, "haoma-spk")
+	cam := filepath.Join(dir, "haoma-cam")
+	vid := filepath.Join(dir, "haoma-vid")
+	for _, p := range []string{mic, spk, cam, vid} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gotMic, gotSpk, gotCam, gotVid, err := streamers.Discover(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMic != mic || gotSpk != spk || gotCam != cam || gotVid != vid {
+		t.Errorf("Discover = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
+			gotMic, gotSpk, gotCam, gotVid, mic, spk, cam, vid)
+	}
+}
+
+func TestDiscover_VideoOptional(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", "/nowhere")
+	mic := filepath.Join(dir, "haoma-mic")
+	spk := filepath.Join(dir, "haoma-spk")
 	for _, p := range []string{mic, spk} {
 		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	gotMic, gotSpk, err := streamers.Discover(dir)
+	gotMic, gotSpk, gotCam, gotVid, err := streamers.Discover(dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Discover with audio-only dir: %v", err)
 	}
 	if gotMic != mic || gotSpk != spk {
-		t.Errorf("Discover = (%q, %q), want (%q, %q)", gotMic, gotSpk, mic, spk)
+		t.Errorf("audio paths wrong: mic=%q spk=%q", gotMic, gotSpk)
+	}
+	if gotCam != "" || gotVid != "" {
+		t.Errorf("expected empty cam/vid when absent, got cam=%q vid=%q", gotCam, gotVid)
 	}
 }
 
 func TestDiscover_FailsWhenAbsent(t *testing.T) {
 	t.Setenv("HAOMA_STREAMER_DIR", t.TempDir())
 	t.Setenv("PATH", "/nowhere")
-	if _, _, err := streamers.Discover(""); err == nil {
+	if _, _, _, _, err := streamers.Discover(""); err == nil {
 		t.Errorf("Discover succeeded on empty env")
 	}
 }

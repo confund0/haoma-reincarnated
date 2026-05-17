@@ -1042,6 +1042,8 @@ object CallAction {
 object CallControlAction {
     const val Mute = "mute"
     const val Unmute = "unmute"
+    const val VideoMute = "video_mute"
+    const val VideoUnmute = "video_unmute"
 }
 
 data class CallControlRequest(val callId: String, val action: String) {
@@ -1096,7 +1098,46 @@ data class CallStreamSide(
 data class CallStreamState(
     val mic: CallStreamSide? = null,
     val spk: CallStreamSide? = null,
+    val cam: CallStreamSide? = null,
+    val vid: CallStreamSide? = null,
     val dropped: Long = 0L,
+)
+
+
+data class CallStreamRawTransportPayload(
+    val callId: String,
+    val side: String,    
+    val rawUnix: String, 
+) {
+    companion object {
+        fun fromJson(o: JSONObject): CallStreamRawTransportPayload = CallStreamRawTransportPayload(
+            callId = o.optStringOrEmpty("call_id"),
+            side = o.optStringOrEmpty("side"),
+            rawUnix = o.optStringOrEmpty("raw_unix"),
+        )
+    }
+}
+
+
+data class CallStreamClockSamplePayload(
+    val callId: String,
+    val localNs: Long,
+    val senderPtsNs: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): CallStreamClockSamplePayload = CallStreamClockSamplePayload(
+            callId = o.optStringOrEmpty("call_id"),
+            localNs = o.optLong("local_ns", 0L),
+            senderPtsNs = o.optLong("sender_pts_ns", 0L),
+        )
+    }
+}
+
+
+data class ClockSample(
+    val localNs: Long,
+    val senderPtsNs: Long,
+    val receivedAtElapsedNs: Long,
 )
 
 
@@ -1115,8 +1156,22 @@ object CallStatus {
     const val Failed = "failed"
 }
 
-data class StartCallRequest(val chatId: String) {
-    fun toJson(): JSONObject = JSONObject().apply { put("chat_id", chatId) }
+data class StartCallRequest(
+    val chatId: String,
+    val modalities: List<String> = emptyList(),
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("chat_id", chatId)
+        if (modalities.isNotEmpty()) {
+            put("modalities", org.json.JSONArray().apply { modalities.forEach { put(it) } })
+        }
+    }
+}
+
+
+object CallModality {
+    const val Audio = "audio"
+    const val Video = "video"
 }
 
 data class CallStartedResponse(val callId: String, val call: CallEntry) {

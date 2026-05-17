@@ -200,13 +200,24 @@ int main(int argc, char** argv) {
   bool               first_frame      = true;
   uint64_t           aead_fail_count  = 0;
 
+  // (sample_index_start, sender_pts_ns) ring — reader pushes one entry
+  // per decoded PCM chunk; clock emitter walks it to map AAudio's
+  // currently-rendering frame index back to a sender-side pts. Capped
+  // at ~4s of audio at 48 kHz / 960 samples per push = ~200 entries.
+  struct ClockEntry { int64_t sample_idx_start; int64_t sender_pts_ns; };
+  std::mutex                    clock_mu;
+  std::deque<ClockEntry>        clock_ring;
+  int64_t                       total_pushed_samples = 0;
+  constexpr size_t              kClockRingCap = 200;
+
   std::thread reader([&]() {
     std::vector<uint8_t> cipher(MAX_PAYLOAD_LEN);
     std::vector<uint8_t> plain(MAX_PAYLOAD_LEN);
     uint8_t tag[FRAME_TAG_LEN];
     while (!g_done.load()) {
       uint64_t counter = 0;
-      int64_t n = read_frame(cfd, &counter, cipher.data(), cipher.size(), tag);
+      uint64_t pts_ns  = 0;
+      int64_t n = read_frame(cfd, &counter, &pts_ns, cipher.data(), cipher.size(), tag);
       if (n == 0) { LOG_INFO("peer EOF"); g_done.store(true); break; }
       if (n <  0) { LOG_ERR("read_frame error"); g_done.store(true); break; }
 
@@ -214,7 +225,7 @@ int main(int argc, char** argv) {
       stats.bytes_in.fetch_add(FRAME_OVERHEAD + (uint64_t)n);
       jitter.on_frame_arrival(std::chrono::steady_clock::now());
 
-      if (!aead.open(counter, cipher.data(), (size_t)n, tag, plain.data())) {
+      if (!aead.open(counter, pts_ns, cipher.data(), (size_t)n, tag, plain.data())) {
         if (aead_fail_count == 0) {
           LOG_INFO("AEAD verify failed at counter %llu — wrong key or tampered frame; silently dropping",
                    (unsigned long long)counter);
@@ -264,6 +275,13 @@ int main(int argc, char** argv) {
         continue;
       }
       pcm.resize((size_t)decoded);
+      size_t pcm_n = pcm.size();
+      {
+        std::lock_guard<std::mutex> lk(clock_mu);
+        clock_ring.push_back({total_pushed_samples, (int64_t)pts_ns});
+        total_pushed_samples += (int64_t)pcm_n;
+        while (clock_ring.size() > kClockRingCap) clock_ring.pop_front();
+      }
       if (queue.push(std::move(pcm))) {
         stats.frames_dropped.fetch_add(1);  // queue overflow → oldest dropped
       }
@@ -312,6 +330,38 @@ int main(int argc, char** argv) {
   std::thread stats_th(stats_loop, std::ref(stats), &jitter,
                        std::ref(g_done), std::ref(trace), std::ref(stats_req));
 
+  // Clock-sample emitter (A/V sync anchor). Queries the AAudio
+  // render-timestamp every ~100 ms and maps it back to a sender pts via
+  // the (sample_idx, pts) ring. Skips silently while the ring is empty
+  // or the backend hasn't warmed up (PipeWire returns false; AAudio
+  // returns INVALID_STATE for the first ~50–200 ms).
+  AudioPlayback* pb_raw = pb.get();
+  std::thread clock_th([&]() {
+    while (!g_done.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      if (g_done.load()) break;
+      int64_t fp = 0, mono_ns = 0;
+      if (!pb_raw->query_render_timestamp(&fp, &mono_ns)) continue;
+      int64_t pts_at_fp = 0;
+      {
+        std::lock_guard<std::mutex> lk(clock_mu);
+        if (clock_ring.empty()) continue;
+        // Largest entry with sample_idx_start <= fp. Ring is ordered
+        // by sample_idx_start so the last entry with idx <= fp is the
+        // one whose pts is being rendered now.
+        const ClockEntry* match = nullptr;
+        for (auto it = clock_ring.rbegin(); it != clock_ring.rend(); ++it) {
+          if (it->sample_idx_start <= fp) { match = &(*it); break; }
+        }
+        if (!match) continue;  // fp is before any entry we tracked
+        int64_t offset_samples = fp - match->sample_idx_start;
+        int64_t offset_ns = offset_samples * (int64_t)1000000000 / SAMPLE_RATE;
+        pts_at_fp = match->sender_pts_ns + offset_ns;
+      }
+      emit_clock_sample(mono_ns, pts_at_fp);
+    }
+  });
+
   while (!g_done.load()) ::usleep(100000);
 
   pb->close();
@@ -322,6 +372,7 @@ int main(int argc, char** argv) {
 
   ctrl_th.join();
   stats_th.join();
+  clock_th.join();
 
   if (aead_fail_count > 0) {
     LOG_INFO("AEAD failures over the call: %llu", (unsigned long long)aead_fail_count);

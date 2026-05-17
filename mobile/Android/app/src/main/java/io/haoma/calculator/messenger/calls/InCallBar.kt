@@ -6,17 +6,24 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -29,6 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,6 +51,7 @@ import io.haoma.calculator.messenger.CallStreamState
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.toggleMute
 import kotlinx.coroutines.delay
+import java.util.Locale
 
 
 @Composable
@@ -54,6 +64,7 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
     val streamMap by store.callStreamState.collectAsStateWithLifecycle()
     val stream = streamMap[call.callId]
     var pickerOpen by remember { mutableStateOf(false) }
+    var statsOpen by remember { mutableStateOf(false) }
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000L) }
     LaunchedEffect(call.callId) {
@@ -117,7 +128,11 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
             )
             
             
-            StreamStatsChip(stream = stream, nowMs = now * 1000L)
+            StreamStatsChip(
+                stream = stream,
+                nowMs = now * 1000L,
+                onLongPress = { statsOpen = true },
+            )
             Spacer(modifier = Modifier.weight(1f))
             
             
@@ -169,6 +184,14 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
     if (pickerOpen) {
         CallAudioDialog(store = store, onDismiss = { pickerOpen = false })
     }
+    if (statsOpen) {
+        CallStatsSheet(
+            callId = call.callId,
+            stream = stream,
+            nowMs = now * 1000L,
+            onDismiss = { statsOpen = false },
+        )
+    }
 }
 
 internal fun glyphFor(route: AudioRoute?): String = when (route?.kind) {
@@ -181,17 +204,33 @@ internal fun glyphFor(route: AudioRoute?): String = when (route?.kind) {
 }
 
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun StreamStatsChip(stream: CallStreamState?, nowMs: Long) {
+private fun StreamStatsChip(
+    stream: CallStreamState?,
+    nowMs: Long,
+    onLongPress: () -> Unit,
+) {
     val micColor = micArrowColor(stream?.mic, nowMs)
     val spkColor = spkArrowColor(stream?.spk, nowMs)
     val jitter = stream?.spk?.jitterMs
     val drops = stream?.dropped ?: 0L
+    val haptic = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
 
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(percent = 50))
             .background(BarRouteBg)
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {},
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongPress()
+                },
+            )
             .padding(horizontal = 8.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -228,6 +267,77 @@ private fun StreamStatsChip(stream: CallStreamState?, nowMs: Long) {
 }
 
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CallStatsSheet(
+    callId: String,
+    stream: CallStreamState?,
+    nowMs: Long,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = SheetBg,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 8.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            StatsTitle("Call diagnostics")
+            StatsRow("call id", callId.take(16))
+            StatsRow("drops", (stream?.dropped ?: 0L).toString())
+            StatsTitle("mic ↑")
+            StatsRow("frames out", (stream?.mic?.framesOut ?: 0L).toString())
+            StatsRow("sample age", sampleAgeMs(stream?.mic?.lastSampleAtMs, nowMs))
+            StatsRow("jitter", jitterMs(stream?.mic?.jitterMs))
+            StatsTitle("spk ↓")
+            StatsRow("frames out", (stream?.spk?.framesOut ?: 0L).toString())
+            StatsRow("sample age", sampleAgeMs(stream?.spk?.lastSampleAtMs, nowMs))
+            StatsRow("jitter", jitterMs(stream?.spk?.jitterMs))
+        }
+    }
+}
+
+@Composable
+private fun StatsTitle(text: String) {
+    Text(
+        text = text,
+        color = BarText,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+    )
+}
+
+@Composable
+private fun StatsRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(text = label, color = BarTextDim, fontSize = 12.sp)
+        Text(
+            text = value,
+            color = BarText,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+private fun sampleAgeMs(lastSampleAtMs: Long?, nowMs: Long): String =
+    if (lastSampleAtMs == null || lastSampleAtMs <= 0L) "—"
+    else "${nowMs - lastSampleAtMs}ms"
+
+private fun jitterMs(j: Double?): String =
+    if (j == null) "—" else String.format(Locale.US, "%.1fms", j)
+
+
 private fun micArrowColor(mic: CallStreamSide?, nowMs: Long): Color {
     if (mic == null) return ArrowRed
     val ageMs = nowMs - mic.lastSampleAtMs
@@ -257,6 +367,7 @@ private val BarText = Color(0xFFFBF1C7)
 private val BarTextDim = Color(0xFFFBEEC0)
 private val BarRouteBg = Color(0x33000000)   
 private val BarMuteBg = Color(0x66000000)    
+private val SheetBg = Color(0xFF282828)      
 
 
 private val ArrowGreen = Color(0xFF388E3C)   

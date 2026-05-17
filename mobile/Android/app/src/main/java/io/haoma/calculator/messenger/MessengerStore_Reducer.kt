@@ -262,6 +262,48 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                     level = StatusLevel.WARN,
                 )
                 
+                
+                "video_mute" -> if (ev.side == "cam" && ev.callId.isNotEmpty()) {
+                    Logger.d("call", "peer cam-off call=${shortCallId(ev.callId)} -> muted")
+                    _peerVideoMutedCalls.update { it + (ev.callId to true) }
+                }
+                "video_unmute" -> if (ev.side == "cam" && ev.callId.isNotEmpty()) {
+                    Logger.d("call", "peer cam-off call=${shortCallId(ev.callId)} -> unmuted")
+                    _peerVideoMutedCalls.update { it + (ev.callId to false) }
+                }
+                
+            }
+        }
+
+        
+        FrameType.CallStreamRawTransport -> if (payload != null) {
+            val p = CallStreamRawTransportPayload.fromJson(payload)
+            if (p.callId.isNotEmpty() && p.rawUnix.isNotEmpty() &&
+                (p.side == "cam" || p.side == "vid")
+            ) {
+                Logger.d(
+                    "call",
+                    "raw_transport received call=${shortCallId(p.callId)} side=${p.side} unix=${p.rawUnix}",
+                )
+                _videoRawUnixNames.update { prev ->
+                    val cur = prev[p.callId].orEmpty()
+                    prev + (p.callId to (cur + (p.side to p.rawUnix)))
+                }
+                ensureVideoStreams(p.callId)
+            }
+        }
+
+        
+        FrameType.CallClockSample -> if (payload != null) {
+            val p = CallStreamClockSamplePayload.fromJson(payload)
+            if (p.callId.isNotEmpty()) {
+                _callClockSamples.update { prev ->
+                    prev + (p.callId to ClockSample(
+                        localNs = p.localNs,
+                        senderPtsNs = p.senderPtsNs,
+                        receivedAtElapsedNs = android.os.SystemClock.elapsedRealtimeNanos(),
+                    ))
+                }
             }
         }
 

@@ -77,7 +77,7 @@ clone_or_fetch() {
     git -C "$dest" clean -dffx >/dev/null
 }
 
-for component in opus libsodium; do
+for component in opus libsodium libvpx; do
     URL="$(j "$STREAMS_VERSION" "$component" url)"
     COMMIT="$(j "$STREAMS_VERSION" "$component" commit)"
     clone_or_fetch "$component" "$URL" "$COMMIT"
@@ -95,7 +95,7 @@ make -C "$WORK_DIR" all
 
 # --- Stage output --------------------------------------------------------
 INSTALL_PREFIX="$WORK_DIR/install/$ABI"
-for lib in libopus.a libsodium.a; do
+for lib in libopus.a libsodium.a libvpx.a; do
     SRC="$INSTALL_PREFIX/lib/$lib"
     if [ ! -f "$SRC" ]; then
         echo "FATAL: $lib not produced at $SRC" >&2
@@ -110,16 +110,21 @@ rm -rf "$PREBUILT_DIR/$ABI"
 mkdir -p "$PREBUILT_DIR/$ABI/lib" "$PREBUILT_DIR/$ABI/include"
 cp "$INSTALL_PREFIX/lib/libopus.a"    "$PREBUILT_DIR/$ABI/lib/"
 cp "$INSTALL_PREFIX/lib/libsodium.a"  "$PREBUILT_DIR/$ABI/lib/"
+cp "$INSTALL_PREFIX/lib/libvpx.a"     "$PREBUILT_DIR/$ABI/lib/"
 cp -r "$INSTALL_PREFIX/include/opus"   "$PREBUILT_DIR/$ABI/include/"
 cp    "$INSTALL_PREFIX/include/sodium.h"  "$PREBUILT_DIR/$ABI/include/"
 cp -r "$INSTALL_PREFIX/include/sodium"    "$PREBUILT_DIR/$ABI/include/"
+cp -r "$INSTALL_PREFIX/include/vpx"       "$PREBUILT_DIR/$ABI/include/"
 
 SHA_OPUS="$(sha256sum "$PREBUILT_DIR/$ABI/lib/libopus.a"   | awk '{print $1}')"
 SHA_SODIUM="$(sha256sum "$PREBUILT_DIR/$ABI/lib/libsodium.a" | awk '{print $1}')"
+SHA_VPX="$(sha256sum "$PREBUILT_DIR/$ABI/lib/libvpx.a"     | awk '{print $1}')"
 SIZE_OPUS="$(stat -c%s "$PREBUILT_DIR/$ABI/lib/libopus.a")"
 SIZE_SODIUM="$(stat -c%s "$PREBUILT_DIR/$ABI/lib/libsodium.a")"
+SIZE_VPX="$(stat -c%s "$PREBUILT_DIR/$ABI/lib/libvpx.a")"
 
 echo
 echo "==> Done."
 echo "    libopus.a:   $SIZE_OPUS bytes, sha256 $SHA_OPUS"
 echo "    libsodium.a: $SIZE_SODIUM bytes, sha256 $SHA_SODIUM"
+echo "    libvpx.a:    $SIZE_VPX bytes, sha256 $SHA_VPX"

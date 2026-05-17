@@ -43,7 +43,7 @@ help:
 	@echo "  linux-release - shipping subset of linux binaries (used by tools/release.sh)"
 	@echo "  tor-rebuild   - cross-compile Tor + deps to libtor.so (slow, ~15 min)"
 	@echo "  tor-verify    - re-hash committed libtor.so, fail on lockfile mismatch"
-	@echo "  streams-deps   - cross-compile libopus + libsodium static archives for arm64-v8a"
+	@echo "  streams-deps   - cross-compile libopus + libsodium + libvpx static archives for arm64-v8a"
 	@echo "  streams-verify - re-hash committed streams archives, fail on lockfile mismatch"
 	@echo "  android-streams - cross-compile libhaoma-{mic,spk}.so into jniLibs (needs streams-deps)"
 	@echo "  clean         - remove tmp/bins and per-republic build outputs"
@@ -155,11 +155,13 @@ streams-deps:
 	      bash $(STREAMS_BUILD)/build.sh'
 	@SHA_OPUS=$$(sha256sum $(STREAMS_PREBUILT)/arm64-v8a/lib/libopus.a | awk '{print $$1}'); \
 	 SHA_SODIUM=$$(sha256sum $(STREAMS_PREBUILT)/arm64-v8a/lib/libsodium.a | awk '{print $$1}'); \
+	 SHA_VPX=$$(sha256sum $(STREAMS_PREBUILT)/arm64-v8a/lib/libvpx.a | awk '{print $$1}'); \
 	 NDK=$$(grep -E '^Pkg.Revision' $(HOME)/sdk/android/ndk/r29/source.properties | awk -F'= ' '{print $$2}'); \
 	 OPUS_VER=$$(python3 -c 'import json; d=json.load(open("$(STREAMS_BUILD)/streams-versions.json")); k=next(k for k in d if not k.startswith("_")); print(d[k]["opus"]["commit"])'); \
 	 SODIUM_VER=$$(python3 -c 'import json; d=json.load(open("$(STREAMS_BUILD)/streams-versions.json")); k=next(k for k in d if not k.startswith("_")); print(d[k]["libsodium"]["commit"])'); \
-	 printf '# Auto-written by `make streams-deps`. Do not hand-edit.\n# Verified by `make streams-verify` and CI.\nabi=arm64-v8a\nopus_version=%s\nlibsodium_version=%s\nndk_revision=%s\nlibopus_a_sha256=%s\nlibsodium_a_sha256=%s\n' \
-	   "$$OPUS_VER" "$$SODIUM_VER" "$$NDK" "$$SHA_OPUS" "$$SHA_SODIUM" > $(STREAMS_LOCKFILE); \
+	 VPX_VER=$$(python3 -c 'import json; d=json.load(open("$(STREAMS_BUILD)/streams-versions.json")); k=next(k for k in d if not k.startswith("_")); print(d[k]["libvpx"]["commit"])'); \
+	 printf '# Auto-written by `make streams-deps`. Do not hand-edit.\n# Verified by `make streams-verify` and CI.\nabi=arm64-v8a\nopus_version=%s\nlibsodium_version=%s\nlibvpx_version=%s\nndk_revision=%s\nlibopus_a_sha256=%s\nlibsodium_a_sha256=%s\nlibvpx_a_sha256=%s\n' \
+	   "$$OPUS_VER" "$$SODIUM_VER" "$$VPX_VER" "$$NDK" "$$SHA_OPUS" "$$SHA_SODIUM" "$$SHA_VPX" > $(STREAMS_LOCKFILE); \
 	 cat $(STREAMS_LOCKFILE)
 
 # Re-hash committed archives and assert match against streams-prebuilt.lock.
@@ -167,11 +169,14 @@ streams-deps:
 streams-verify:
 	@test -f $(STREAMS_PREBUILT)/arm64-v8a/lib/libopus.a || (echo "FATAL: libopus.a missing — run 'make streams-deps'"; exit 1)
 	@test -f $(STREAMS_PREBUILT)/arm64-v8a/lib/libsodium.a || (echo "FATAL: libsodium.a missing — run 'make streams-deps'"; exit 1)
+	@test -f $(STREAMS_PREBUILT)/arm64-v8a/lib/libvpx.a || (echo "FATAL: libvpx.a missing — run 'make streams-deps'"; exit 1)
 	@test -f $(STREAMS_LOCKFILE) || (echo "FATAL: $(STREAMS_LOCKFILE) missing — run 'make streams-deps'"; exit 1)
 	@EXPECTED_OPUS=$$(awk -F= '$$1=="libopus_a_sha256"{print $$2}' $(STREAMS_LOCKFILE)); \
 	 ACTUAL_OPUS=$$(sha256sum $(STREAMS_PREBUILT)/arm64-v8a/lib/libopus.a | awk '{print $$1}'); \
 	 EXPECTED_SODIUM=$$(awk -F= '$$1=="libsodium_a_sha256"{print $$2}' $(STREAMS_LOCKFILE)); \
 	 ACTUAL_SODIUM=$$(sha256sum $(STREAMS_PREBUILT)/arm64-v8a/lib/libsodium.a | awk '{print $$1}'); \
+	 EXPECTED_VPX=$$(awk -F= '$$1=="libvpx_a_sha256"{print $$2}' $(STREAMS_LOCKFILE)); \
+	 ACTUAL_VPX=$$(sha256sum $(STREAMS_PREBUILT)/arm64-v8a/lib/libvpx.a | awk '{print $$1}'); \
 	 if [ "$$EXPECTED_OPUS" != "$$ACTUAL_OPUS" ]; then \
 	   echo "FATAL: libopus.a SHA mismatch"; \
 	   echo "       expected $$EXPECTED_OPUS (per streams-prebuilt.lock)"; \
@@ -184,7 +189,13 @@ streams-verify:
 	   echo "       actual   $$ACTUAL_SODIUM"; \
 	   exit 1; \
 	 fi; \
-	 echo "streams-verify: ok (opus=$$ACTUAL_OPUS sodium=$$ACTUAL_SODIUM)"
+	 if [ "$$EXPECTED_VPX" != "$$ACTUAL_VPX" ]; then \
+	   echo "FATAL: libvpx.a SHA mismatch"; \
+	   echo "       expected $$EXPECTED_VPX (per streams-prebuilt.lock)"; \
+	   echo "       actual   $$ACTUAL_VPX"; \
+	   exit 1; \
+	 fi; \
+	 echo "streams-verify: ok (opus=$$ACTUAL_OPUS sodium=$$ACTUAL_SODIUM vpx=$$ACTUAL_VPX)"
 
 # Cross-compile the C++ call streamers (haoma-mic + haoma-spk) for
 # arm64-v8a, linking against the vendored libopus + libsodium static

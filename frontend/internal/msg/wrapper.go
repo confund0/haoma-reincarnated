@@ -9,7 +9,7 @@ import (
 	"fmt"
 )
 
-const Version = 2
+const Version = 3
 
 type Kind string
 
@@ -25,10 +25,11 @@ const (
 	KindFileReceipt Kind = "file_receipt"
 	KindFileKey     Kind = "file_key"
 
-	KindCallOffer  Kind = "call_offer"
-	KindCallAccept Kind = "call_accept"
-	KindCallReject Kind = "call_reject"
-	KindCallEnd    Kind = "call_end"
+	KindCallOffer   Kind = "call_offer"
+	KindCallAccept  Kind = "call_accept"
+	KindCallReject  Kind = "call_reject"
+	KindCallEnd     Kind = "call_end"
+	KindCallControl Kind = "call_control"
 
 	KindRotateRequest Kind = "rotate_request"
 	KindRotateAccept  Kind = "rotate_accept"
@@ -629,6 +630,16 @@ type CallEndBody struct {
 	CallID string `json:"call_id"`
 }
 
+const (
+	CallControlActionVideoMute   = "video_mute"
+	CallControlActionVideoUnmute = "video_unmute"
+)
+
+type CallControlBody struct {
+	CallID string `json:"call_id"`
+	Action string `json:"action"`
+}
+
 const CallOutboundKeyBytes = 32
 
 func BuildCallOffer(seq uint64, ts int64, msgID, callID string, modalities []string, tokens map[string]string, outboundKey []byte, expireSeconds uint32) (*Wrapper, error) {
@@ -829,6 +840,58 @@ func (w *Wrapper) CallEnd() (*CallEndBody, error) {
 	}
 	if b.CallID == "" {
 		return nil, fmt.Errorf("%w: call_id", ErrMissingField)
+	}
+	return &b, nil
+}
+
+func BuildCallControl(seq uint64, ts int64, msgID, callID, action string, expireSeconds uint32) (*Wrapper, error) {
+	if seq == 0 {
+		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
+	}
+	if ts <= 0 {
+		return nil, fmt.Errorf("%w: ts must be > 0", ErrMissingField)
+	}
+	if msgID == "" {
+		return nil, fmt.Errorf("%w: msg_id required", ErrMissingField)
+	}
+	if callID == "" {
+		return nil, fmt.Errorf("%w: call_id required", ErrMissingField)
+	}
+	switch action {
+	case CallControlActionVideoMute, CallControlActionVideoUnmute:
+	default:
+		return nil, fmt.Errorf("%w: action %q (allowed: video_mute, video_unmute)", ErrMissingField, action)
+	}
+	body, err := json.Marshal(CallControlBody{CallID: callID, Action: action})
+	if err != nil {
+		return nil, fmt.Errorf("msg: marshal call_control body: %w", err)
+	}
+	return &Wrapper{
+		V:             Version,
+		Seq:           seq,
+		Ts:            ts,
+		MsgID:         msgID,
+		Kind:          KindCallControl,
+		ExpireSeconds: expireSeconds,
+		Body:          body,
+	}, nil
+}
+
+func (w *Wrapper) CallControl() (*CallControlBody, error) {
+	if w.Kind != KindCallControl {
+		return nil, fmt.Errorf("msg: wrapper kind is %q, not %q", w.Kind, KindCallControl)
+	}
+	var b CallControlBody
+	if err := json.Unmarshal(w.Body, &b); err != nil {
+		return nil, fmt.Errorf("msg: decode call_control body: %w", err)
+	}
+	if b.CallID == "" {
+		return nil, fmt.Errorf("%w: call_id", ErrMissingField)
+	}
+	switch b.Action {
+	case CallControlActionVideoMute, CallControlActionVideoUnmute:
+	default:
+		return nil, fmt.Errorf("msg: call_control action %q not in allow-list", b.Action)
 	}
 	return &b, nil
 }

@@ -152,7 +152,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	var streamersMgr *streamers.Manager
-	micPath, spkPath, derr := streamers.Discover(cfg.streamerDir)
+	micPath, spkPath, camPath, vidPath, derr := streamers.Discover(cfg.streamerDir)
 	if derr != nil {
 		slog.Warn("streamer binary discovery failed; calls will fail at /call",
 			slog.Any("err", derr),
@@ -163,6 +163,8 @@ func run(ctx context.Context, cfg config) error {
 			Logger:  slog.Default(),
 			MicPath: micPath,
 			SpkPath: spkPath,
+			CamPath: camPath,
+			VidPath: vidPath,
 			Trace:   cfg.streamerTrace,
 		})
 		if err != nil {
@@ -171,6 +173,8 @@ func run(ctx context.Context, cfg config) error {
 			slog.Info("streamers ready",
 				slog.String("mic", streamersMgr.MicPath()),
 				slog.String("spk", streamersMgr.SpkPath()),
+				slog.String("cam", streamersMgr.CamPath()),
+				slog.String("vid", streamersMgr.VidPath()),
 				slog.Bool("trace", cfg.streamerTrace),
 			)
 		}

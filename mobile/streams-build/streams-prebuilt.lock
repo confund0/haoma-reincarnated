@@ -3,6 +3,8 @@
 abi=arm64-v8a
 opus_version=v1.5.2
 libsodium_version=1.0.20-RELEASE
+libvpx_version=v1.14.1
 ndk_revision=29.0.14206865
 libopus_a_sha256=d18960e8577366d253b0f4296425d461b14ca6c78ae5344e1ec5080b6b4deea8
 libsodium_a_sha256=871778f4738af78d5486bba8ae324d1353fbe0000e7a26635c4134bea522d69c
+libvpx_a_sha256=534690993bd2ee0d5bae2802b2e94ccaf85f657b79963a6088a8d8a3ab140738

@@ -267,11 +267,30 @@ struct AAPlayback final : AudioPlayback {
 
   bool open(std::function<size_t(float*, size_t)> cb) override;
   void close() override;
+  bool query_render_timestamp(int64_t* frame_position, int64_t* monotonic_ns) override;
   ~AAPlayback() override { close(); }
 
   bool open_stream();
   void reopen_after_disconnect();
 };
+
+bool AAPlayback::query_render_timestamp(int64_t* fp, int64_t* mono_ns) {
+  AAudioStream* s = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(swap_mu);
+    s = stream;
+  }
+  if (!s) return false;
+  int64_t f = 0, t = 0;
+  // AAudio fills (f, t) such that frame `f` is/was rendered at
+  // monotonic time `t`. Returns INVALID_STATE during the warmup window
+  // and on devices with broken HAL timestamping (some Bluetooth routes).
+  aaudio_result_t rc = AAudioStream_getTimestamp(s, CLOCK_MONOTONIC, &f, &t);
+  if (rc != AAUDIO_OK) return false;
+  *fp = f;
+  *mono_ns = t;
+  return true;
+}
 
 aaudio_data_callback_result_t AAPlayback::on_data(
     AAudioStream* /*s*/, void* ud, void* audio_data, int32_t num_frames) {

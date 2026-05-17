@@ -22,6 +22,7 @@
 #include <opus/opus.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -148,8 +149,13 @@ int main(int argc, char** argv) {
   uint64_t counter = 0;
   std::atomic<bool> write_failed{false};
 
+  // pts_ns = steady_clock::time_since_epoch (CLOCK_MONOTONIC on Linux +
+  // Android), same origin as cam on the same device — lets the receiver
+  // align audio + video on a single sender timeline.
   bool ok = cap->open([&](const float* samples) {
     if (write_failed.load()) return;
+    uint64_t pts_ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
 
     int kbps = request_kbps.exchange(0);
     if (kbps > 0) {
@@ -169,13 +175,13 @@ int main(int argc, char** argv) {
 
     uint8_t cipher[1500];
     uint8_t tag[FRAME_TAG_LEN];
-    if (!aead.seal(counter, opus_buf, (size_t)n, cipher, tag)) {
+    if (!aead.seal(counter, pts_ns, opus_buf, (size_t)n, cipher, tag)) {
       LOG_ERR("aead.seal failed");
       return;
     }
 
     uint8_t frame[MAX_FRAME_LEN];
-    size_t flen = encode_frame(counter, cipher, (size_t)n, tag, frame, sizeof(frame));
+    size_t flen = encode_frame(counter, pts_ns, cipher, (size_t)n, tag, frame, sizeof(frame));
     if (flen == 0) { LOG_ERR("encode_frame: payload too big (%d)", n); return; }
     uint64_t this_counter = counter;
     counter++;

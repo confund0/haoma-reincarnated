@@ -33,6 +33,7 @@ import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.MessengerScaffold
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.updateBluetoothConnectGranted
+import io.haoma.calculator.messenger.updateCameraGranted
 import io.haoma.calculator.messenger.updateRecordAudioGranted
 import io.haoma.calculator.notifications.NotificationPoster
 import io.haoma.calculator.unlock.PassphraseScreen
@@ -76,6 +77,17 @@ class MainActivity : ComponentActivity() {
     ) { granted ->
         Logger.i("audio", "BLUETOOTH_CONNECT grant=$granted")
         (application as HaomaApp).messengerStore.updateBluetoothConnectGranted(granted)
+    }
+
+    
+    private val cameraPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        Logger.i("cam", "CAMERA grant=$granted")
+        (application as HaomaApp).messengerStore.updateCameraGranted(granted)
+        if (granted) {
+            io.haoma.calculator.core.HaomaCoreService.refreshType(applicationContext)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -218,6 +230,13 @@ class MainActivity : ComponentActivity() {
         store.updateBluetoothConnectGranted(
             io.haoma.calculator.messenger.calls.AudioRouter.bluetoothConnectGranted(this),
         )
+        
+        
+        val cameraGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        store.updateCameraGranted(cameraGranted)
     }
 
     
@@ -225,6 +244,19 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         Logger.i("audio", "requesting BLUETOOTH_CONNECT")
         btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+
+    
+    fun requestCameraIfNeeded() {
+        val store = (application as HaomaApp).messengerStore
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        store.updateCameraGranted(granted)
+        if (granted) return
+        Logger.i("cam", "requesting CAMERA")
+        cameraPermLauncher.launch(Manifest.permission.CAMERA)
     }
 
     

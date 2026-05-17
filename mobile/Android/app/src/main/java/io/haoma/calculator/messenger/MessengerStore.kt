@@ -7,6 +7,7 @@ import io.haoma.calculator.core.VaultSession
 import io.haoma.calculator.core.computeFingerprints
 import io.haoma.calculator.core.ipc.IpcClient
 import io.haoma.calculator.log.Logger
+import io.haoma.calculator.messenger.calls.video.VideoFrameStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -102,6 +103,39 @@ class MessengerStore(
     val bluetoothConnectGranted: StateFlow<Boolean> = _bluetoothConnectGranted.asStateFlow()
 
     
+    internal val _cameraGranted = MutableStateFlow(false)
+    val cameraGranted: StateFlow<Boolean> = _cameraGranted.asStateFlow()
+
+    
+    internal val _videoRawUnixNames = MutableStateFlow<Map<String, Map<String, String>>>(emptyMap())
+    val videoRawUnixNames: StateFlow<Map<String, Map<String, String>>> = _videoRawUnixNames.asStateFlow()
+
+    
+    internal val _videoStreams = MutableStateFlow<Map<String, Map<String, VideoFrameStream>>>(emptyMap())
+
+    
+    internal val _callClockSamples = MutableStateFlow<Map<String, ClockSample>>(emptyMap())
+    val callClockSamples: StateFlow<Map<String, ClockSample>> = _callClockSamples.asStateFlow()
+
+    
+    internal val _videoMutedCalls = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val videoMutedCalls: StateFlow<Map<String, Boolean>> = _videoMutedCalls.asStateFlow()
+
+    
+    internal val _peerVideoMutedCalls = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val peerVideoMutedCalls: StateFlow<Map<String, Boolean>> = _peerVideoMutedCalls.asStateFlow()
+
+    
+    val videoCallActive: StateFlow<Boolean> = _activeCalls
+        .map { calls -> calls.values.any { !it.isTerminal && CallModality.Video in it.modalities } }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
+    
+    internal val _callWindowOpen = MutableStateFlow(false)
+    val callWindowOpen: StateFlow<Boolean> = _callWindowOpen.asStateFlow()
+
+    
     @Volatile
     var audioRouter: io.haoma.calculator.messenger.calls.AudioRouter? = null
         internal set
@@ -155,6 +189,16 @@ class MessengerStore(
                     Logger.w("messenger", "fingerprints compute failed: ${t.message}")
                 }
             }
+            
+            
+            videoCallActive
+                .drop(1)
+                .distinctUntilChanged()
+                .onEach { active ->
+                    Logger.i("call", "videoCallActive=$active — refreshing FGS type")
+                    io.haoma.calculator.core.HaomaCoreService.refreshType(ctx)
+                }
+                .launchIn(scope)
         }
     }
 
@@ -222,9 +266,14 @@ class MessengerStore(
         lastSoftLocked = false
         
         
+        closeAllVideoStreams()
         _activeCalls.value = emptyMap()
         _mutedCalls.value = emptyMap()
         _callStreamState.value = emptyMap()
+        _callClockSamples.value = emptyMap()
+        _videoMutedCalls.value = emptyMap()
+        _peerVideoMutedCalls.value = emptyMap()
+        _callWindowOpen.value = false
         
         
         _drafts.value = emptyMap()

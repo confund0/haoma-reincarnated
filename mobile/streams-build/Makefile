@@ -71,9 +71,9 @@ INSTALL_PREFIX := $(EXTERNAL_ROOT)/install/$(APP_ABI)
 
 MAKEFLAGS_PARALLEL := -j$(shell nproc)
 
-.PHONY: all test-setup opus libsodium clean opus-clean libsodium-clean showsetup
+.PHONY: all test-setup opus libsodium libvpx clean opus-clean libsodium-clean libvpx-clean showsetup
 
-all: test-setup opus libsodium
+all: test-setup opus libsodium libvpx
 
 test-setup:
 	@test -x $(CC) || (echo "FATAL: $(CC) not executable"; exit 1)
@@ -132,7 +132,48 @@ libsodium-clean:
 	-$(MAKE) -C libsodium clean || true
 	-cd libsodium && git clean -fdx > /dev/null 2>&1 || true
 
-clean: opus-clean libsodium-clean
+#---------------------------------------------------------------------#
+# libvpx — WebM project VP8/VP9 reference codec. VP8 only (VP9 deeper
+# CPU cost; mobile target favors latency over quality). Realtime build
+# drops the slow-but-better quality modes. NDK toolchain picked up via
+# CC/AR/RANLIB env exports above; CXX + LD scoped below because libvpx's
+# configure runs C++ + linker probes that default to host g++ (opus +
+# libsodium don't, hence those blocks don't need this). webm_io + libyuv
+# subdirs disabled — both are C++ and we don't use them (raw VP8 frames
+# ship over our own AEAD wire; no WebM container, no in-codec YUV
+# conversion).
+libvpx-build-stamp:
+	cd libvpx && \
+	    CXX="$(NDK_TOOLCHAIN_BASE)/bin/$(HOST)$(NDK_PLATFORM_LEVEL)-clang++" \
+	    LD="$(NDK_TOOLCHAIN_BASE)/bin/$(HOST)$(NDK_PLATFORM_LEVEL)-clang++" \
+	    CFLAGS="$(CFLAGS)" \
+	    CXXFLAGS="$(CFLAGS)" \
+	    ./configure \
+	    --target=arm64-android-gcc \
+	    --prefix=$(INSTALL_PREFIX) \
+	    --disable-shared \
+	    --enable-static \
+	    --enable-vp8 \
+	    --disable-vp9 \
+	    --enable-realtime-only \
+	    --disable-examples \
+	    --disable-tools \
+	    --disable-docs \
+	    --disable-unit-tests \
+	    --disable-webm-io \
+	    --disable-libyuv \
+	    --extra-cflags="$(CFLAGS)"
+	$(MAKE) $(MAKEFLAGS_PARALLEL) -C libvpx install
+	@touch $@
+
+libvpx: libvpx-build-stamp
+
+libvpx-clean:
+	-rm -f libvpx-build-stamp
+	-$(MAKE) -C libvpx clean || true
+	-cd libvpx && git clean -fdx > /dev/null 2>&1 || true
+
+clean: opus-clean libsodium-clean libvpx-clean
 	rm -rf $(INSTALL_PREFIX)
 
 showsetup:
