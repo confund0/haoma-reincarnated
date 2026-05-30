@@ -46,6 +46,13 @@ int64_t read_frame(int fd,
 
 int64_t write_all(int fd, const uint8_t* buf, size_t len);
 
+// Reads exactly n bytes from fd into buf. Loops over EINTR + partial
+// reads. Returns:
+//   > 0  bytes read (always == n on success)
+//   == 0 clean EOF before the first byte
+//   < 0  EOF mid-read / error
+int64_t read_exact(int fd, uint8_t* buf, size_t n);
+
 // BE byte-shuffling — exposed because the raw-port I420 frames carry an
 // 8-byte pts header that cam writes and the renderer parses.
 void     w_be64(uint8_t* p, uint64_t v);

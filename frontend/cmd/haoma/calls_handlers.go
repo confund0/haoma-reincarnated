@@ -403,6 +403,29 @@ func (sd *sessionDispatcher) handleCallControl(ctx context.Context, sess *ipc.Se
 		sendError(sess, f.ID, "not_ready", "streamers manager not configured")
 		return
 	}
+
+	state, stateErr := sd.d.calls.GetState(req.CallID)
+	if stateErr != nil {
+		if errors.Is(stateErr, calls.ErrCallNotFound) {
+			sendError(sess, f.ID, "unknown_call", fmt.Sprintf("no call %s", req.CallID))
+			return
+		}
+		sendError(sess, f.ID, "internal", stateErr.Error())
+		return
+	}
+	if side == "cam" {
+		hasVideo := false
+		for _, m := range state.Modalities {
+			if m == msg.ModalityVideo {
+				hasVideo = true
+				break
+			}
+		}
+		if !hasVideo {
+			sendError(sess, f.ID, "video_not_enabled", fmt.Sprintf("call %s has no video modality", req.CallID))
+			return
+		}
+	}
 	var stream interface {
 		SendCommand(map[string]any) error
 	}
@@ -417,7 +440,7 @@ func (sd *sessionDispatcher) handleCallControl(ctx context.Context, sess *ipc.Se
 		}
 	}
 	if stream == nil {
-		sendError(sess, f.ID, "unknown_call", fmt.Sprintf("no %s streamer for call %s", side, req.CallID))
+		sendError(sess, f.ID, "internal", fmt.Sprintf("call %s exists but %s streamer is gone", req.CallID, side))
 		return
 	}
 	if err := stream.SendCommand(map[string]any{"cmd": streamerCmd}); err != nil {
@@ -431,12 +454,10 @@ func (sd *sessionDispatcher) handleCallControl(ctx context.Context, sess *ipc.Se
 	)
 
 	if side == "cam" {
-		state, lookupErr := sd.d.calls.GetState(req.CallID)
-		if lookupErr != nil || state.PeerID == "" {
-			slog.Warn("call control: no call-state for peer-signal ship",
+		if state.PeerID == "" {
+			slog.Warn("call control: no peer id for peer-signal ship",
 				slog.String("call_id", req.CallID),
 				slog.String("action", req.Action),
-				slog.Any("err", lookupErr),
 			)
 		} else {
 			if err := shipCallControl(ctx, sd.d, state.PeerID, req.CallID, req.Action); err != nil {

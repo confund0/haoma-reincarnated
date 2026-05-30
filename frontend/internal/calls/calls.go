@@ -46,6 +46,7 @@ type State struct {
 	Modalities []string    `json:"modalities"`
 	StartedAt  int64       `json:"started_at"`
 	UpdatedAt  int64       `json:"updated_at,omitempty"`
+	AcceptedAt int64       `json:"accepted_at,omitempty"`
 	EndedAt    int64       `json:"ended_at,omitempty"`
 	FailReason string      `json:"fail_reason,omitempty"`
 
@@ -210,6 +211,9 @@ func (m *Manager) Transition(callID string, next Status, reason string, nowUnix 
 		}
 		cur.Status = next
 		cur.UpdatedAt = nowUnix
+		if next == StatusAccepted && cur.AcceptedAt == 0 {
+			cur.AcceptedAt = nowUnix
+		}
 		if next == StatusRejected || next == StatusFailed {
 			cur.FailReason = reason
 		}
@@ -267,6 +271,44 @@ func (m *Manager) SetRemoteMaterial(callID string, outboundKey []byte, tokens ma
 		raw, err := json.Marshal(cur)
 		if err != nil {
 			return fmt.Errorf("calls: marshal state for set-remote: %w", err)
+		}
+		return txn.Set(stateKey(callID), raw)
+	})
+}
+
+func (m *Manager) MergeLocalTokens(callID string, tokens map[string]string) error {
+	if callID == "" {
+		return ErrCallNotFound
+	}
+	if len(tokens) == 0 {
+		return nil
+	}
+	return m.st.Update(func(txn *badger.Txn) error {
+		item, err := txn.Get(stateKey(callID))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return ErrCallNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var cur State
+		if err := item.Value(func(v []byte) error {
+			return json.Unmarshal(v, &cur)
+		}); err != nil {
+			return fmt.Errorf("calls: decode state for merge-local-tokens: %w", err)
+		}
+		if cur.IsTerminal() {
+			return fmt.Errorf("calls: MergeLocalTokens on terminal row (%s)", cur.Status)
+		}
+		if cur.LocalTokens == nil {
+			cur.LocalTokens = make(map[string]string, len(tokens))
+		}
+		for k, v := range tokens {
+			cur.LocalTokens[k] = v
+		}
+		raw, err := json.Marshal(cur)
+		if err != nil {
+			return fmt.Errorf("calls: marshal state for merge-local-tokens: %w", err)
 		}
 		return txn.Set(stateKey(callID), raw)
 	})

@@ -70,7 +70,7 @@ linux-release:
 	cd frontend && go build $(GO_BUILD_FLAGS) -o $(BINS)/haoma-vault ./cmd/haoma-vault
 	@echo "==> C++ call streamers"
 	$(MAKE) -C streams build
-	strip $(BINS)/haoma-mic $(BINS)/haoma-spk
+	strip $(BINS)/haoma-mic $(BINS)/haoma-spk $(BINS)/haoma-cam $(BINS)/haoma-vid
 	@ls -la $(BINS)
 
 android-bins:

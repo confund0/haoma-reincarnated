@@ -180,7 +180,19 @@ func (m *Manager) SpawnCam(ctx context.Context, callID string, port int, key []b
 	if m.camPath == "" {
 		return nil, errors.New("streamers: CamPath not configured (haoma-cam binary missing)")
 	}
-	return m.spawn(ctx, callID, SideCam, m.camPath, port, key, streamID)
+	return m.spawn(ctx, callID, SideCam, m.camPath, port, key, streamID, platformCamExtras...)
+}
+
+func (m *Manager) SpawnCamY4M(ctx context.Context, callID string, port int, key []byte, streamID, y4mSource string) (*Stream, error) {
+	if m.camPath == "" {
+		return nil, errors.New("streamers: CamPath not configured (haoma-cam binary missing)")
+	}
+	extras := append([]string{}, platformCamExtras...)
+	extras = append(extras, "--width", "480", "--height", "640")
+	if y4mSource != "" {
+		extras = append(extras, "--y4m-source", y4mSource)
+	}
+	return m.spawn(ctx, callID, SideCam, m.camPath, port, key, streamID, extras...)
 }
 
 func (m *Manager) SpawnVid(ctx context.Context, callID string, port int, key []byte, streamID string) (*Stream, error) {
@@ -190,7 +202,7 @@ func (m *Manager) SpawnVid(ctx context.Context, callID string, port int, key []b
 	return m.spawn(ctx, callID, SideVid, m.vidPath, port, key, streamID)
 }
 
-func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath string, port int, key []byte, streamID string) (*Stream, error) {
+func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath string, port int, key []byte, streamID string, extraArgs ...string) (*Stream, error) {
 	if callID == "" {
 		return nil, errors.New("streamers: empty callID")
 	}
@@ -211,6 +223,7 @@ func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath s
 	if m.tracingFlag {
 		args = append(args, "--trace")
 	}
+	args = append(args, extraArgs...)
 
 	cmd := exec.Command(binPath, args...)
 	stdin, err := cmd.StdinPipe()
@@ -225,6 +238,7 @@ func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath s
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, fmt.Errorf("streamers: stderr pipe: %w", err)
 	}
 
@@ -237,6 +251,8 @@ func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath s
 
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return nil, fmt.Errorf("streamers: start %s: %w", binPath, err)
 	}
 	logger.Debug("streamer spawned", slog.Int("pid", cmd.Process.Pid))

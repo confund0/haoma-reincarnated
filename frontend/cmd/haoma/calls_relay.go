@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
 
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/chat"
+	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/ipc"
 )
 
@@ -215,4 +217,77 @@ func broadcastCallStateChanged(d *daemon, state calls.State) {
 	push(d.ipcSrv, ipc.FrameCallStateChanged, "", ipc.CallStateChangedPayload{
 		Call: callStateToEntry(state),
 	})
+	if state.IsTerminal() {
+		writeCallSummaryBreadcrumb(d, state)
+	}
+}
+
+func writeCallSummaryBreadcrumb(d *daemon, state calls.State) {
+	outcome := deriveCallOutcome(state)
+	var duration int64
+	if outcome == events.CallOutcomeCompleted && state.AcceptedAt > 0 && state.EndedAt > 0 {
+		duration = state.EndedAt - state.AcceptedAt
+		if duration < 0 {
+			duration = 0
+		}
+	}
+	body, err := json.Marshal(events.CallSummaryBody{
+		CallID:          state.CallID,
+		Direction:       string(state.Direction),
+		Outcome:         outcome,
+		DurationSeconds: duration,
+		Modalities:      state.Modalities,
+		FailReason:      state.FailReason,
+	})
+	if err != nil {
+		slog.Warn("marshal call_summary body failed",
+			slog.String("call_id", state.CallID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	displayTs := state.EndedAt
+	if displayTs == 0 {
+		displayTs = time.Now().Unix()
+	}
+	dir := events.DirOut
+	var senderPeerID string
+	if state.Direction == calls.DirIn {
+		dir = events.DirIn
+		senderPeerID = state.PeerID
+	}
+	if _, err := d.events.AppendLocal(events.LocalParams{
+		ChatID:       state.ChatID,
+		Kind:         events.KindCallSummary,
+		Direction:    dir,
+		DisplayTs:    displayTs,
+		SenderPeerID: senderPeerID,
+		Body:         body,
+	}); err != nil {
+		slog.Warn("persist call_summary breadcrumb failed",
+			slog.String("call_id", state.CallID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	bumpChatActivity(context.Background(), d, state.ChatID, displayTs)
+}
+
+func deriveCallOutcome(state calls.State) events.CallOutcome {
+	switch state.Status {
+	case calls.StatusRejected:
+		return events.CallOutcomeRejected
+	case calls.StatusFailed:
+		return events.CallOutcomeFailed
+	case calls.StatusEnded:
+		if state.AcceptedAt > 0 {
+			return events.CallOutcomeCompleted
+		}
+		if state.Direction == calls.DirIn {
+			return events.CallOutcomeMissed
+		}
+		return events.CallOutcomeCancelled
+	default:
+		return events.CallOutcomeFailed
+	}
 }

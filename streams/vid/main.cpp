@@ -163,8 +163,12 @@ int main(int argc, char** argv) {
 
   // Raw-side client (host UI). Accept in a side thread so the decoder
   // can begin even if the UI hasn't dialed yet — UI might be hidden
-  // (InCallBar mode); we don't want to block decode on it. Non-blocking
-  // writes once connected so slow UI consumer never stalls decode.
+  // (InCallBar mode); we don't want to block decode on the accept.
+  // Once connected, writes are BLOCKING: brief renderer-side
+  // backpressure (kernel SNDBUF ~212 KB vs frame ~461 KB) is the
+  // lesser evil compared to a short-write wire desync that would
+  // misalign the receiver's per-frame `8 BE pts | I420` loop for the
+  // rest of the call.
   std::atomic<int> raw_cfd{-1};
   std::atomic<bool> raw_write_failed{false};
   std::thread raw_accept_th([&]() {
@@ -173,8 +177,6 @@ int main(int argc, char** argv) {
       LOG_INFO("raw accept aborted (shutdown)");
       return;
     }
-    int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     raw_cfd.store(fd);
     LOG_INFO("raw client connected via unix:@%s", raw_unix_name.c_str());
   });
@@ -269,31 +271,17 @@ int main(int argc, char** argv) {
 
         // Raw-port frame: `8 BE pts_ns | I420 bytes`. pts is the
         // sender-stamped value just verified by AEAD — receiver uses it
-        // to slave video display to spk's audio playback clock.
+        // to slave video display to spk's audio playback clock. Two
+        // sequential write_all calls on a blocking socket: peer-close
+        // is the only realistic mid-frame failure on local AF_UNIX, and
+        // when that happens we tear the tap down so a partial-write
+        // desync can't poison the rest of the call.
         uint8_t pts_be[8];
         haoma::streams::w_be64(pts_be, pts_ns);
-        struct iovec iov[2];
-        iov[0].iov_base = pts_be;
-        iov[0].iov_len  = sizeof(pts_be);
-        iov[1].iov_base = packed.data();
-        iov[1].iov_len  = frame_bytes;
-        struct msghdr msg = {};
-        msg.msg_iov    = iov;
-        msg.msg_iovlen = 2;
-        ssize_t r = ::sendmsg(rfd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (r < 0) {
-          if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            stats.frames_dropped.fetch_add(1);
-            continue;
-          }
+        if (write_all(rfd, pts_be, sizeof(pts_be)) != (int64_t)sizeof(pts_be) ||
+            write_all(rfd, packed.data(), frame_bytes) != (int64_t)frame_bytes) {
           LOG_INFO("raw client write failed (errno=%d) — disabling raw tap", errno);
           raw_write_failed.store(true);
-          stats.frames_dropped.fetch_add(1);
-          continue;
-        }
-        if ((size_t)r != sizeof(pts_be) + frame_bytes) {
-          // Short write on the raw socket = drop this frame; the
-          // raw consumer must read full frames.
           stats.frames_dropped.fetch_add(1);
           continue;
         }
@@ -328,6 +316,7 @@ int main(int argc, char** argv) {
   if (raw_accept_th.joinable()) raw_accept_th.join();
   int rfd = raw_cfd.load();
   if (rfd >= 0) { ::shutdown(rfd, SHUT_RDWR); ::close(rfd); }
+  ::close(raw_lfd);
 
   vpx_codec_destroy(&dec_ctx);
 

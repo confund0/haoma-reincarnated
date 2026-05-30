@@ -14,4 +14,8 @@ internal object ChatPalette {
     val Ok = Color(0xFF5FCC1A)                 
     val Bad = Color(0xFFCC241D)                
     val DecryptFailedBg = Color(0xFF3F1F1F)    
+    
+    
+    val CallSummaryOk = Color(0xFF98971A)
+    val CallSummaryBad = Color(0xFFCC241D)
 }

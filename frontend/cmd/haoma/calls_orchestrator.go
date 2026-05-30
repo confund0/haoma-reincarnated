@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -61,6 +63,21 @@ func pickLocalPort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
+func resolveDevY4M(dataDir string) string {
+	if env := os.Getenv("HAOMA_DEV_Y4M_CLIP"); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
+	if dataDir != "" {
+		fallback := filepath.Join(dataDir, "test-clip.y4m")
+		if _, err := os.Stat(fallback); err == nil {
+			return fallback
+		}
+	}
+	return ""
+}
+
 func peerOnionURL(ctx context.Context, d *daemon, peerID, modality, token string) (string, error) {
 	if d.backendClient == nil {
 		return "", errors.New("calls: backend client not configured")
@@ -95,7 +112,11 @@ func spawnSenderLeg(ctx context.Context, d *daemon, callID, modality, token stri
 	case msg.ModalityAudio:
 		side, spawnFn = streamers.SideMic, d.streamers.SpawnMic
 	case msg.ModalityVideo:
-		side, spawnFn = streamers.SideCam, d.streamers.SpawnCam
+		side = streamers.SideCam
+		y4mSource := resolveDevY4M(d.dataDir)
+		spawnFn = func(ctx context.Context, callID string, port int, key []byte, streamID string) (*streamers.Stream, error) {
+			return d.streamers.SpawnCamY4M(ctx, callID, port, key, streamID, y4mSource)
+		}
 	default:
 		return 0, fmt.Errorf("calls: unsupported modality %q", modality)
 	}
@@ -301,22 +322,8 @@ func rememberLocalTokens(d *daemon, callID string, tokens map[string]string) {
 	if d.calls == nil || len(tokens) == 0 {
 		return
 	}
-	state, err := d.calls.GetState(callID)
-	if err != nil {
-		slog.Warn("rememberLocalTokens: state lookup failed",
-			slog.String("call_id", callID),
-			slog.Any("err", err),
-		)
-		return
-	}
-	if state.LocalTokens == nil {
-		state.LocalTokens = map[string]string{}
-	}
-	for k, v := range tokens {
-		state.LocalTokens[k] = v
-	}
-	if err := d.calls.PutState(state); err != nil {
-		slog.Warn("rememberLocalTokens: persist failed",
+	if err := d.calls.MergeLocalTokens(callID, tokens); err != nil {
+		slog.Warn("rememberLocalTokens: merge failed",
 			slog.String("call_id", callID),
 			slog.Any("err", err),
 		)

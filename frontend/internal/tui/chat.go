@@ -299,8 +299,72 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 			StyleBreadcrumbNick, who,
 			shown,
 			StyleReset)
+	case "call_summary":
+		var body struct {
+			CallID          string   `json:"call_id"`
+			Direction       string   `json:"direction"`
+			Outcome         string   `json:"outcome"`
+			DurationSeconds int64    `json:"duration_seconds"`
+			Modalities      []string `json:"modalities"`
+		}
+		_ = json.Unmarshal(ev.Body, &body)
+		accent := StyleCallSummaryBad
+		if body.Outcome == "completed" {
+			accent = StyleCallSummaryOK
+		}
+		modality := "audio"
+		for _, m := range body.Modalities {
+			if m == "video" {
+				modality = "video"
+				break
+			}
+		}
+
+		dirGlyph := "↑"
+		if body.Direction == "in" {
+			dirGlyph = "↓"
+		}
+		tail := ""
+		switch body.Outcome {
+		case "completed":
+			tail = formatCallSummaryDuration(body.DurationSeconds)
+		case "missed":
+			tail = "missed"
+		case "cancelled":
+			tail = "cancelled"
+		case "rejected":
+			tail = "declined"
+		case "failed":
+			tail = "failed"
+		}
+		summary := dirGlyph + " " + modality
+		if tail != "" {
+			summary += " · " + tail
+		}
+
+		return fmt.Sprintf("%s%s %s* %s%s",
+			StyleBreadcrumbBody, stamp,
+			accent, summary,
+			StyleReset)
 	default:
 		return fmt.Sprintf("[gray]%s[white] (kind=%s)", stamp, ev.Kind)
+	}
+}
+
+func formatCallSummaryDuration(secs int64) string {
+	if secs <= 0 {
+		return "0s"
+	}
+	h := secs / 3600
+	m := (secs % 3600) / 60
+	s := secs % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh%dm%ds", h, m, s)
+	case m > 0:
+		return fmt.Sprintf("%dm%ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
 	}
 }
 

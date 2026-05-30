@@ -567,6 +567,9 @@ object EventKind {
     const val TIMER_CHANGE = "timer_change"
     const val REACTION = "reaction"
     const val FILE = "file"
+    
+
+    const val CALL_SUMMARY = "call_summary"
 }
 
 

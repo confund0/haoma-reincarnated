@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemColors
@@ -131,6 +132,10 @@ private fun KeepScreenOnDuringCalls(store: MessengerStore) {
 @Composable
 private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: MessengerStore) {
     val activeTab = (current as? Screen.Tabbed)?.tab
+    val chats by store.chats.collectAsStateWithLifecycle()
+    
+    
+    val anyUnread = chats.any { it.unreadCount > 0 }
     
     
     NavigationBar(
@@ -143,6 +148,9 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: 
             val selected = activeTab == entry.tab
             
             
+            val unreadTint = entry.tab == Tab.Chats && anyUnread && !selected
+            
+            
             NavigationBarItem(
                 selected = selected,
                 onClick = { onSelect(entry.tab) },
@@ -151,6 +159,7 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: 
                         imageVector = entry.icon,
                         contentDescription = entry.label,
                         modifier = Modifier.size(NAV_ICON_SIZE),
+                        tint = if (unreadTint) FG_UNREAD else LocalContentColor.current,
                     )
                 },
                 colors = navItemColors(),
@@ -210,3 +219,6 @@ private val BG_BAR_SELECTED = Color(0xFF3C3836)
 private val FG_BAR = Color(0xFF928374)
 private val FG_BAR_SELECTED = Color(0xFFEBDBB2)
 private val FG_BAR_DISABLED = Color(0xFF504945)
+
+
+private val FG_UNREAD = Color(0xFFB16286)

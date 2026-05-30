@@ -9,6 +9,7 @@ import (
 
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/msg"
 )
 
 func (a *App) cmdCall() {
@@ -59,6 +60,60 @@ func (a *App) cmdCall() {
 		}
 		a.app.QueueUpdateDraw(func() {
 			a.log("[yellow]calling[white] %s (call_id=%s)", a.peerLabelFromID(p.Call.PeerID), shortCallID(p.CallID))
+		})
+	})
+}
+
+func (a *App) cmdVideoCall() {
+	front, _ := a.pages.GetFrontPage()
+	if !strings.HasPrefix(front, "chat:") {
+		a.log("[red]/vidcall[white] must be used inside a chat window")
+		return
+	}
+	chatID := strings.TrimPrefix(front, "chat:")
+	peerID := a.activeChat()
+	if peerID == "" {
+		a.log("[red]/vidcall[white] no active chat page")
+		return
+	}
+	if a.peerRetiredAt(peerID) != 0 {
+		a.log("[red]peer retired[white] — can't call")
+		return
+	}
+	if a.hasRotationForPeer(peerID) {
+		a.log("[red]/vidcall[white] not available during an in-flight rotation with this peer")
+		return
+	}
+
+	if existing, ok := a.findActiveCallForChat(chatID); ok {
+		if existing.Status == "accepted" {
+			a.openLiveCallWindow(existing)
+		} else {
+			a.log("[yellow]/vidcall[white] already %s with %s (call_id=%s) — live window opens once connected",
+				existing.Status, a.peerLabelFromID(existing.PeerID), shortCallID(existing.CallID))
+		}
+		return
+	}
+
+	a.sendRequest(ipc.FrameStartCall, ipc.StartCallRequest{
+		ChatID:     chatID,
+		Modalities: []string{msg.ModalityAudio, msg.ModalityVideo},
+	}, func(f ipc.Frame) {
+		if f.Type == ipc.FrameError {
+			a.renderError(f)
+			return
+		}
+		if f.Type != ipc.FrameCallStarted {
+			a.log("[red]/vidcall[white] unexpected response: %s", f.Type)
+			return
+		}
+		var p ipc.CallStartedResponse
+		if err := json.Unmarshal(f.Payload, &p); err != nil {
+			a.log("[red]/vidcall[white] decode failed: %v", err)
+			return
+		}
+		a.app.QueueUpdateDraw(func() {
+			a.log("[yellow]vidcalling[white] %s (call_id=%s)", a.peerLabelFromID(p.Call.PeerID), shortCallID(p.CallID))
 		})
 	})
 }
@@ -189,6 +244,7 @@ func (a *App) applyCallStateChange(call ipc.CallEntry) {
 
 	if call.Status == "rejected" || call.Status == "ended" || call.Status == "failed" {
 		a.dismissLiveCallWindow(call.CallID)
+		a.closeVideoSink(call.CallID)
 	}
 
 	defer a.winBar.SetText(a.winBarText())

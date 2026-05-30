@@ -106,6 +106,7 @@ class MainActivity : ComponentActivity() {
                 if (!warm) return@onEach
                 requestPostNotificationsIfNeeded()
                 requestRecordAudioIfNeeded()
+                requestCameraIfNeeded()
                 offerOemBackgroundAllowlistOnce()
             }
             .launchIn(lifecycleScope)
@@ -142,6 +143,14 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         consumeDisguiseTipExtras(intent, application as HaomaApp)
+    }
+
+    
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            (application as HaomaApp).notificationPoster.cancelAll()
+        }
     }
 
     

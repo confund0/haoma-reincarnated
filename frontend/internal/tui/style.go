@@ -5,6 +5,9 @@ import "github.com/gdamore/tcell/v2"
 const (
 	StyleBreadcrumbBody = "[#8a8a8a]"
 	StyleBreadcrumbNick = "[#5f0087]"
+
+	StyleCallSummaryOK  = "[#98971a]"
+	StyleCallSummaryBad = "[#cc241d]"
 )
 
 const (

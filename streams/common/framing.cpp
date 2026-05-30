@@ -14,16 +14,6 @@ uint64_t r_be64(const uint8_t* p) {
   return v;
 }
 
-namespace {
-
-void w_be16(uint8_t* p, uint16_t v) {
-  p[0] = (v >> 8) & 0xff;
-  p[1] = v & 0xff;
-}
-uint16_t r_be16(const uint8_t* p) {
-  return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
-}
-
 int64_t read_exact(int fd, uint8_t* buf, size_t n) {
   size_t got = 0;
   while (got < n) {
@@ -34,6 +24,16 @@ int64_t read_exact(int fd, uint8_t* buf, size_t n) {
     return -1;
   }
   return (int64_t)got;
+}
+
+namespace {
+
+void w_be16(uint8_t* p, uint16_t v) {
+  p[0] = (v >> 8) & 0xff;
+  p[1] = v & 0xff;
+}
+uint16_t r_be16(const uint8_t* p) {
+  return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
 }
 
 }  // namespace

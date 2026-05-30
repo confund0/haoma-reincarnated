@@ -7,6 +7,7 @@ import io.haoma.calculator.core.VaultSession
 import io.haoma.calculator.core.computeFingerprints
 import io.haoma.calculator.core.ipc.IpcClient
 import io.haoma.calculator.log.Logger
+import io.haoma.calculator.messenger.calls.video.CameraSource
 import io.haoma.calculator.messenger.calls.video.VideoFrameStream
 import java.io.File
 import java.text.SimpleDateFormat
@@ -112,6 +113,9 @@ class MessengerStore(
 
     
     internal val _videoStreams = MutableStateFlow<Map<String, Map<String, VideoFrameStream>>>(emptyMap())
+
+    
+    internal val _cameraSources = MutableStateFlow<Map<String, CameraSource>>(emptyMap())
 
     
     internal val _callClockSamples = MutableStateFlow<Map<String, ClockSample>>(emptyMap())

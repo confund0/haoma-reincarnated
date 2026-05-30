@@ -152,6 +152,8 @@ func (a *App) handleInput(_ tcell.Key) {
 		a.cmdNick(rest)
 	case "/call":
 		a.cmdCall()
+	case "/vidcall":
+		a.cmdVideoCall()
 	case "/rotate-tor":
 		a.cmdRotateTor()
 	case "/new-circuit", "/renew-circuit":
@@ -198,6 +200,7 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/retry[white]                                — re-kick all stuck file downloads (failed_transient)")
 	a.log("  [yellow]/react[white]                                — react to any message in this chat (empty emoji removes)")
 	a.log("  [yellow]/call[white]                                — start a voice call with the active chat's peer (1a: signalling only — no audio yet)")
+	a.log("  [yellow]/vidcall[white]                             — dev: voice+video call (needs $HAOMA_DEV_Y4M_CLIP or <dataDir>/test-clip.y4m on the sender; remote vid lands at <dataDir>/vid-<callid>.yuv)")
 	a.log("  [yellow]/answer[white]                              — accept the incoming call (keyboard alternative to the ringer's [Accept] button)")
 	a.log("  [yellow]/decline, /reject[white]                    — decline the incoming call")
 	a.log("  [yellow]/hangup[white]                              — end the active call (works on offered, ringing, or accepted)")

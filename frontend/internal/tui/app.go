@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -71,6 +72,8 @@ type App struct {
 
 	liveCalls map[string]*liveCallPage
 
+	videoSinks map[string]context.CancelFunc
+
 	rotations map[string]rotationView
 
 	rotationCooldowns map[string]rotationCooldown
@@ -117,6 +120,7 @@ func New(client *ipcclient.Client) *App {
 		pendingOnionInvites: map[string]pendingOnionInvite{},
 		activeCalls:         map[string]ipc.CallEntry{},
 		liveCalls:           map[string]*liveCallPage{},
+		videoSinks:          map[string]context.CancelFunc{},
 		rotations:           map[string]rotationView{},
 		rotationCooldowns:   map[string]rotationCooldown{},
 		lastLoggedHaoma:     -1,
@@ -932,6 +936,8 @@ func (a *App) routeFrame(f ipc.Frame) {
 		a.routeCallStreamEvent(f)
 
 	case ipc.FrameCallStreamRawTransport:
+
+		a.routeVideoRawTransport(f)
 
 	case ipc.FrameRotateRequested:
 		a.routeRotateRequested(f)

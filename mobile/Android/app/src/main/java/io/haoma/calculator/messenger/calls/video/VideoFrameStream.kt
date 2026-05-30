@@ -188,8 +188,10 @@ class VideoFrameStream(
     }
 
     companion object {
-        const val DEFAULT_WIDTH = 640
-        const val DEFAULT_HEIGHT = 480
+        
+        
+        const val DEFAULT_WIDTH = 480
+        const val DEFAULT_HEIGHT = 640
         private const val RING_SIZE = 4
         private const val HEARTBEAT_MS = 1_000L
     }

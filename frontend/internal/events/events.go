@@ -63,6 +63,8 @@ const (
 	KindReaction Kind = "reaction"
 
 	KindFile Kind = "file"
+
+	KindCallSummary Kind = "call_summary"
 )
 
 type TimerChangeBody struct {
@@ -75,6 +77,29 @@ type ReactionBody struct {
 	TargetMsgID string `json:"target_msg_id"`
 	Emoji       string `json:"emoji"`
 	At          int64  `json:"at,omitempty"`
+}
+
+type CallOutcome string
+
+const (
+	CallOutcomeCompleted CallOutcome = "completed"
+
+	CallOutcomeMissed CallOutcome = "missed"
+
+	CallOutcomeRejected CallOutcome = "rejected"
+
+	CallOutcomeCancelled CallOutcome = "cancelled"
+
+	CallOutcomeFailed CallOutcome = "failed"
+)
+
+type CallSummaryBody struct {
+	CallID          string      `json:"call_id"`
+	Direction       string      `json:"direction"`
+	Outcome         CallOutcome `json:"outcome"`
+	DurationSeconds int64       `json:"duration_seconds,omitempty"`
+	Modalities      []string    `json:"modalities,omitempty"`
+	FailReason      string      `json:"fail_reason,omitempty"`
 }
 
 type DecryptStatus string

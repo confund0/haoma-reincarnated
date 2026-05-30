@@ -344,27 +344,60 @@ internal fun MessengerStore.ensureVideoStreams(callId: String) {
         return
     }
     val existing = _videoStreams.value[callId].orEmpty()
-    val updated = existing.toMutableMap()
-    for ((side, unixName) in listOf("cam" to cam, "vid" to vid)) {
-        if (updated.containsKey(side)) continue
-        Logger.d("call", "video_stream spawn call=${shortCallId(callId)} side=$side unix=$unixName")
+    if (!existing.containsKey("vid")) {
+        Logger.d("call", "video_stream spawn call=${shortCallId(callId)} side=vid unix=$vid")
         val vs = VideoFrameStream(
             callId = callId,
-            side = side,
-            unixName = unixName,
+            side = "vid",
+            unixName = vid,
             parentScope = scope,
         )
         vs.start()
-        updated[side] = vs
-    }
-    if (updated.size != existing.size) {
-        _videoStreams.update { prev -> prev + (callId to updated.toMap()) }
+        val updated = existing + ("vid" to vs)
+        _videoStreams.update { prev -> prev + (callId to updated) }
         Logger.d("call", "ensureVideoStreams call=${shortCallId(callId)} sides=${updated.keys}")
     }
+    ensureCameraSource(callId)
+}
+
+
+internal fun MessengerStore.ensureCameraSource(callId: String) {
+    if (callId.isEmpty()) {
+        Logger.d("call", "cam: ensureCameraSource bail empty callId")
+        return
+    }
+    val ctx = appContext
+    if (ctx == null) {
+        Logger.d("call", "cam: ensureCameraSource bail appContext=null call=${shortCallId(callId)}")
+        return
+    }
+    if (_cameraSources.value.containsKey(callId)) {
+        Logger.d("call", "cam: ensureCameraSource skip already-present call=${shortCallId(callId)}")
+        return
+    }
+    val unixName = _videoRawUnixNames.value[callId]?.get("cam")
+    if (unixName.isNullOrEmpty()) {
+        Logger.d("call", "cam: ensureCameraSource bail no_unix_name call=${shortCallId(callId)}")
+        return
+    }
+    Logger.d("call", "cam: ensureCameraSource spawning call=${shortCallId(callId)} unix=$unixName")
+    val src = io.haoma.calculator.messenger.calls.video.CameraSource(
+        context = ctx,
+        callId = callId,
+        parentScope = scope,
+        unixName = unixName,
+        mutedProvider = { _videoMutedCalls.value[callId] == true },
+    )
+    _cameraSources.update { it + (callId to src) }
+    src.start()
 }
 
 
 internal fun MessengerStore.closeVideoStreamsForCall(callId: String) {
+    _cameraSources.value[callId]?.let { src ->
+        src.stop()
+        _cameraSources.update { it - callId }
+    }
     val streams = _videoStreams.value[callId] ?: return
     streams.values.forEach { it.close() }
     _videoStreams.update { it - callId }
@@ -372,12 +405,15 @@ internal fun MessengerStore.closeVideoStreamsForCall(callId: String) {
 
 
 internal fun MessengerStore.closeAllVideoStreams() {
+    val cams = _cameraSources.value
+    cams.values.forEach { it.stop() }
+    _cameraSources.value = emptyMap()
     val snapshot = _videoStreams.value
-    if (snapshot.isEmpty() && _videoRawUnixNames.value.isEmpty()) return
+    if (snapshot.isEmpty() && _videoRawUnixNames.value.isEmpty() && cams.isEmpty()) return
     snapshot.values.forEach { sideMap -> sideMap.values.forEach { it.close() } }
     _videoStreams.value = emptyMap()
     _videoRawUnixNames.value = emptyMap()
-    Logger.d("call", "video_streams wiped count=${snapshot.size}")
+    Logger.d("call", "video_streams wiped count=${snapshot.size} cams=${cams.size}")
 }
 
 
