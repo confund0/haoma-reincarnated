@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -96,6 +97,8 @@ type record struct {
 type Store struct {
 	st  *store.Store
 	now func() time.Time
+
+	writeMu sync.Mutex
 }
 
 func NewStore(st *store.Store) *Store {
@@ -151,6 +154,8 @@ func (s *Store) putDirect(dc *DirectChat) error {
 	if err != nil {
 		return fmt.Errorf("chat: marshal record: %w", err)
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	return s.st.Update(func(txn *badger.Txn) error {
 		if err := txn.Set(chatKey(dc.ID), raw); err != nil {
 			return err
@@ -421,6 +426,8 @@ func (s *Store) ClearUnread(id ChatID) (bool, error) {
 }
 
 func (s *Store) mutate(id ChatID, mutFn func(Chat) error) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	return s.st.Update(func(txn *badger.Txn) error {
 		item, err := txn.Get(chatKey(id))
 		if errors.Is(err, badger.ErrKeyNotFound) {
@@ -474,6 +481,8 @@ func (s *Store) Delete(id ChatID) error {
 	if id == "" {
 		return errors.New("chat: Delete: empty id")
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	return s.st.Update(func(txn *badger.Txn) error {
 		item, err := txn.Get(chatKey(id))
 		if errors.Is(err, badger.ErrKeyNotFound) {

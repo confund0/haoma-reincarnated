@@ -580,7 +580,9 @@ func (m *Manager) shipConfirm(ctx context.Context, rotID string) error {
 		m.applyConfirmedSideEffects(ctx, peerID, myNewAddr, myNewPriv, theirNewAddr)
 	}
 
-	m.notifyLifecycle(snap)
+	if confirmed {
+		m.notifyLifecycle(snap)
+	}
 	return nil
 }
 

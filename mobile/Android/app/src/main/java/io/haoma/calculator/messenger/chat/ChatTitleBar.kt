@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.ChatEntry
 
@@ -167,6 +168,9 @@ internal fun ChatTitleBar(
                 DropdownMenu(
                     expanded = menuOpen,
                     onDismissRequest = { menuOpen = false },
+                    
+                    
+                    properties = PopupProperties(focusable = false),
                 ) {
                     DropdownMenuItem(
                         text = {
