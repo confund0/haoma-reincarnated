@@ -32,6 +32,7 @@ import io.haoma.calculator.core.UnlockManager
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.MessengerScaffold
 import io.haoma.calculator.messenger.MessengerStore
+import io.haoma.calculator.messenger.calls.CallWindowHost
 import io.haoma.calculator.messenger.updateBluetoothConnectGranted
 import io.haoma.calculator.messenger.updateCameraGranted
 import io.haoma.calculator.messenger.updateRecordAudioGranted
@@ -325,7 +326,12 @@ private fun Surface(
                 unlock = unlock,
                 log = { Logger.i("passphrase", it) },
             )
-            AppState.Warm -> MessengerScaffold(store = messenger)
+            
+            
+            AppState.Warm -> Box(modifier = Modifier.fillMaxSize()) {
+                MessengerScaffold(store = messenger)
+                CallWindowHost(store = messenger)
+            }
         }
     }
 }

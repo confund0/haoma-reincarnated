@@ -3,6 +3,7 @@ package io.haoma.calculator.messenger.chat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.*
 import io.haoma.calculator.messenger.calls.InCallBar
 import io.haoma.calculator.messenger.EventKind
@@ -168,7 +170,27 @@ fun ChatDetailScreen(
             onOpenSettings = { store.openChatSettings(chatId) },
             onViewFiles = { filesPickerOpen = true },
         )
-        callHere?.let { InCallBar(call = it, store = store) }
+        callHere?.let { call ->
+            
+            
+            if (CallModality.Video in call.modalities) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            Logger.i(
+                                "call",
+                                "callwindow reopen from in-call-bar call=${call.callId.take(8)}",
+                            )
+                            store._callWindowOpen.value = true
+                        },
+                ) {
+                    InCallBar(call = call, store = store)
+                }
+            } else {
+                InCallBar(call = call, store = store)
+            }
+        }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             if (cache.events.isEmpty()) {
                 EmptyChatHint(loading = cache.loading)
