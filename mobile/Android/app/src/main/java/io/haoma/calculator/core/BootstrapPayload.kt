@@ -1,5 +1,6 @@
 package io.haoma.calculator.core
 
+import io.haoma.calculator.log.Logger
 import kotlinx.coroutines.CompletableDeferred
 
 
@@ -24,9 +25,15 @@ object BootstrapPayload {
     
     fun deposit(secrets: ByteArray): CompletableDeferred<Result> {
         val ack = CompletableDeferred<Result>()
-        synchronized(lock) {
-            require(slot == null) { "BootstrapPayload: slot already occupied" }
+        val superseded = synchronized(lock) {
+            val previous = slot
             slot = Slot(secrets, ack)
+            previous
+        }
+        if (superseded != null) {
+            Logger.w("bootstrap-payload", "deposit superseded prior uncompleted slot")
+            superseded.secrets.fill(0)
+            superseded.ack.complete(Result.Fail("superseded by re-deposit"))
         }
         return ack
     }

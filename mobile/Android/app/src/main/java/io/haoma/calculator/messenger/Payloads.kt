@@ -997,6 +997,11 @@ data class ExternalReachPayload(
 }
 
 
+data class TorRecoverRequest(val mode: String) {
+    fun toJson(): JSONObject = JSONObject().apply { put("mode", mode) }
+}
+
+
 data class RotateBeginRequest(val peerId: String) {
     fun toJson(): JSONObject = JSONObject().apply { put("peer_id", peerId) }
 }

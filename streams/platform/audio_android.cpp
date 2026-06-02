@@ -190,6 +190,15 @@ bool AACapture::open_stream() {
     AAudioStream_close(s);
     return false;
   }
+  // Device-id pin diagnostic. The framework picks the physical device
+  // at open time based on the comm-device + MODE_IN_COMMUNICATION
+  // combo; on BT this can land on TYPE_BLUETOOTH_A2DP (output-only)
+  // when the user intended SCO. Cross-correlate this with the Kotlin
+  // AudioRouter's "comm-device changed -> id=N" line to see if mic +
+  // spk ended up on the same physical bridge.
+  LOG_INFO("aaudio capture opened: device_id=%d preset_set=%d",
+           AAudioStream_getDeviceId(s),
+           p_setInputPreset ? 1 : 0);
   std::lock_guard<std::mutex> lock(swap_mu);
   stream = s;
   return true;
@@ -205,9 +214,11 @@ void AACapture::reopen_after_disconnect() {
     return;
   }
   AAudioStream* old = nullptr;
+  int32_t old_id = -1;
   {
     std::lock_guard<std::mutex> lock(swap_mu);
     old = stream;
+    if (old) old_id = AAudioStream_getDeviceId(old);
     stream = nullptr;
   }
   if (old) {
@@ -217,7 +228,9 @@ void AACapture::reopen_after_disconnect() {
   acc.clear();
   bool ok = open_stream();
   if (ok) {
-    LOG_INFO("aaudio capture reopened after DISCONNECTED");
+    // open_stream() already logged the NEW device_id; pair it with the
+    // OLD id so a route flap surfaces as one diff'able line pair.
+    LOG_INFO("aaudio capture reopened after DISCONNECTED (was device_id=%d)", old_id);
   } else {
     LOG_ERR("aaudio capture reopen failed — call audio will stay silent");
     stopped.store(true);
@@ -370,6 +383,13 @@ bool AAPlayback::open_stream() {
     AAudioStream_close(s);
     return false;
   }
+  // Sibling diagnostic to the capture-side device-id log. usage_set=1
+  // means USAGE_VOICE_COMMUNICATION + CONTENT_TYPE_SPEECH tags landed
+  // (API 28+); 0 means we're on the legacy MEDIA-usage path where the
+  // comm-device pick has no observable effect.
+  LOG_INFO("aaudio playback opened: device_id=%d usage_set=%d",
+           AAudioStream_getDeviceId(s),
+           (p_setUsage && p_setContentType) ? 1 : 0);
   std::lock_guard<std::mutex> lock(swap_mu);
   stream = s;
   return true;
@@ -382,9 +402,11 @@ void AAPlayback::reopen_after_disconnect() {
     return;
   }
   AAudioStream* old = nullptr;
+  int32_t old_id = -1;
   {
     std::lock_guard<std::mutex> lock(swap_mu);
     old = stream;
+    if (old) old_id = AAudioStream_getDeviceId(old);
     stream = nullptr;
   }
   if (old) {
@@ -393,7 +415,7 @@ void AAPlayback::reopen_after_disconnect() {
   }
   bool ok = open_stream();
   if (ok) {
-    LOG_INFO("aaudio playback reopened after DISCONNECTED");
+    LOG_INFO("aaudio playback reopened after DISCONNECTED (was device_id=%d)", old_id);
   } else {
     LOG_ERR("aaudio playback reopen failed — peer audio will stay silent");
     stopped.store(true);

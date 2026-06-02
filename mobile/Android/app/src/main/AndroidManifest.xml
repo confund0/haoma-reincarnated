@@ -46,6 +46,21 @@
         device" placeholders so the user can see routing is available.
     -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!--
+        MODIFY_AUDIO_SETTINGS is a normal-level permission auto-granted at
+        install time; some OEMs (notably Huawei EMUI) silently no-op
+        AudioManager.setMode(MODE_IN_COMMUNICATION) and the legacy
+        startBluetoothSco() ladder without it. Conversations declares it
+        for the same reason. No runtime prompt.
+
+        BLUETOOTH is the pre-API-31 permission for the deprecated
+        startBluetoothSco / setBluetoothScoOn pair we rely on for sticky
+        SCO link control during in-call. maxSdkVersion gate keeps it off
+        the API 31+ runtime prompt list (BLUETOOTH_CONNECT covers it
+        there).
+    -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 
     <application
         android:name=".HaomaApp"

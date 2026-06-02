@@ -15,8 +15,8 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -181,6 +181,10 @@ class MessengerStore(
     
     @Volatile internal var ipc: IpcClient? = null
 
+    
+    @Volatile private var ipcIncomingJob: Job? = null
+    @Volatile private var ipcConnectionJob: Job? = null
+
     init {
         
         
@@ -228,11 +232,11 @@ class MessengerStore(
         )
         ipc = client
 
-        client.incoming
+        ipcIncomingJob = client.incoming
             .onEach { dispatch(it) }
             .launchIn(scope)
 
-        client.connection
+        ipcConnectionJob = client.connection
             .drop(1) 
             .distinctUntilChanged()
             .onEach { up ->
@@ -260,7 +264,12 @@ class MessengerStore(
         } catch (t: Throwable) {
             Logger.e("messenger", "ipc close on teardown", t)
         }
-        scope.coroutineContext.cancelChildren()
+        
+        
+        ipcIncomingJob?.cancel()
+        ipcIncomingJob = null
+        ipcConnectionJob?.cancel()
+        ipcConnectionJob = null
         _connection.value = false
         
         
@@ -307,6 +316,10 @@ class MessengerStore(
                 fetchChats(c)
                 fetchTorInfo(c)
                 fetchSystemInfo(c)
+                
+                
+                requestExternalProbeBurst()
+                requestSelfProbeForActiveSurface()
             } catch (t: Throwable) {
                 Logger.w("messenger", "bootstrap failed: ${t.message}")
                 appendStatus("bootstrap failed: ${t.message ?: "?"}", level = StatusLevel.WARN)

@@ -109,6 +109,13 @@ class VaultSession(
     }
 
     
+    fun secretsForRestart(context: Context): ByteArray {
+        synchronized(mutex) {
+            return VaultHelper.unseal(context, passphrase).secrets
+        }
+    }
+
+    
     private fun resealLocked() {
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)
         val started = System.currentTimeMillis()

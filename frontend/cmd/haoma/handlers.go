@@ -279,6 +279,8 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handlePeerSelfProbe(ctx, sess, f)
 	case ipc.FrameExternalProbeBurst:
 		sd.handleExternalProbeBurst(ctx, sess, f)
+	case ipc.FrameTorRecover:
+		sd.handleTorRecover(ctx, sess, f)
 	case ipc.FrameRotateBegin:
 		sd.handleRotateBegin(ctx, sess, f)
 	case ipc.FrameRotateUserAccept:

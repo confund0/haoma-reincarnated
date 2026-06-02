@@ -19,6 +19,7 @@ import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.R
 import io.haoma.calculator.log.Logger
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +34,13 @@ class HaomaCoreService : Service() {
 
     @Volatile private var haomad: Daemon? = null
     @Volatile private var haoma: Daemon? = null
+
+    
+    @Volatile private var haomadAddr: String? = null
+    @Volatile private var haomaAddr: String? = null
+
+    
+    private val daemonOpInFlight = AtomicBoolean(false)
 
     
     private var screenOffReceiver: BroadcastReceiver? = null
@@ -54,13 +62,31 @@ class HaomaCoreService : Service() {
         val action = intent?.action
         Logger.i("fgs", "HaomaCoreService.onStartCommand startId=$startId flags=$flags action=$action")
         startForegroundCompat()
-        if (action == ACTION_REFRESH_TYPE) {
-            
-            
-            return START_NOT_STICKY
-        }
-        if (haomad == null) {
-            scope.launch { bootstrapFromPayload() }
+        when (action) {
+            ACTION_REFRESH_TYPE -> {
+                
+                
+            }
+            ACTION_RESTART_DAEMONS -> {
+                
+                
+                if (acquireDaemonOp("RESTART_DAEMONS")) {
+                    scope.launch {
+                        try { restartBothDaemons() } finally { daemonOpInFlight.set(false) }
+                    }
+                }
+            }
+            else -> {
+                
+                
+                if (haomad == null || haoma == null) {
+                    if (acquireDaemonOp("default")) {
+                        scope.launch {
+                            try { ensureDaemonsUp() } finally { daemonOpInFlight.set(false) }
+                        }
+                    }
+                }
+            }
         }
         return START_NOT_STICKY
     }
@@ -100,6 +126,7 @@ class HaomaCoreService : Service() {
             }
         }
         haoma = null
+        haomaAddr = null
         haomad?.let { d ->
             try {
                 d.stop(STOP_GRACE_MS)
@@ -108,46 +135,138 @@ class HaomaCoreService : Service() {
             }
         }
         haomad = null
+        haomadAddr = null
         scope.cancel()
         super.onDestroy()
     }
 
-    private fun bootstrapFromPayload() {
+    
+    private fun ensureDaemonsUp() {
+        
+        
+        reapDaemonOrphans(VaultHelper.cfgDir(applicationContext))
+        reapStaleHandles()
         val claimed = BootstrapPayload.take()
         if (claimed == null) {
-            Logger.w("fgs", "onStartCommand without a deposited payload; stopping")
+            Logger.w("fgs", "ensureDaemonsUp without a deposited payload; stopping")
             stopSelf()
             return
         }
         val (secrets, ack) = claimed
+        var spawnedHaomad = false
+        var spawnedHaoma = false
         try {
-            val haomadDaemon = spawnHaomad(secrets)
-            haomad = haomadDaemon
-            val haomadAddr = haomadDaemon.waitReady(READY_TIMEOUT_MS)
-            Logger.i("fgs", "haomad up api_addr=$haomadAddr")
+            if (haomad == null) {
+                val d = spawnHaomad(secrets)
+                haomad = d
+                spawnedHaomad = true
+                val addr = d.waitReady(READY_TIMEOUT_MS)
+                haomadAddr = addr
+                Logger.i("fgs", "haomad spawned api_addr=$addr")
+            } else {
+                Logger.i("fgs", "haomad already alive @$haomadAddr; reusing")
+            }
+            val haomadAddrLocal = haomadAddr
+                ?: error("haomad addr null after liveness check")
 
-            val haomaDaemon = spawnHaoma(secrets, haomadAddr)
-            haoma = haomaDaemon
-            val haomaAddr = haomaDaemon.waitReady(READY_TIMEOUT_MS)
-            Logger.i("fgs", "haoma up api_addr=$haomaAddr")
+            if (haoma == null) {
+                val d = spawnHaoma(secrets, haomadAddrLocal)
+                haoma = d
+                spawnedHaoma = true
+                val addr = d.waitReady(READY_TIMEOUT_MS)
+                haomaAddr = addr
+                Logger.i("fgs", "haoma spawned api_addr=$addr")
+                attachMessengerStore(addr)
+            } else {
+                Logger.i("fgs", "haoma already alive @$haomaAddr; reusing")
+            }
 
-            attachMessengerStore(haomaAddr)
-
-            ack.complete(BootstrapPayload.Result.Ok(haomadAddr, haomaAddr))
+            ack.complete(BootstrapPayload.Result.Ok(haomadAddrLocal, haomaAddr ?: ""))
         } catch (t: Throwable) {
-            Logger.e("fgs", "daemon bootstrap failed", t)
+            Logger.e("fgs", "ensureDaemonsUp failed (spawnedHaomad=$spawnedHaomad spawnedHaoma=$spawnedHaoma)", t)
             ack.complete(BootstrapPayload.Result.Fail(t.message ?: t.javaClass.simpleName))
-            runCatching { (application as? HaomaApp)?.messengerStore?.onDaemonsStopped() }
-            haoma?.let { runCatching { it.stop(STOP_GRACE_MS) } }
-            haoma = null
-            haomad?.let { runCatching { it.stop(STOP_GRACE_MS) } }
-            haomad = null
-            stopSelf()
+            
+            if (spawnedHaoma) {
+                runCatching { (application as? HaomaApp)?.messengerStore?.onDaemonsStopped() }
+                haoma?.let { runCatching { it.stop(STOP_GRACE_MS) } }
+                haoma = null
+                haomaAddr = null
+            }
+            if (spawnedHaomad) {
+                haomad?.let { runCatching { it.stop(STOP_GRACE_MS) } }
+                haomad = null
+                haomadAddr = null
+            }
+            
+            
+            if (haomad == null) {
+                stopSelf()
+            }
         } finally {
             
             
             secrets.fill(0)
         }
+    }
+
+    
+    private fun acquireDaemonOp(label: String): Boolean {
+        if (daemonOpInFlight.compareAndSet(false, true)) return true
+        Logger.w("fgs", "$label dropped: another daemon op in flight")
+        return false
+    }
+
+    
+    private fun reapStaleHandles() {
+        haoma?.let { d ->
+            if (!d.isAlive) {
+                Logger.w("fgs", "stale haoma handle (process exited); reaping")
+                runCatching { d.stop(STOP_GRACE_MS) }
+                haoma = null
+                haomaAddr = null
+                runCatching { (application as? HaomaApp)?.messengerStore?.onDaemonsStopped() }
+            }
+        }
+        haomad?.let { d ->
+            if (!d.isAlive) {
+                Logger.w("fgs", "stale haomad handle (process exited); reaping")
+                runCatching { d.stop(STOP_GRACE_MS) }
+                haomad = null
+                haomadAddr = null
+                
+                
+                haoma?.let { runCatching { it.stop(STOP_GRACE_MS) } }
+                haoma = null
+                haomaAddr = null
+                runCatching { (application as? HaomaApp)?.messengerStore?.onDaemonsStopped() }
+            }
+        }
+    }
+
+    
+    private fun restartBothDaemons() {
+        Logger.i("fgs", "ACTION_RESTART_DAEMONS tearing down haoma + haomad")
+        runCatching { (application as? HaomaApp)?.messengerStore?.onDaemonsStopped() }
+        haoma?.let { d ->
+            try {
+                d.stop(STOP_GRACE_MS)
+            } catch (t: Throwable) {
+                Logger.e("fgs", "haoma stop (restart)", t)
+            }
+        }
+        haoma = null
+        haomaAddr = null
+        haomad?.let { d ->
+            try {
+                d.stop(STOP_GRACE_MS)
+            } catch (t: Throwable) {
+                Logger.e("fgs", "haomad stop (restart)", t)
+            }
+        }
+        haomad = null
+        haomadAddr = null
+        Logger.i("fgs", "ACTION_RESTART_DAEMONS respawning via ensureDaemonsUp")
+        ensureDaemonsUp()
     }
 
     private fun spawnHaomad(secretsBlob: ByteArray): Daemon {
@@ -196,6 +315,9 @@ class HaomaCoreService : Service() {
             args = args,
             secretsBlob = secretsBlob,
             errLog = haomaLog,
+            
+            
+            pidFile = File(cfg, "haoma.pid"),
         )
     }
 
@@ -341,9 +463,41 @@ class HaomaCoreService : Service() {
         const val ACTION_REFRESH_TYPE = "io.haoma.calculator.fgs.REFRESH_TYPE"
 
         
+        const val ACTION_RESTART_DAEMONS = "io.haoma.calculator.fgs.RESTART_DAEMONS"
+
+        
         fun start(context: Context) {
             val intent = Intent(context, HaomaCoreService::class.java)
             context.startForegroundService(intent)
+        }
+
+        
+        fun restartDaemons(context: Context) {
+            val app = context.applicationContext as? HaomaApp
+            if (app == null) {
+                Logger.w("fgs", "restartDaemons skipped — applicationContext is not HaomaApp")
+                return
+            }
+            val vault = app.vaultSession
+            if (vault == null) {
+                Logger.w("fgs", "restartDaemons skipped — no vault session (hard-locked?)")
+                return
+            }
+            val secrets = try {
+                vault.secretsForRestart(context)
+            } catch (t: Throwable) {
+                Logger.e("fgs", "restartDaemons: secretsForRestart failed", t)
+                return
+            }
+            BootstrapPayload.deposit(secrets)
+            val intent = Intent(context, HaomaCoreService::class.java)
+                .setAction(ACTION_RESTART_DAEMONS)
+            try {
+                context.startForegroundService(intent)
+                Logger.i("fgs", "restartDaemons: ACTION_RESTART_DAEMONS dispatched")
+            } catch (t: Throwable) {
+                Logger.w("fgs", "restartDaemons dispatch failed: ${t.message}")
+            }
         }
 
         

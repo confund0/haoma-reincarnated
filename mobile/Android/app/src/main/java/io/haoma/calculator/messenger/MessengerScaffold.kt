@@ -4,16 +4,13 @@ import android.app.Activity
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -143,7 +140,6 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: 
         containerColor = BG_BAR,
         contentColor = FG_BAR,
     ) {
-        ReadinessStrip(store = store)
         NavTabs.forEach { entry ->
             val selected = activeTab == entry.tab
             
@@ -155,32 +151,35 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: 
                 selected = selected,
                 onClick = { onSelect(entry.tab) },
                 icon = {
-                    Icon(
-                        imageVector = entry.icon,
-                        contentDescription = entry.label,
-                        modifier = Modifier.size(NAV_ICON_SIZE),
-                        tint = if (unreadTint) FG_UNREAD else LocalContentColor.current,
-                    )
+                    val iv = entry.icon
+                    if (iv != null) {
+                        Icon(
+                            imageVector = iv,
+                            contentDescription = entry.label,
+                            modifier = Modifier.size(NAV_ICON_SIZE),
+                            tint = if (unreadTint) FG_UNREAD else LocalContentColor.current,
+                        )
+                    } else {
+                        ReadinessStrip(store = store, onTap = { onSelect(entry.tab) })
+                    }
                 },
                 colors = navItemColors(),
             )
         }
-        Spacer(modifier = Modifier.width(NAV_EDGE_INSET))
     }
 }
 
-private val NAV_EDGE_INSET = 16.dp
 private val NAV_BAR_HEIGHT = 58.dp
 private val NAV_ICON_SIZE = 20.dp
 
-private data class NavTabEntry(val tab: Tab, val label: String, val icon: ImageVector)
+private data class NavTabEntry(val tab: Tab, val label: String, val icon: ImageVector?)
 
 private val NavTabs = listOf(
     NavTabEntry(Tab.Chats, "Chats", Icons.Filled.Email),
     NavTabEntry(Tab.Contacts, "Contacts", Icons.Filled.Person),
     NavTabEntry(Tab.Invites, "Invites", Icons.Filled.Add),
     NavTabEntry(Tab.Settings, "Settings", Icons.Filled.Settings),
-    NavTabEntry(Tab.Status, "Status", Icons.Filled.Info),
+    NavTabEntry(Tab.Status, "Status", icon = null),
 )
 
 @Composable

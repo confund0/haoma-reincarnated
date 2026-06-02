@@ -181,6 +181,9 @@ const (
 	FrameExternalProbeAccepted FrameType = "external_probe_accepted"
 	FrameExternalReachChanged  FrameType = "health.external-reach-changed"
 
+	FrameTorRecover   FrameType = "tor_recover"
+	FrameTorRecovered FrameType = "tor_recovered"
+
 	FrameRotateBegin       FrameType = "rotate_begin"
 	FrameRotateBegun       FrameType = "rotate_begun"
 	FrameRotateUserAccept  FrameType = "rotate_user_accept"
@@ -240,7 +243,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 39
+const ProtocolVersion = 40
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -968,6 +971,14 @@ type PeerSelfReachPayload struct {
 type ExternalProbeBurstRequest struct{}
 
 type ExternalProbeAcceptedResponse struct{}
+
+type TorRecoverRequest struct {
+	Mode string `json:"mode"`
+}
+
+type TorRecoveredResponse struct {
+	Mode string `json:"mode"`
+}
 
 type ExternalReachPayload struct {
 	Ok         bool   `json:"ok"`

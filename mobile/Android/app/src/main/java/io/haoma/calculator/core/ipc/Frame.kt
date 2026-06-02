@@ -138,6 +138,10 @@ object FrameType {
     const val ExternalReachChanged = "health.external-reach-changed"
 
     
+    const val TorRecover = "tor_recover"
+    const val TorRecovered = "tor_recovered"
+
+    
     const val RotateBegin = "rotate_begin"
     const val RotateBegun = "rotate_begun"
     const val RotateUserAccept = "rotate_user_accept"

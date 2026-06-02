@@ -24,9 +24,18 @@ class ForegroundIdleTimer(
 
     @Volatile private var lastTouchMillis: Long = nowMillis()
     @Volatile private var job: Job? = null
+    @Volatile private var inCall: Boolean = false
 
     fun touch() {
         lastTouchMillis = nowMillis()
+    }
+
+    
+    fun setInCall(active: Boolean) {
+        if (inCall == active) return
+        inCall = active
+        if (!active) lastTouchMillis = nowMillis()
+        Logger.i("idle-timer", "inCall=$active")
     }
 
     fun resume() {
@@ -46,6 +55,7 @@ class ForegroundIdleTimer(
         while (scope.isActive) {
             delay(TickMillis)
             if (state.state.value !is AppState.Warm) continue
+            if (inCall) continue
             val policy = policySource() ?: continue
             val timeoutMs = policy.timeoutSeconds * 1000L
             if (timeoutMs <= 0) continue

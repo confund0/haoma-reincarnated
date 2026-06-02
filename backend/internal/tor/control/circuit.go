@@ -81,6 +81,20 @@ func (c *Conn) HsFetch(serviceID string) error {
 	return nil
 }
 
+func (c *Conn) Signal(name string) error {
+	if name == "" {
+		return errors.New("control: empty signal name")
+	}
+	reply, err := c.cmd("SIGNAL " + name)
+	if err != nil {
+		return err
+	}
+	if reply.Code != 250 {
+		return fmt.Errorf("control: SIGNAL %s: %d %s", name, reply.Code, strings.Join(reply.Lines, " "))
+	}
+	return nil
+}
+
 func (c *Conn) CloseCircuit(id string) error {
 	if id == "" {
 		return errors.New("control: empty circuit id")

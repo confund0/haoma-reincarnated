@@ -1,30 +1,40 @@
 package io.haoma.calculator.messenger
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ReadinessStrip(store: MessengerStore) {
+fun ReadinessStrip(store: MessengerStore, onTap: () -> Unit = {}) {
     val health by store.health.collectAsStateWithLifecycle()
     val screen by store.current.collectAsStateWithLifecycle()
     val chats by store.chats.collectAsStateWithLifecycle()
@@ -43,11 +53,19 @@ fun ReadinessStrip(store: MessengerStore) {
     val midColor = externalDotColor(health, nowSecs)
     val botColor = localDotColor(health, nowSecs)
 
+    var menuOpen by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+
     Box(
         modifier = Modifier
             .width(STRIP_WIDTH)
-            .fillMaxHeight()
-            .background(BG_STRIP),
+            .combinedClickable(
+                onClick = onTap,
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    menuOpen = true
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Column(
@@ -57,6 +75,35 @@ fun ReadinessStrip(store: MessengerStore) {
             Led(color = topColor)
             Led(color = midColor)
             Led(color = botColor)
+        }
+        
+        
+        MaterialTheme(
+            colorScheme = darkColorScheme(
+                surface = MenuSurface,
+                surfaceContainer = MenuSurface,
+                onSurface = MenuAccent,
+            ),
+        ) {
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Force new identity", color = MenuAccent) },
+                    onClick = {
+                        menuOpen = false
+                        store.torRecover("newnym")
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Reset Tor", color = MenuAccent) },
+                    onClick = {
+                        menuOpen = false
+                        store.torRecover("reset")
+                    },
+                )
+            }
         }
     }
 }
@@ -132,10 +179,11 @@ private val LED_HEIGHT = 4.dp
 private val LED_GAP = 2.dp
 private val LED_CORNER = 1.dp
 private val STRIP_WIDTH = 20.dp
-
-
-private val BG_STRIP = Color(0xFF282828)
 private val C_OK = Color(0xFF5FCC1A)
 private val C_WARN = Color(0xFFFABD2F)
 private val C_BAD = Color(0xFFCC241D)
 private val C_DIM = Color(0xFF504945)
+
+
+private val MenuSurface = Color(0xFF32302F)
+private val MenuAccent = Color(0xFFFABD2F)

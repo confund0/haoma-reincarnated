@@ -38,6 +38,8 @@ func (d *daemon) apiHandler() http.Handler {
 
 	mux.HandleFunc("POST /external-probe-burst", d.handleExternalProbeBurst)
 	mux.HandleFunc("POST /peers/{id}/self-probe", d.handlePeerSelfProbe)
+
+	mux.HandleFunc("POST /tor/recover", d.handleTorRecover)
 	mux.HandleFunc("GET /stats", d.handleStats)
 	mux.HandleFunc("POST /send", d.handleSend)
 	mux.HandleFunc("GET /inbox", d.handleInboxList)

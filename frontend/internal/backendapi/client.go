@@ -182,6 +182,14 @@ func (c *Client) ExternalProbeBurst(ctx context.Context) error {
 	return c.postJSON(ctx, "/external-probe-burst", nil, http.StatusAccepted, nil)
 }
 
+func (c *Client) TorRecover(ctx context.Context, mode string) error {
+	body, err := json.Marshal(map[string]string{"mode": mode})
+	if err != nil {
+		return fmt.Errorf("backendapi: marshal TorRecover body: %w", err)
+	}
+	return c.postJSON(ctx, "/tor/recover", body, http.StatusOK, nil)
+}
+
 type Peer struct {
 	ID                   string         `json:"id"`
 	KnownAddresses       []string       `json:"known_addresses"`

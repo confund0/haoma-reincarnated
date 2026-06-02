@@ -1,7 +1,10 @@
 package io.haoma.calculator.messenger
 
+import io.haoma.calculator.core.HaomaCoreService
 import io.haoma.calculator.core.ipc.FrameType
 import io.haoma.calculator.log.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 
@@ -78,4 +81,63 @@ private fun MessengerStore.randomPairedPeerId(): String? {
 private fun MessengerStore.peerIdForChat(chatId: String): String? {
     val chat = _chats.value.firstOrNull { it.chatId == chatId } ?: return null
     return chat.peerId.takeIf { it.isNotEmpty() }
+}
+
+
+private const val RECOVER_LOG_TAG = "MessengerStore.TorRecover"
+
+
+fun MessengerStore.torRecover(mode: String) {
+    when (mode) {
+        "newnym" -> torRecoverNewnym()
+        "reset"  -> torRecoverReset()
+        else     -> Logger.w(RECOVER_LOG_TAG, "ignoring unknown mode: $mode")
+    }
+}
+
+private fun MessengerStore.torRecoverNewnym() {
+    scope.launch {
+        val c = ipc ?: run {
+            Logger.d(RECOVER_LOG_TAG, "newnym skipped — ipc not connected yet")
+            return@launch
+        }
+        Logger.d(RECOVER_LOG_TAG, "newnym dispatch")
+        try {
+            c.request(
+                type = FrameType.TorRecover,
+                payload = TorRecoverRequest("newnym").toJson(),
+            )
+            Logger.d(RECOVER_LOG_TAG, "newnym accepted")
+        } catch (t: Throwable) {
+            Logger.w(RECOVER_LOG_TAG, "newnym failed: ${t.message ?: "?"}")
+        }
+    }
+}
+
+private fun MessengerStore.torRecoverReset() {
+    val ctx = appContext ?: run {
+        Logger.w(RECOVER_LOG_TAG, "reset skipped — no appContext on store")
+        return
+    }
+    
+    
+    _health.update {
+        it.copy(
+            tor = TorHealth.ZERO,
+            externalReach = null,
+            selfReach = emptyMap(),
+            backendStatusAt = 0L,
+        )
+    }
+    _torInfoSnapshot.value = null
+    
+    
+    scope.launch(Dispatchers.IO) {
+        Logger.d(RECOVER_LOG_TAG, "reset dispatch (FGS restartDaemons)")
+        try {
+            HaomaCoreService.restartDaemons(ctx)
+        } catch (t: Throwable) {
+            Logger.w(RECOVER_LOG_TAG, "reset failed: ${t.message ?: "?"}")
+        }
+    }
 }

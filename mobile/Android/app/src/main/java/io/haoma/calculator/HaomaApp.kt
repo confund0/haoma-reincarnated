@@ -113,10 +113,11 @@ class HaomaApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         Logger.init(this, BuildConfig.DEBUG)
-        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        
+        
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             Logger.e("uncaught", "thread=${thread.name}", throwable)
-            previous?.uncaughtException(thread, throwable)
+            android.os.Process.killProcess(android.os.Process.myPid())
         }
         Logger.i("app", "HaomaApp.onCreate debug=${BuildConfig.DEBUG}")
 
@@ -176,17 +177,23 @@ class HaomaApp : Application(), ImageLoaderFactory {
         )
         
         
-        messengerStore.audioRouter = io.haoma.calculator.messenger.calls.AudioRouter(
+        val audioRouter = io.haoma.calculator.messenger.calls.AudioRouter(
             app = applicationContext,
             activeCallsSource = messengerStore.activeCalls,
             bluetoothConnectGrantedSource = messengerStore.bluetoothConnectGranted,
         ).also { it.start() }
+        messengerStore.audioRouter = audioRouter
 
         
         proximityController = io.haoma.calculator.messenger.calls.ProximityController(
             app = applicationContext,
             activeCallsSource = messengerStore.activeCalls,
         ).also { it.start() }
+
+        
+        audioRouter.inCallActive
+            .onEach { idleTimer.setInCall(it) }
+            .launchIn(appScope)
 
         
         thread(name = "disguise-bootstrap", isDaemon = true) {

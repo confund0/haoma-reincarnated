@@ -1,5 +1,9 @@
 package io.haoma.calculator.core
 
+import android.os.SystemClock
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import io.haoma.calculator.log.Logger
 import java.io.BufferedReader
 import java.io.File
@@ -14,6 +18,7 @@ import org.json.JSONObject
 class Daemon private constructor(
     val name: String,
     private val process: Process,
+    private val pidFile: File? = null,
 ) {
     private val ready = CompletableFuture<String>()
 
@@ -36,7 +41,10 @@ class Daemon private constructor(
 
     
     fun stop(graceMs: Long): Int {
-        if (!process.isAlive) return process.exitValue()
+        if (!process.isAlive) {
+            deletePidFile()
+            return process.exitValue()
+        }
         Logger.i("daemon", "$name stop (grace=${graceMs}ms)")
         process.destroy()
         if (!process.waitFor(graceMs, TimeUnit.MILLISECONDS)) {
@@ -44,7 +52,13 @@ class Daemon private constructor(
             process.destroyForcibly()
             process.waitFor()
         }
+        deletePidFile()
         return process.exitValue()
+    }
+
+    private fun deletePidFile() {
+        val f = pidFile ?: return
+        runCatching { f.delete() }
     }
 
     
@@ -105,6 +119,7 @@ class Daemon private constructor(
             args: List<String>,
             secretsBlob: ByteArray,
             errLog: File,
+            pidFile: File? = null,
         ): Daemon {
             require(bin.exists()) { "$name binary missing at ${bin.absolutePath}" }
             Logger.i("daemon", "spawn $name ${bin.absolutePath} args=$args")
@@ -112,15 +127,57 @@ class Daemon private constructor(
             val proc = ProcessBuilder(cmd)
                 .redirectError(ProcessBuilder.Redirect.appendTo(errLog))
                 .start()
+            if (pidFile != null) {
+                runCatching {
+                    pidFile.parentFile?.mkdirs()
+                    pidFile.writeText("${childPidOf(proc)}\n")
+                }.onFailure { Logger.w("daemon", "$name pidfile write failed: ${it.message}") }
+            }
             try {
                 proc.outputStream.use { it.write(secretsBlob) }
             } catch (e: IOException) {
                 proc.destroyForcibly()
+                if (pidFile != null) runCatching { pidFile.delete() }
                 throw IOException("$name: write secrets to stdin: ${e.message}", e)
             }
-            return Daemon(name, proc)
+            return Daemon(name, proc, pidFile)
+        }
+
+        
+        fun stop(pid: Int, graceMs: Long): Boolean {
+            if (!isAlive(pid)) return true
+            Logger.i("daemon", "stop pid=$pid (grace=${graceMs}ms)")
+            runCatching { Os.kill(pid, OsConstants.SIGTERM) }
+            val deadline = SystemClock.elapsedRealtime() + graceMs
+            while (SystemClock.elapsedRealtime() < deadline) {
+                if (!isAlive(pid)) return true
+                Thread.sleep(50)
+            }
+            Logger.w("daemon", "pid=$pid did not exit within ${graceMs}ms; SIGKILL")
+            runCatching { Os.kill(pid, OsConstants.SIGKILL) }
+            Thread.sleep(50)
+            return !isAlive(pid)
+        }
+
+        private fun isAlive(pid: Int): Boolean = try {
+            Os.kill(pid, 0)  
+            true
+        } catch (e: ErrnoException) {
+            
+            
+            e.errno != OsConstants.ESRCH
         }
     }
+}
+
+
+private fun childPidOf(p: Process): Long {
+    runCatching {
+        return p.javaClass.getMethod("pid").invoke(p) as Long
+    }
+    val m = Regex("pid=(\\d+)").find(p.toString())
+    return m?.groupValues?.get(1)?.toLongOrNull()
+        ?: error("could not determine PID from ${p.javaClass.name}: ${p.toString().take(120)}")
 }
 
 private fun parseReadyLine(line: String): Pair<String?, String?> {
