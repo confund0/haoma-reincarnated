@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import io.haoma.calculator.log.Logger
 import java.util.concurrent.Executor
 import io.haoma.calculator.messenger.CallEntry
+import io.haoma.calculator.messenger.CallModality
 import io.haoma.calculator.messenger.CallStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -175,6 +176,28 @@ class AudioRouter(
         
         
         refresh()
+        if (activeCallsSource.value.values.any {
+                it.status == CallStatus.Accepted && CallModality.Video in it.modalities
+            }) {
+            pickVideoDefaultRoute()
+        }
+    }
+
+    
+    private fun pickVideoDefaultRoute() {
+        val available = _availableDevices.value
+        val btGranted = bluetoothConnectGrantedSource.value
+        val pick = available.firstOrNull {
+            it.kind == AudioRoute.Kind.Bluetooth && btGranted
+        }
+            ?: available.firstOrNull { it.kind == AudioRoute.Kind.Wired }
+            ?: available.firstOrNull { it.kind == AudioRoute.Kind.Speaker }
+        if (pick == null) {
+            Logger.w("audio", "video-call default route: no eligible device in $available")
+            return
+        }
+        Logger.i("audio", "video-call default route → kind=${pick.kind} id=${pick.deviceId}")
+        routeTo(pick)
     }
 
     private fun onCallInactive() {

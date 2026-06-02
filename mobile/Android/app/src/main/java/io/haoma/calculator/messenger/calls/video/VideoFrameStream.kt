@@ -57,6 +57,9 @@ class VideoFrameStream(
     private val ring: Array<FrameSlot> = Array(RING_SIZE) { FrameSlot(width, height) }
     private val ringLock = Any()
 
+    
+    internal fun <T> withSlotLock(block: () -> T): T = synchronized(ringLock) { block() }
+
     private val _state = MutableStateFlow<StreamState>(StreamState.Connecting)
     val state: kotlinx.coroutines.flow.StateFlow<StreamState> = _state
 
@@ -135,12 +138,15 @@ class VideoFrameStream(
                 }
                 din.readFully(scratch)
 
-                val slot = pickFreeSlot()
-                slot.buffer.clear()
-                slot.buffer.put(scratch)
-                slot.buffer.flip()
-                slot.ptsNs = ptsNs
-                slot.painted = false
+                
+                synchronized(ringLock) {
+                    val slot = pickFreeSlot()
+                    slot.buffer.clear()
+                    slot.buffer.put(scratch)
+                    slot.buffer.flip()
+                    slot.ptsNs = ptsNs
+                    slot.painted = false
+                }
 
                 val count = frameCount.incrementAndGet()
                 lastFrameAt.set(SystemClock.elapsedRealtimeNanos())

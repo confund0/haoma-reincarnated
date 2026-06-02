@@ -206,8 +206,24 @@ class CameraSource(
                 )
                 stop()
             }
+        } catch (e: IllegalStateException) {
+            
+            
+            if (stopped.get()) {
+                Logger.d("call", "cam: dropped frame on teardown call=${shortCallId(callId)}")
+            } else {
+                Logger.w(
+                    "call",
+                    "cam: buffer inaccessible while running call=${shortCallId(callId)} err=${e.message}",
+                )
+            }
         } finally {
-            img.close()
+            try {
+                img.close()
+            } catch (_: Exception) {
+                
+                
+            }
         }
     }
 

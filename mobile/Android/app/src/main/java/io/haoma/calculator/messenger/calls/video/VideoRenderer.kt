@@ -143,7 +143,7 @@ internal class VideoRenderer(
             return
         }
 
-        drawFrame(slot, stream.width, stream.height)
+        drawFrame(stream, slot, stream.width, stream.height)
         lastPaintedPts = slot.ptsNs
 
         if (!loggedFirstFrame) {
@@ -188,7 +188,7 @@ internal class VideoRenderer(
         }
     }
 
-    private fun drawFrame(slot: VideoFrameStream.FrameSlot, w: Int, h: Int) {
+    private fun drawFrame(stream: VideoFrameStream, slot: VideoFrameStream.FrameSlot, w: Int, h: Int) {
         val buf = slot.buffer
         val ySize = w * h
         val uvSize = w * h / 4
@@ -196,34 +196,37 @@ internal class VideoRenderer(
         val uvH = h / 2
 
         
-        buf.position(0).limit(ySize)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texY)
-        GLES20.glTexImage2D(
-            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-            w, h, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, buf.slice(),
-        )
+        stream.withSlotLock {
+            
+            buf.position(0).limit(ySize)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texY)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                w, h, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, buf.slice(),
+            )
 
-        
-        buf.position(ySize).limit(ySize + uvSize)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texU)
-        GLES20.glTexImage2D(
-            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-            uvW, uvH, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, buf.slice(),
-        )
+            
+            buf.position(ySize).limit(ySize + uvSize)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texU)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                uvW, uvH, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, buf.slice(),
+            )
 
-        
-        buf.position(ySize + uvSize).limit(ySize + 2 * uvSize)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texV)
-        GLES20.glTexImage2D(
-            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-            uvW, uvH, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, buf.slice(),
-        )
+            
+            buf.position(ySize + uvSize).limit(ySize + 2 * uvSize)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texV)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                uvW, uvH, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, buf.slice(),
+            )
 
-        
-        buf.position(0).limit(buf.capacity())
+            
+            buf.position(0).limit(buf.capacity())
+        }
 
         
         val srcAspect = w.toFloat() / h.toFloat()
