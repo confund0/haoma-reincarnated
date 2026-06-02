@@ -4,7 +4,8 @@
 //   - The first comment group in a file IF it looks like a license /
 //     copyright / SPDX header (case-insensitive substring match).
 //   - Any //go:* directive (build tags, embed, generate, etc.).
-//   - Any //nolint:* / //noinspection / //export / //line directive.
+//   - Any //lint:* (staticcheck), //nolint:* (golangci-lint),
+//     //noinspection, //export, or //line directive.
 //
 // Everything else — package docs, function docs, field docs, inline
 // trailing comments — is dropped.
@@ -224,9 +225,12 @@ func isDirectiveLine(text string) bool {
 	body := strings.TrimPrefix(t, "//")
 	// Note: directives are //X with no space. Common forms:
 	//   //go:embed, //go:build, //go:generate, //go:noinline, //go:linkname, //go:nosplit
+	//   //lint:ignore, //lint:file-ignore       (staticcheck)
 	//   //nolint:..., //noinspection, //export, //line
 	switch {
 	case strings.HasPrefix(body, "go:"):
+		return true
+	case strings.HasPrefix(body, "lint:"):
 		return true
 	case strings.HasPrefix(body, "nolint:"), strings.HasPrefix(body, "nolint "):
 		return true

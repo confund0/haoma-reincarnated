@@ -116,7 +116,7 @@ func (sd *sessionDispatcher) handleTorRecover(ctx context.Context, sess *ipc.Ses
 		sendError(sess, f.ID, "tor_recover_failed", err.Error())
 		return
 	}
-
+	//lint:ignore S1016 TorRecoverRequest and TorRecoveredResponse are distinct req/resp types that happen to share a shape.
 	resp, err := ipc.NewFrame(ipc.FrameTorRecovered, f.ID, ipc.TorRecoveredResponse{Mode: req.Mode})
 	if err != nil {
 		sendError(sess, f.ID, "encode_frame", err.Error())
