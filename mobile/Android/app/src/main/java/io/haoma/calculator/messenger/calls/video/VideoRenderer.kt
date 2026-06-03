@@ -60,6 +60,11 @@ internal class VideoRenderer(
     private var lastPaintDebugAt: Long = 0L
     private var loggedFirstFrame = false
 
+    
+    private var lastTargetNs: Long = Long.MIN_VALUE
+    private var rewindCount: Int = 0
+    private var rewindMaxDeltaNs: Long = 0L
+
     private val frameCb = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
@@ -133,6 +138,22 @@ internal class VideoRenderer(
             if (newest != null && newest.ptsNs > target + RECOVERY_SNAP_NS) {
                 target = newest.ptsNs
             }
+            
+            
+            if (lastTargetNs != Long.MIN_VALUE && target < lastTargetNs) {
+                val delta = lastTargetNs - target
+                if (delta > SENDER_RESET_NS) {
+                    Logger.i(
+                        "call",
+                        "videotile sender_reset call=${shortCallId(callId)} delta_ms=${delta / 1_000_000L}",
+                    )
+                } else {
+                    rewindCount++
+                    if (delta > rewindMaxDeltaNs) rewindMaxDeltaNs = delta
+                    target = lastTargetNs
+                }
+            }
+            lastTargetNs = target
             markLive()
             stream.latestFrame(target)
         }
@@ -164,6 +185,14 @@ internal class VideoRenderer(
                 "call",
                 "videotile paint call=${shortCallId(callId)} picked_pts=${slot.ptsNs} sample_age_ms=$ageMs syncing=${_syncing.value}",
             )
+            if (rewindCount > 0) {
+                Logger.i(
+                    "call",
+                    "videotile clock_rewind_suppressed call=${shortCallId(callId)} count=$rewindCount max_delta_ms=${rewindMaxDeltaNs / 1_000_000L}",
+                )
+                rewindCount = 0
+                rewindMaxDeltaNs = 0L
+            }
         }
     }
 
@@ -395,6 +424,7 @@ internal class VideoRenderer(
     companion object {
         private const val STALE_SAMPLE_THRESHOLD_NS = 5_000_000_000L
         private const val RECOVERY_SNAP_NS = 500_000_000L
+        private const val SENDER_RESET_NS = 5_000_000_000L
 
         private const val VERTEX_SRC = """
             attribute vec2 aPos;

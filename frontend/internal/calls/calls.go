@@ -77,6 +77,8 @@ const (
 	FailReasonProxyRegister = "proxy_register_failed"
 	FailReasonPeerUnreach   = "peer_unreachable"
 	FailReasonInvalidOffer  = "invalid_call_offer"
+
+	CallEndReasonAutoHangup = "auto-hangup"
 )
 
 const (
@@ -214,7 +216,7 @@ func (m *Manager) Transition(callID string, next Status, reason string, nowUnix 
 		if next == StatusAccepted && cur.AcceptedAt == 0 {
 			cur.AcceptedAt = nowUnix
 		}
-		if next == StatusRejected || next == StatusFailed {
+		if next == StatusRejected || next == StatusFailed || next == StatusEnded {
 			cur.FailReason = reason
 		}
 		if next == StatusRejected || next == StatusEnded || next == StatusFailed {

@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import io.haoma.calculator.messenger.*
 import io.haoma.calculator.messenger.ChatDefaultsSettings
 import io.haoma.calculator.messenger.MessengerStore
@@ -232,6 +233,7 @@ private fun RetentionDropdown(currentIndex: Int, onPick: (Int) -> Unit) {
             DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
+                properties = PopupProperties(focusable = false),
             ) {
                 retentionLevels.forEachIndexed { idx, lvl ->
                     DropdownMenuItem(

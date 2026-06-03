@@ -91,6 +91,8 @@ const (
 	CallOutcomeCancelled CallOutcome = "cancelled"
 
 	CallOutcomeFailed CallOutcome = "failed"
+
+	CallOutcomeDisrupted CallOutcome = "disrupted"
 )
 
 type CallSummaryBody struct {
@@ -109,21 +111,28 @@ const (
 	DecryptFailed DecryptStatus = "failed"
 )
 
+type DecryptFailReason string
+
+const (
+	DecryptReasonVersionMismatch DecryptFailReason = "version_mismatch"
+)
+
 type Event struct {
-	RecvSeq       uint64          `json:"recv_seq"`
-	ChatID        chat.ChatID     `json:"chat_id"`
-	Direction     Direction       `json:"direction"`
-	Kind          Kind            `json:"kind"`
-	DisplayTs     int64           `json:"display_ts"`
-	SenderTs      int64           `json:"sender_ts,omitempty"`
-	RecvTs        int64           `json:"recv_ts"`
-	SenderSeq     uint64          `json:"sender_seq,omitempty"`
-	SenderPeerID  string          `json:"sender_peer_id,omitempty"`
-	EnvelopeID    string          `json:"envelope_id,omitempty"`
-	MsgID         string          `json:"msg_id,omitempty"`
-	DecryptStatus DecryptStatus   `json:"decrypt_status,omitempty"`
-	Body          json.RawMessage `json:"body,omitempty"`
-	RawBlob       []byte          `json:"raw_blob,omitempty"`
+	RecvSeq       uint64            `json:"recv_seq"`
+	ChatID        chat.ChatID       `json:"chat_id"`
+	Direction     Direction         `json:"direction"`
+	Kind          Kind              `json:"kind"`
+	DisplayTs     int64             `json:"display_ts"`
+	SenderTs      int64             `json:"sender_ts,omitempty"`
+	RecvTs        int64             `json:"recv_ts"`
+	SenderSeq     uint64            `json:"sender_seq,omitempty"`
+	SenderPeerID  string            `json:"sender_peer_id,omitempty"`
+	EnvelopeID    string            `json:"envelope_id,omitempty"`
+	MsgID         string            `json:"msg_id,omitempty"`
+	DecryptStatus DecryptStatus     `json:"decrypt_status,omitempty"`
+	FailReason    DecryptFailReason `json:"fail_reason,omitempty"`
+	Body          json.RawMessage   `json:"body,omitempty"`
+	RawBlob       []byte            `json:"raw_blob,omitempty"`
 
 	DeliveryState string `json:"delivery_state,omitempty"`
 
@@ -287,6 +296,7 @@ func (l *Log) AppendInbound(in InboundParams) (Event, error) {
 		MsgID:         in.MsgID,
 		ExpireSeconds: in.ExpireSeconds,
 		DecryptStatus: in.Status,
+		FailReason:    in.FailReason,
 		Body:          in.Body,
 		RawBlob:       in.RawBlob,
 	}
@@ -322,6 +332,7 @@ type InboundParams struct {
 	MsgID         string
 	ExpireSeconds uint32
 	Status        DecryptStatus
+	FailReason    DecryptFailReason
 	Body          json.RawMessage
 	RawBlob       []byte
 }

@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.view.Surface
 import androidx.core.content.ContextCompat
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.shortCallId
@@ -50,6 +51,9 @@ class CameraSource(
 
     @Volatile private var socket: LocalSocket? = null
     @Volatile private var socketOut: OutputStream? = null
+
+    
+    private var previewSurface: Surface? = null
 
     private val frameBytes = width * height * 3 / 2
     
@@ -138,32 +142,116 @@ class CameraSource(
     }
 
     private fun startSession(device: CameraDevice, reader: ImageReader) {
-        val surfaces = listOf(reader.surface)
+        configureSession(device, reader, previewSurface)
+    }
+
+    
+    private fun configureSession(
+        device: CameraDevice,
+        reader: ImageReader,
+        preview: Surface?,
+    ) {
+        val surfaces =
+            if (preview != null) listOf(reader.surface, preview) else listOf(reader.surface)
         try {
             @Suppress("DEPRECATION")
             device.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
-                    try {
-                        val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                        req.addTarget(reader.surface)
-                        applyTargetFpsRange(device.id, req)
-                        session.setRepeatingRequest(req.build(), null, handler)
-                        Logger.d("call", "cam: session active ${width}x${height} call=${shortCallId(callId)}")
-                    } catch (e: Exception) {
-                        Logger.d("call", "cam: setRepeatingRequest failed: ${e.message}")
-                        stop()
-                    }
+                    submitRepeatingRequest(device, session, reader, preview)
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
-                    Logger.d("call", "cam: createCaptureSession onConfigureFailed call=${shortCallId(callId)}")
-                    stop()
+                    Logger.d(
+                        "call",
+                        "cam: createCaptureSession onConfigureFailed preview=${preview != null} " +
+                            "call=${shortCallId(callId)}",
+                    )
+                    if (preview != null && !stopped.get()) {
+                        Logger.d("call", "cam: retrying session without preview call=${shortCallId(callId)}")
+                        previewSurface = null
+                        configureSession(device, reader, null)
+                    } else {
+                        stop()
+                    }
                 }
             }, handler)
         } catch (e: Exception) {
             Logger.d("call", "cam: createCaptureSession threw: ${e.message}")
+            if (preview != null && !stopped.get()) {
+                previewSurface = null
+                configureSession(device, reader, null)
+            } else {
+                stop()
+            }
+        }
+    }
+
+    private fun submitRepeatingRequest(
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        reader: ImageReader,
+        preview: Surface?,
+    ) {
+        try {
+            val req = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            req.addTarget(reader.surface)
+            if (preview != null) req.addTarget(preview)
+            applyTargetFpsRange(device.id, req)
+            session.setRepeatingRequest(req.build(), null, handler)
+            Logger.d(
+                "call",
+                "cam: session active ${width}x${height} preview=${preview != null} " +
+                    "call=${shortCallId(callId)}",
+            )
+        } catch (e: Exception) {
+            Logger.d("call", "cam: setRepeatingRequest failed: ${e.message}")
             stop()
+        }
+    }
+
+    
+    fun attachPreviewSurface(surface: Surface) {
+        val h = handler ?: run {
+            
+            previewSurface = surface
+            return
+        }
+        h.post {
+            if (stopped.get()) return@post
+            if (previewSurface === surface) return@post
+            previewSurface = surface
+            val device = cameraDevice
+            val reader = imageReader
+            if (device != null && reader != null) {
+                try { captureSession?.close() } catch (_: Exception) {}
+                captureSession = null
+                Logger.d("call", "cam: attach preview reconfiguring call=${shortCallId(callId)}")
+                configureSession(device, reader, surface)
+            } else {
+                Logger.d("call", "cam: attach preview deferred (no device/reader yet) call=${shortCallId(callId)}")
+            }
+        }
+    }
+
+    
+    fun detachPreviewSurface() {
+        val h = handler ?: run {
+            previewSurface = null
+            return
+        }
+        h.post {
+            if (stopped.get()) return@post
+            if (previewSurface == null) return@post
+            previewSurface = null
+            val device = cameraDevice
+            val reader = imageReader
+            if (device != null && reader != null) {
+                try { captureSession?.close() } catch (_: Exception) {}
+                captureSession = null
+                Logger.d("call", "cam: detach preview reconfiguring call=${shortCallId(callId)}")
+                configureSession(device, reader, null)
+            }
         }
     }
 
@@ -386,6 +474,7 @@ class CameraSource(
         cameraDevice = null
         try { imageReader?.close() } catch (_: Exception) {}
         imageReader = null
+        previewSurface = null
         handlerThread?.quitSafely()
         handlerThread = null
         handler = null

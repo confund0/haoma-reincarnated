@@ -605,6 +605,7 @@ data class TimelineEvent(
     val envelopeId: String,
     val msgId: String,
     val decryptStatus: String,
+    val failReason: String,
     val body: JSONObject?,
     val deliveryState: String,
     val expireSeconds: Int,
@@ -648,6 +649,7 @@ data class TimelineEvent(
             envelopeId = o.optStringOrEmpty("envelope_id"),
             msgId = o.optStringOrEmpty("msg_id"),
             decryptStatus = o.optStringOrEmpty("decrypt_status"),
+            failReason = o.optStringOrEmpty("fail_reason"),
             body = o.optJSONObject("body"),
             deliveryState = o.optStringOrEmpty("delivery_state"),
             expireSeconds = o.optInt("expire_seconds", 0),
@@ -1047,6 +1049,9 @@ object CallAction {
 }
 
 
+const val CallEndReasonAutoHangup = "auto-hangup"
+
+
 object CallControlAction {
     const val Mute = "mute"
     const val Unmute = "unmute"
@@ -1100,6 +1105,8 @@ data class CallStreamSide(
     val lastSampleAtMs: Long,
     val framesOut: Long,
     val prevFramesOut: Long,
+    val framesIn: Long,
+    val prevFramesIn: Long,
     val jitterMs: Double,
 )
 

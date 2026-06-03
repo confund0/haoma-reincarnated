@@ -281,6 +281,9 @@ func deriveCallOutcome(state calls.State) events.CallOutcome {
 		return events.CallOutcomeFailed
 	case calls.StatusEnded:
 		if state.AcceptedAt > 0 {
+			if state.FailReason == calls.CallEndReasonAutoHangup {
+				return events.CallOutcomeDisrupted
+			}
 			return events.CallOutcomeCompleted
 		}
 		if state.Direction == calls.DirIn {

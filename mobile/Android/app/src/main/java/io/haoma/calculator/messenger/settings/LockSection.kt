@@ -45,6 +45,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import io.haoma.calculator.messenger.*
 import io.haoma.calculator.messenger.LockSettings
 import io.haoma.calculator.messenger.MessengerStore
@@ -737,6 +738,7 @@ private fun EnumDropdown(
                 DropdownMenu(
                     expanded = expanded,
                     onDismissRequest = { expanded = false },
+                    properties = PopupProperties(focusable = false),
                 ) {
                     options.forEachIndexed { idx, lbl ->
                         DropdownMenuItem(

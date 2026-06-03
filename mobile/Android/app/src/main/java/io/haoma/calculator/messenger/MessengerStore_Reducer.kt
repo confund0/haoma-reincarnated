@@ -241,6 +241,12 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                                 "spk" -> cur.spk?.framesOut ?: ev.framesOut
                                 else -> ev.framesOut
                             },
+                            framesIn = ev.framesIn,
+                            prevFramesIn = when (ev.side) {
+                                "mic" -> cur.mic?.framesIn ?: ev.framesIn
+                                "spk" -> cur.spk?.framesIn ?: ev.framesIn
+                                else -> ev.framesIn
+                            },
                             jitterMs = ev.jitterMs,
                         )
                         val next = when (ev.side) {

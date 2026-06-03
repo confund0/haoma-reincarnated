@@ -395,6 +395,7 @@ internal fun MessengerStore.ensureCameraSource(callId: String) {
 
 internal fun MessengerStore.closeVideoStreamsForCall(callId: String) {
     _cameraSources.value[callId]?.let { src ->
+        src.detachPreviewSurface()
         src.stop()
         _cameraSources.update { it - callId }
     }

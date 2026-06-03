@@ -1,5 +1,7 @@
 package io.haoma.calculator.messenger.calls
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -12,10 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -23,7 +27,7 @@ import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.CallAction
 import io.haoma.calculator.messenger.CallEntry
 import io.haoma.calculator.messenger.MessengerStore
-import io.haoma.calculator.messenger.calls.video.VideoTile
+import io.haoma.calculator.messenger.calls.video.CallVideoStage
 import io.haoma.calculator.messenger.peerLabelFor
 import io.haoma.calculator.messenger.respondCall
 
@@ -35,6 +39,18 @@ internal fun CallWindow(call: CallEntry, store: MessengerStore, onDismiss: () ->
             "call",
             "callwindow open call=${shortCallIdForLog(call.callId)} modality=video",
         )
+    }
+
+    
+    val context = LocalContext.current
+    DisposableEffect(call.callId) {
+        val activity = context as? Activity
+        val previous = activity?.requestedOrientation
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        onDispose {
+            activity?.requestedOrientation =
+                previous ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
     }
 
     
@@ -119,7 +135,7 @@ private fun PlaceholderArea(
             .clip(RoundedCornerShape(8.dp))
             .background(CallWindowTheme.PlaceholderBg),
     ) {
-        VideoTile(store = store, callId = callId, modifier = Modifier.fillMaxSize())
+        CallVideoStage(store = store, callId = callId, modifier = Modifier.fillMaxSize())
     }
 }
 

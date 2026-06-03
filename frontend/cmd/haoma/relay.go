@@ -425,12 +425,17 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 
 	wrapper, parseErr := msg.Unmarshal(plain)
 	if parseErr != nil {
+		var reason events.DecryptFailReason
+		if errors.Is(parseErr, msg.ErrUnsupportedVersion) {
+			reason = events.DecryptReasonVersionMismatch
+		}
 		_, persistErr := d.events.AppendInbound(events.InboundParams{
 			ChatID:     chatID,
 			Kind:       events.KindText,
 			SenderTs:   entry.Envelope.Timestamp,
 			EnvelopeID: entry.Envelope.ID,
 			Status:     events.DecryptFailed,
+			FailReason: reason,
 			RawBlob:    plain,
 		})
 		if persistErr != nil {

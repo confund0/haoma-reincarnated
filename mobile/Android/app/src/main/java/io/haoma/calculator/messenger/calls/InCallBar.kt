@@ -354,6 +354,7 @@ private fun spkArrowColor(spk: CallStreamSide?, nowMs: Long): Color {
     val ageMs = nowMs - spk.lastSampleAtMs
     if (ageMs > 5_000L) return ArrowRed
     if (spk.jitterMs > 200.0) return ArrowRed
+    if (spk.framesIn == spk.prevFramesIn && spk.prevFramesIn != 0L) return ArrowRed
     if (ageMs > 2_000L) return ArrowYellow
     if (spk.jitterMs > 80.0) return ArrowYellow
     return ArrowGreen

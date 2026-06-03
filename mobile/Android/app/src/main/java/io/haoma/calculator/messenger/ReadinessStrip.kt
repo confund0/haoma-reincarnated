@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 
@@ -88,6 +89,9 @@ fun ReadinessStrip(store: MessengerStore, onTap: () -> Unit = {}) {
             DropdownMenu(
                 expanded = menuOpen,
                 onDismissRequest = { menuOpen = false },
+                
+                
+                properties = PopupProperties(focusable = false),
             ) {
                 DropdownMenuItem(
                     text = { Text("Force new identity", color = MenuAccent) },

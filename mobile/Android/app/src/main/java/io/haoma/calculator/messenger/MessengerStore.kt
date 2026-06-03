@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -207,6 +208,50 @@ class MessengerStore(
                     io.haoma.calculator.core.HaomaCoreService.refreshType(ctx)
                 }
                 .launchIn(scope)
+
+            
+            scope.launch {
+                val staleSince = mutableMapOf<String, Long>()
+                while (true) {
+                    delay(1_000L)
+                    val now = System.currentTimeMillis()
+                    val calls = _activeCalls.value
+                    val states = _callStreamState.value
+                    val it = staleSince.entries.iterator()
+                    while (it.hasNext()) {
+                        if (it.next().key !in calls) it.remove()
+                    }
+                    for ((callId, call) in calls) {
+                        if (call.status != CallStatus.Accepted) continue
+                        val s = states[callId] ?: continue
+                        val mic = s.mic ?: continue
+                        val spk = s.spk ?: continue
+                        val sampleStale = (now - mic.lastSampleAtMs) > 5_000L &&
+                            (now - spk.lastSampleAtMs) > 5_000L
+                        val peerSilent = spk.prevFramesIn != 0L &&
+                            spk.framesIn == spk.prevFramesIn
+                        val dead = sampleStale || peerSilent
+                        if (dead) {
+                            val since = staleSince[callId]
+                            if (since == null) {
+                                staleSince[callId] = now
+                                val reason = if (peerSilent) "peer-silent" else "bilateral-stale"
+                                Logger.w("call", "dead-call signal entered call=${shortCallId(callId)} reason=$reason")
+                            } else if (now - since > 10_000L) {
+                                val reason = if (peerSilent) "peer-silent" else "bilateral-stale"
+                                Logger.w(
+                                    "call",
+                                    "dead-call >10s call=${shortCallId(callId)} reason=$reason — auto-hangup",
+                                )
+                                staleSince.remove(callId)
+                                respondCall(callId, CallAction.End, reason = CallEndReasonAutoHangup)
+                            }
+                        } else if (staleSince.remove(callId) != null) {
+                            Logger.i("call", "dead-call signal cleared call=${shortCallId(callId)}")
+                        }
+                    }
+                }
+            }
         }
     }
 

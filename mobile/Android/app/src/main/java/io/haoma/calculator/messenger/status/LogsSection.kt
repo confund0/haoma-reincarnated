@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.FileProvider
 import io.haoma.calculator.log.Logger
 import java.io.File
@@ -158,6 +159,7 @@ private fun ActionRow(
             DropdownMenu(
                 expanded = dropdownOpen,
                 onDismissRequest = { dropdownOpen = false },
+                properties = PopupProperties(focusable = false),
             ) {
                 if (components.isEmpty()) {
                     DropdownMenuItem(

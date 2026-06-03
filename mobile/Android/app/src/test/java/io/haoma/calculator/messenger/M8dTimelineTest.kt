@@ -37,6 +37,7 @@ class M8dTimelineTest {
         envelopeId = envelopeId,
         msgId = msgId,
         decryptStatus = if (direction == EventDirection.IN) "ok" else "",
+        failReason = "",
         body = JSONObject().put("text", text),
         deliveryState = deliveryState,
         expireSeconds = 0,

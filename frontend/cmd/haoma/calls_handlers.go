@@ -263,6 +263,8 @@ func (sd *sessionDispatcher) handleRespondCall(ctx context.Context, sess *ipc.Se
 	case ipc.CallActionEnd:
 		nextStatus = calls.StatusEnded
 		wireKind = msg.KindCallEnd
+
+		reason = req.Reason
 	default:
 		sendError(sess, f.ID, "bad_request", fmt.Sprintf("action %q must be accept|reject|end", req.Action))
 		return

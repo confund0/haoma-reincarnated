@@ -76,6 +76,7 @@ private fun describeCallSummary(body: org.json.JSONObject): String {
         "cancelled" -> "cancelled"
         "rejected" -> "declined"
         "failed" -> "failed"
+        "disrupted" -> "disrupted"
         else -> ""
     }
     return if (tail.isEmpty()) "$dirGlyph $modality" else "$dirGlyph $modality · $tail"

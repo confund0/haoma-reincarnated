@@ -8,6 +8,7 @@ import (
 	"github.com/rivo/tview"
 
 	"haoma-frontend/internal/emoji"
+	"haoma-frontend/internal/events"
 )
 
 type chatEntry struct {
@@ -74,6 +75,7 @@ type rawEvent struct {
 	EnvelopeID    string          `json:"envelope_id"`
 	MsgID         string          `json:"msg_id"`
 	DecryptStatus string          `json:"decrypt_status"`
+	FailReason    string          `json:"fail_reason"`
 	DeliveryState string          `json:"delivery_state"`
 	EditedAt      int64           `json:"edited_at"`
 	DeletedAt     int64           `json:"deleted_at"`
@@ -211,6 +213,9 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 	stamp := time.Unix(ev.DisplayTs, 0).Format("15:04")
 
 	if ev.DecryptStatus == "failed" {
+		if ev.FailReason == string(events.DecryptReasonVersionMismatch) {
+			return fmt.Sprintf("[gray]%s[white] [yellow][peer too old, please upgrade][white] seq=%d", stamp, ev.SenderSeq)
+		}
 		return fmt.Sprintf("[gray]%s[white] [red][CAN'T DECRYPT][white] seq=%d", stamp, ev.SenderSeq)
 	}
 
@@ -336,6 +341,8 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 			tail = "declined"
 		case "failed":
 			tail = "failed"
+		case "disrupted":
+			tail = "disrupted"
 		}
 		summary := dirGlyph + " " + modality
 		if tail != "" {

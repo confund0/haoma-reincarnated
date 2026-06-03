@@ -173,12 +173,20 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
             )
         }
         event.decryptStatus == "failed" -> {
-            Text(
-                text = "[decrypt failed]",
-                color = ChatPalette.Bad,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp,
-            )
+            if (event.failReason == "version_mismatch") {
+                Text(
+                    text = "peer too old, please upgrade",
+                    color = ChatPalette.TextDim,
+                    fontSize = 14.sp,
+                )
+            } else {
+                Text(
+                    text = "[decrypt failed]",
+                    color = ChatPalette.Bad,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                )
+            }
         }
         event.kind == EventKind.FILE -> {
             val body = FileEventBody.fromJson(event.body)
