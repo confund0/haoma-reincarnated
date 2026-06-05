@@ -1,0 +1,25 @@
+<!--
+  Calculator-skin status-bar / notification small icon. Monochrome
+  silhouette: API-21+ small icons are alpha-only (system replaces the
+  fill with the channel tint), so the path uses solid white over a
+  transparent viewport and punches holes via fillType="evenOdd".
+
+  Shapes, in path order:
+    1. Outer rounded-rect calculator body (filled).
+    2. Display strip near the top (knockout via evenOdd).
+    3. Two horizontal bars forming an "=" mid-body (knockouts via
+       evenOdd) — chunky enough to read at status-bar size.
+
+  Designed for 22x22 inside the 24x24 viewport so the system safe area
+  is preserved across OEM status bars that crop edges.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M4,2 L20,2 A2,2 0 0,1 22,4 L22,20 A2,2 0 0,1 20,22 L4,22 A2,2 0 0,1 2,20 L2,4 A2,2 0 0,1 4,2 Z M5,5 L19,5 L19,9 L5,9 Z M6,12 L18,12 L18,14.5 L6,14.5 Z M6,17 L18,17 L18,19.5 L6,19.5 Z" />
+</vector>

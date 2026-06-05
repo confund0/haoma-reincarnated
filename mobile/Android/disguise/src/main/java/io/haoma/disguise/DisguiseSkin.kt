@@ -1,5 +1,6 @@
 package io.haoma.disguise
 
+import androidx.annotation.DrawableRes
 import androidx.compose.runtime.Composable
 
 
@@ -17,6 +18,10 @@ interface DisguiseSkin {
 
     
     fun nextTip(): DisguiseTip
+
+    
+    @get:DrawableRes
+    val notificationIconRes: Int
 }
 
 

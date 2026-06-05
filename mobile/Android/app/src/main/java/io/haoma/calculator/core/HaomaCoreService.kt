@@ -332,10 +332,12 @@ class HaomaCoreService : Service() {
     }
 
     private fun startForegroundCompat() {
+        val icon = (application as? HaomaApp)?.disguiseSkin?.notificationIconRes
+            ?: android.R.drawable.ic_menu_info_details
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(getString(R.string.fgs_core_notification_text))
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setSmallIcon(icon)
             .setOngoing(true)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setPriority(NotificationCompat.PRIORITY_LOW)

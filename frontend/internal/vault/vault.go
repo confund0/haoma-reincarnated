@@ -127,6 +127,8 @@ type Payload struct {
 
 	NotifyDisguiseEnabled bool `json:"notify_disguise_enabled,omitempty"`
 
+	NotifyNoisy bool `json:"notify_noisy,omitempty"`
+
 	DefaultSaveDir        string `json:"default_save_dir,omitempty"`
 	DefaultAttachStartDir string `json:"default_attach_start_dir,omitempty"`
 }

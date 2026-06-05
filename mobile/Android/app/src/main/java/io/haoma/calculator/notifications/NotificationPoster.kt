@@ -20,6 +20,7 @@ class NotificationPoster(
     private val app: Context,
     private val settingsProvider: () -> NotificationSettings? = { null },
     private val tipProvider: () -> DisguiseTip = { DisguiseTip("Math Tip", "New message") },
+    private val iconProvider: () -> Int = { android.R.drawable.ic_menu_info_details },
 ) {
 
     init {
@@ -67,24 +68,37 @@ class NotificationPoster(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(app, CHANNEL_ID)
+        val noisy = settings?.noisy == true
+        val channelId = if (noisy) NOISY_CHANNEL_ID else CHANNEL_ID
+        val visibility = if (noisy) {
+            NotificationCompat.VISIBILITY_PUBLIC
+        } else {
+            NotificationCompat.VISIBILITY_SECRET
+        }
+
+        val builder = NotificationCompat.Builder(app, channelId)
             
             
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setSmallIcon(iconProvider())
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setVisibility(visibility)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
             .setContentIntent(tap)
             .setShowWhen(true)
-            .build()
+        if (noisy) {
+            
+            
+            builder.priority = NotificationCompat.PRIORITY_HIGH
+        }
+        val notification = builder.build()
         try {
             mgr.notify(payload.chatId, NOTIF_ID_MESSAGE, notification)
             Logger.i(
                 "notifications",
-                "posted chat=${shortTag(payload.chatId)} disguise=$disguiseActive",
+                "posted chat=${shortTag(payload.chatId)} disguise=$disguiseActive noisy=$noisy",
             )
         } catch (t: SecurityException) {
             
@@ -124,6 +138,20 @@ class NotificationPoster(
                 
             }
             mgr.createNotificationChannel(channel)
+        }
+        
+        
+        if (mgr.getNotificationChannel(NOISY_CHANNEL_ID) == null) {
+            val noisy = NotificationChannel(
+                NOISY_CHANNEL_ID,
+                app.getString(R.string.messages_noisy_channel_name),
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = app.getString(R.string.messages_noisy_channel_description)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                setShowBadge(false)
+            }
+            mgr.createNotificationChannel(noisy)
         }
         if (mgr.getNotificationChannel(CALLS_CHANNEL_ID) == null) {
             val calls = NotificationChannel(
@@ -180,7 +208,7 @@ class NotificationPoster(
         val decline = callActionPendingIntent(callId, ACTION_DECLINE)
 
         val notification = NotificationCompat.Builder(app, CALLS_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setSmallIcon(iconProvider())
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -232,6 +260,7 @@ class NotificationPoster(
 
     companion object {
         const val CHANNEL_ID = "haoma_messages"
+        const val NOISY_CHANNEL_ID = "haoma_messages_noisy"
         const val CALLS_CHANNEL_ID = "haoma_calls"
         const val NOTIF_ID_MESSAGE = 2001
         const val NOTIF_ID_CALL = 2002

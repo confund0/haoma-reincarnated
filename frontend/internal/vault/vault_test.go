@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -313,6 +315,36 @@ func TestMintFreshPayload_AppliesDefaults(t *testing.T) {
 	}
 	if p.DefaultAttachStartDir == "" {
 		t.Error("DefaultAttachStartDir should be seeded from paths.DefaultAttachStartDir on mint")
+	}
+}
+
+func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
+	mobilePayload := `{
+		"haomad_store_passphrase":   "p1",
+		"frontend_store_passphrase": "p2",
+		"haomad_token":              "t1",
+		"notify_shell_enabled":      true,
+		"notify_show_sender":        false,
+		"notify_show_body":          false,
+		"notifications_on_lock":     true,
+		"notify_disguise_enabled":   false,
+		"notify_noisy":              false,
+		"default_retention_sec":     0,
+		"default_send_receipts":     true,
+		"idle_action":               "safe-lock",
+		"idle_timeout_seconds":      900,
+		"pin_validity_sec":          0,
+		"panic_action":              "hard-lock",
+		"threat_profile":            "privacy"
+	}`
+
+	dec := json.NewDecoder(bytes.NewReader([]byte(mobilePayload)))
+	dec.DisallowUnknownFields()
+	var p Payload
+	if err := dec.Decode(&p); err != nil {
+		t.Fatalf("strict decode rejected a mobile-written key — "+
+			"the Kotlin side probably added a JSON key without a matching "+
+			"vault.Payload struct field: %v", err)
 	}
 }
 

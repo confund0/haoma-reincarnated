@@ -30,6 +30,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
     implementation("androidx.compose.runtime:runtime")
+    implementation("androidx.annotation:annotation:1.8.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 
     testImplementation("junit:junit:4.13.2")

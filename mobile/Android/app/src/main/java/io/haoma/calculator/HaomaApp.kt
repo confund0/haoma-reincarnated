@@ -171,6 +171,7 @@ class HaomaApp : Application(), ImageLoaderFactory {
             app = applicationContext,
             settingsProvider = { messengerStore.loadNotificationSettings() },
             tipProvider = { disguiseSkin.nextTip() },
+            iconProvider = { disguiseSkin.notificationIconRes },
         )
         messengerStore = MessengerStore(
             clientName = "haoma-android",

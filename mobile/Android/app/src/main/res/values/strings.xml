@@ -6,6 +6,8 @@
     <string name="fgs_core_channel_description">Keeps the app responsive in the background.</string>
     <string name="messages_channel_name">Messages</string>
     <string name="messages_channel_description">Inbound message banners.</string>
+    <string name="messages_noisy_channel_name">Messages (noisy)</string>
+    <string name="messages_noisy_channel_description">Inbound message banners — standard messenger posture: lock-screen visible + heads-up popup.</string>
     <string name="calls_channel_name">Calls</string>
     <string name="calls_channel_description">Incoming call ringers.</string>
     <string name="calls_incoming_title">Incoming call</string>

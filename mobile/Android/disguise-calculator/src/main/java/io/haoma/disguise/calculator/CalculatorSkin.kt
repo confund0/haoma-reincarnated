@@ -33,6 +33,8 @@ class CalculatorSkin(
         body = TIP_BODIES.random(),
     )
 
+    override val notificationIconRes: Int = R.drawable.ic_stat_calc
+
     companion object {
         
         

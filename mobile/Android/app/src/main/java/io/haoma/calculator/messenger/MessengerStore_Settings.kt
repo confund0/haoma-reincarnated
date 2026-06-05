@@ -115,6 +115,7 @@ fun MessengerStore.loadNotificationSettings(): NotificationSettings? {
         showBody = snap.optBoolean("notify_show_body", false),
         onLock = snap.optBoolean("notifications_on_lock", false),
         disguiseEnabled = snap.optBoolean("notify_disguise_enabled", false),
+        noisy = snap.optBoolean("notify_noisy", false),
     )
 }
 
@@ -126,6 +127,7 @@ suspend fun MessengerStore.saveNotificationSettings(settings: NotificationSettin
         p.put("notify_show_body", settings.showBody)
         p.put("notifications_on_lock", settings.onLock)
         p.put("notify_disguise_enabled", settings.disguiseEnabled)
+        p.put("notify_noisy", settings.noisy)
     }
 
 
@@ -286,6 +288,7 @@ data class NotificationSettings(
     val showBody: Boolean,
     val onLock: Boolean,
     val disguiseEnabled: Boolean,
+    val noisy: Boolean,
 )
 
 

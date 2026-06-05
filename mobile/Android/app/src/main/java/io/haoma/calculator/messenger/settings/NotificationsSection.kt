@@ -66,12 +66,20 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
         var showBody by remember { mutableStateOf(initial.showBody) }
         var onLock by remember { mutableStateOf(initial.onLock) }
         var disguiseEnabled by remember { mutableStateOf(initial.disguiseEnabled) }
+        var noisy by remember { mutableStateOf(initial.noisy) }
         var saving by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
 
-        val current by remember(shellEnabled, showSender, showBody, onLock, disguiseEnabled) {
+        val current by remember(shellEnabled, showSender, showBody, onLock, disguiseEnabled, noisy) {
             derivedStateOf {
-                NotificationSettings(shellEnabled, showSender, showBody, onLock, disguiseEnabled)
+                NotificationSettings(
+                    shellEnabled = shellEnabled,
+                    showSender = showSender,
+                    showBody = showBody,
+                    onLock = onLock,
+                    disguiseEnabled = disguiseEnabled,
+                    noisy = noisy,
+                )
             }
         }
         val dirty by remember(current, initial) {
@@ -102,6 +110,14 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                 hint = "Off = soft-locked sessions stay silent.",
                 checked = onLock,
                 onCheckedChange = { onLock = it; if (error != null) error = null },
+            )
+            ToggleRow(
+                label = "Noisy notifications",
+                hint = "Standard messenger posture: lock-screen visible + " +
+                    "heads-up banners while unlocked. Off = silent tray entry, " +
+                    "lock-screen hidden.",
+                checked = noisy,
+                onCheckedChange = { noisy = it; if (error != null) error = null },
             )
         }
 
@@ -178,6 +194,7 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                     showBody = initial.showBody
                     onLock = initial.onLock
                     disguiseEnabled = initial.disguiseEnabled
+                    noisy = initial.noisy
                     error = null
                 },
             ) {
