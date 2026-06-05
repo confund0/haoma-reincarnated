@@ -91,6 +91,16 @@ func (s *Store) Update(fn func(txn *badger.Txn) error) error {
 	return s.db.Update(fn)
 }
 
+func (s *Store) HealthCheck() error {
+	return s.View(func(txn *badger.Txn) error {
+		_, err := txn.Get([]byte("health:ping"))
+		if err != nil && !errors.Is(err, badger.ErrKeyNotFound) {
+			return err
+		}
+		return nil
+	})
+}
+
 func zero(b []byte) {
 	for i := range b {
 		b[i] = 0

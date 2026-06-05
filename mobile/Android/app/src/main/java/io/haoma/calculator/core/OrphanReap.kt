@@ -10,11 +10,22 @@ private const val ORPHAN_GRACE_MS = 3000L
 private const val HAOMAD_RUNTIME_FILE = "haomad.runtime.json"
 private const val HAOMA_PID_FILE = "haoma.pid"
 
-fun reapDaemonOrphans(cfgDir: File) {
+
+fun reapHaomadOrphan(cfgDir: File) {
     reapFromJsonPidfile(File(cfgDir, HAOMAD_RUNTIME_FILE), label = "haomad") { json ->
         json.optInt("pid", -1).takeIf { it > 0 }
     }
+}
+
+
+fun reapHaomaOrphan(cfgDir: File) {
     reapFromPlainPidfile(File(cfgDir, HAOMA_PID_FILE), label = "haoma")
+}
+
+
+fun reapDaemonOrphans(cfgDir: File) {
+    reapHaomadOrphan(cfgDir)
+    reapHaomaOrphan(cfgDir)
 }
 
 private fun reapFromJsonPidfile(

@@ -11,6 +11,7 @@ class IdleLockDispatcherTest {
     
     private class Effects {
         val stops = mutableListOf<String>()
+        val stopHaoma = mutableListOf<String>()
         val willLock = mutableListOf<String>()
     }
 
@@ -24,6 +25,7 @@ class IdleLockDispatcherTest {
             state = state,
             policySource = { policy },
             stopFgs = { effects.stops.add("stop") },
+            stopHaomaOnly = { effects.stopHaoma.add("stop-haoma") },
             onWillLock = { action -> effects.willLock.add(action) },
         )
         return Triple(dispatcher, state, effects)
@@ -35,18 +37,18 @@ class IdleLockDispatcherTest {
         assertTrue(d.fire("test"))
         assertEquals(AppState.Locked.Soft, state.state.value)
         assertTrue("stopFgs must NOT run on soft", effects.stops.isEmpty())
+        assertTrue("stopHaomaOnly must NOT run on soft", effects.stopHaoma.isEmpty())
         assertEquals("onWillLock fires once per transition", listOf(IdlePolicy.Soft), effects.willLock)
     }
 
     @Test
-    fun safeLockCollapsesToSoftUntilM7() {
-        
-        
+    fun safeLockTransitionsToLockedSafeAndStopsHaomaOnly() {
         val (d, state, effects) = fixture(policy = IdlePolicy(IdlePolicy.Safe, 60))
         assertTrue(d.fire("test"))
-        assertEquals(AppState.Locked.Soft, state.state.value)
+        assertEquals(AppState.Locked.Safe, state.state.value)
         assertTrue("stopFgs must NOT run on safe", effects.stops.isEmpty())
-        assertEquals("onWillLock sees the original Safe action, not the collapsed Soft", listOf(IdlePolicy.Safe), effects.willLock)
+        assertEquals("stopHaomaOnly fires exactly once", listOf("stop-haoma"), effects.stopHaoma)
+        assertEquals(listOf(IdlePolicy.Safe), effects.willLock)
     }
 
     @Test
@@ -55,16 +57,21 @@ class IdleLockDispatcherTest {
         assertTrue(d.fire("test"))
         assertEquals(AppState.Locked.Hard, state.state.value)
         assertEquals(listOf("stop"), effects.stops)
+        
+        
+        assertTrue("stopHaomaOnly must NOT run on hard", effects.stopHaoma.isEmpty())
         assertEquals(listOf(IdlePolicy.Hard), effects.willLock)
     }
 
     @Test
-    fun unknownActionFallsThroughSafeBranchAndCollapsesToSoft() {
+    fun unknownActionFallsThroughToSafe() {
         val (d, state, effects) = fixture(policy = IdlePolicy("nonsense", 60))
         assertTrue(d.fire("test"))
         
         
-        assertEquals(AppState.Locked.Soft, state.state.value)
+        assertEquals(AppState.Locked.Safe, state.state.value)
+        assertEquals(listOf("stop-haoma"), effects.stopHaoma)
+        assertTrue("stopFgs must NOT run on unknown", effects.stops.isEmpty())
         assertEquals(listOf("nonsense"), effects.willLock)
     }
 
@@ -74,6 +81,7 @@ class IdleLockDispatcherTest {
         assertFalse(d.fire("cold-boot"))
         assertEquals(AppState.Warm, state.state.value)
         assertTrue(effects.stops.isEmpty())
+        assertTrue(effects.stopHaoma.isEmpty())
         assertTrue("onWillLock must NOT fire when no policy is installed", effects.willLock.isEmpty())
     }
 
@@ -86,7 +94,22 @@ class IdleLockDispatcherTest {
         assertFalse("already-locked must not fire again", d.fire("os-lock"))
         assertEquals("state must NOT be promoted soft→hard", AppState.Locked.Soft, state.state.value)
         assertTrue(effects.stops.isEmpty())
+        assertTrue(effects.stopHaoma.isEmpty())
         assertTrue("onWillLock must NOT fire when already-locked", effects.willLock.isEmpty())
+    }
+
+    @Test
+    fun alreadySafeLockedIsIdempotent() {
+        
+        
+        val (d, state, effects) = fixture(
+            initialState = AppState.Locked.Safe,
+            policy = IdlePolicy(IdlePolicy.Safe, 60),
+        )
+        assertFalse(d.fire("screen-off"))
+        assertEquals(AppState.Locked.Safe, state.state.value)
+        assertTrue(effects.stopHaoma.isEmpty())
+        assertTrue(effects.willLock.isEmpty())
     }
 
     @Test

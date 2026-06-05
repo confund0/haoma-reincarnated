@@ -150,6 +150,13 @@ class HaomaApp : Application(), ImageLoaderFactory {
             },
             
             
+            stopHaomaOnly = {
+                HaomaCoreService.stopHaomaOnly(applicationContext)
+                idlePolicy = null
+                vaultSession = null
+            },
+            
+            
             onWillLock = { action ->
                 val job = messengerStore.hangupAllActive(hangupScope)
                 if (action == IdlePolicy.Hard) {

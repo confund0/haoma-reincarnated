@@ -286,6 +286,14 @@ func viewOf(p peers.Peer) peerView {
 }
 
 func (d *daemon) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	if err := d.store.HealthCheck(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status":  "badger",
+			"version": version,
+			"err":     err.Error(),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 }
 

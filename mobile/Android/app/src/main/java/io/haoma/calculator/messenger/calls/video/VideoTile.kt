@@ -24,7 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -172,10 +171,7 @@ private fun SelfTile(store: MessengerStore, callId: String, modifier: Modifier =
     ) {
         AndroidView(
             modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer(
-                    scaleX = -1f,
-                ),
+                .fillMaxSize(),
             factory = { ctx ->
                 TextureView(ctx).apply {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {

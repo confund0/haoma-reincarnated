@@ -264,6 +264,24 @@ func (d *daemon) republishAllPeerOnions(conn *control.Conn) error {
 	return lastErr
 }
 
+func wipeSecrets(label string, s *secrets.Secrets) {
+	slog.Info("secrets: wiping in-memory blob",
+		slog.String("which", label),
+		slog.Int("haomad_store_passphrase_len", len(s.HaomadStorePassphrase)),
+		slog.Int("frontend_store_passphrase_len", len(s.FrontendStorePassphrase)),
+		slog.Int("haomad_token_len", len(s.HaomadToken)),
+		slog.Int("tor_password_len", len(s.TorPassword)),
+		slog.Int("haomad_url_len", len(s.HaomadURL)),
+		slog.Int("idle_timeout_seconds", s.IdleTimeoutSeconds),
+	)
+	s.HaomadStorePassphrase = ""
+	s.FrontendStorePassphrase = ""
+	s.HaomadToken = ""
+	s.TorPassword = ""
+	s.HaomadURL = ""
+	s.IdleTimeoutSeconds = 0
+}
+
 func run(ctx context.Context, cfg config) error {
 
 	s, err := store.Unlock(cfg.storeDir, cfg.secrets.HaomadStorePassphrase)
@@ -450,6 +468,9 @@ func run(ctx context.Context, cfg config) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+
+	wipeSecrets("cfg.secrets", &cfg.secrets)
+	wipeSecrets("d.cfg.secrets", &d.cfg.secrets)
 	slog.Info("local API listening (TLS)",
 		slog.String("version", version),
 		slog.String("addr", apiLn.Addr().String()),

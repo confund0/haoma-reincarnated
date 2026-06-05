@@ -11,6 +11,9 @@ class IdleLockDispatcher(
     private val stopFgs: () -> Unit,
     
 
+    private val stopHaomaOnly: () -> Unit = {},
+    
+
     private val onWillLock: (action: String) -> Unit = {},
 ) {
     
@@ -39,13 +42,9 @@ class IdleLockDispatcher(
                 true
             }
             IdlePolicy.Safe -> {
-                
-                
-                Logger.i(
-                    "idle",
-                    "fire reason=$reason → safe-lock collapsed to soft (partial-teardown wiring TODO)",
-                )
-                state.update(AppState.Locked.Soft)
+                Logger.i("idle", "fire reason=$reason → safe-lock (stopping haoma, keeping haomad)")
+                state.update(AppState.Locked.Safe)
+                stopHaomaOnly()
                 true
             }
             IdlePolicy.Hard -> {
@@ -56,8 +55,10 @@ class IdleLockDispatcher(
             }
             else -> {
                 
-                Logger.w("idle", "fire reason=$reason unknown action=${policy.action}; treating as safe-lock (collapsed to soft pre-M-7)")
-                state.update(AppState.Locked.Soft)
+                
+                Logger.w("idle", "fire reason=$reason unknown action=${policy.action}; treating as safe-lock")
+                state.update(AppState.Locked.Safe)
+                stopHaomaOnly()
                 true
             }
         }

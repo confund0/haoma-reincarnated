@@ -19,7 +19,16 @@ import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.R
 import io.haoma.calculator.log.Logger
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -76,6 +85,15 @@ class HaomaCoreService : Service() {
                     }
                 }
             }
+            ACTION_STOP_HAOMA_ONLY -> {
+                
+                
+                if (acquireDaemonOp("STOP_HAOMA_ONLY")) {
+                    scope.launch {
+                        try { stopHaomaChild() } finally { daemonOpInFlight.set(false) }
+                    }
+                }
+            }
             else -> {
                 
                 
@@ -111,22 +129,7 @@ class HaomaCoreService : Service() {
         }
         
         
-        try {
-            (application as? HaomaApp)?.messengerStore?.onDaemonsStopped()
-        } catch (t: Throwable) {
-            Logger.e("fgs", "messenger store teardown", t)
-        }
-        
-        
-        haoma?.let { d ->
-            try {
-                d.stop(STOP_GRACE_MS)
-            } catch (t: Throwable) {
-                Logger.e("fgs", "haoma stop", t)
-            }
-        }
-        haoma = null
-        haomaAddr = null
+        stopHaomaChild()
         haomad?.let { d ->
             try {
                 d.stop(STOP_GRACE_MS)
@@ -144,8 +147,28 @@ class HaomaCoreService : Service() {
     private fun ensureDaemonsUp() {
         
         
-        reapDaemonOrphans(VaultHelper.cfgDir(applicationContext))
+        val cfg = VaultHelper.cfgDir(applicationContext)
+        if (haomad == null) reapHaomadOrphan(cfg)
+        if (haoma == null) reapHaomaOrphan(cfg)
         reapStaleHandles()
+        
+        
+        if (haomad != null) {
+            if (!probeHaomadHealth(haomadAddr)) {
+                Logger.w("fgs", "haomad probe failed; reaping and respawning")
+                haomad?.let { runCatching { it.stop(STOP_GRACE_MS) } }
+                haomad = null
+                haomadAddr = null
+                
+                
+                if (haoma != null) {
+                    runCatching { (application as? HaomaApp)?.messengerStore?.onDaemonsStopped() }
+                    haoma?.let { runCatching { it.stop(STOP_GRACE_MS) } }
+                    haoma = null
+                    haomaAddr = null
+                }
+            }
+        }
         val claimed = BootstrapPayload.take()
         if (claimed == null) {
             Logger.w("fgs", "ensureDaemonsUp without a deposited payload; stopping")
@@ -244,18 +267,56 @@ class HaomaCoreService : Service() {
     }
 
     
-    private fun restartBothDaemons() {
-        Logger.i("fgs", "ACTION_RESTART_DAEMONS tearing down haoma + haomad")
-        runCatching { (application as? HaomaApp)?.messengerStore?.onDaemonsStopped() }
+    private fun probeHaomadHealth(addr: String?): Boolean {
+        if (addr.isNullOrBlank()) return false
+        var conn: HttpsURLConnection? = null
+        return try {
+            val url = URL("https://$addr/health")
+            conn = (url.openConnection() as HttpsURLConnection).apply {
+                sslSocketFactory = trustAllSocketFactory
+                hostnameVerifier = HostnameVerifier { _, _ -> true }
+                connectTimeout = PROBE_TIMEOUT_MS
+                readTimeout = PROBE_TIMEOUT_MS
+                requestMethod = "GET"
+            }
+            val code = conn.responseCode
+            val ok = code == HttpURLConnection.HTTP_OK
+            if (ok) {
+                Logger.i("fgs", "haomad probe ok @$addr")
+            } else {
+                Logger.w("fgs", "haomad probe http=$code @$addr")
+            }
+            ok
+        } catch (t: Throwable) {
+            Logger.w("fgs", "haomad probe failed @$addr: ${t.message}")
+            false
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
+    }
+
+    
+    private fun stopHaomaChild() {
+        try {
+            (application as? HaomaApp)?.messengerStore?.onDaemonsStopped()
+        } catch (t: Throwable) {
+            Logger.e("fgs", "messenger store teardown", t)
+        }
         haoma?.let { d ->
             try {
                 d.stop(STOP_GRACE_MS)
             } catch (t: Throwable) {
-                Logger.e("fgs", "haoma stop (restart)", t)
+                Logger.e("fgs", "haoma stop", t)
             }
         }
         haoma = null
         haomaAddr = null
+    }
+
+    
+    private fun restartBothDaemons() {
+        Logger.i("fgs", "ACTION_RESTART_DAEMONS tearing down haoma + haomad")
+        stopHaomaChild()
         haomad?.let { d ->
             try {
                 d.stop(STOP_GRACE_MS)
@@ -462,10 +523,28 @@ class HaomaCoreService : Service() {
         private const val STOP_GRACE_MS = 5_000L
 
         
+        private const val PROBE_TIMEOUT_MS = 2_000
+
+        
+        private val trustAllSocketFactory by lazy {
+            val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+                override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+                override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+            })
+            SSLContext.getInstance("TLS").apply {
+                init(null, trustAll, SecureRandom())
+            }.socketFactory
+        }
+
+        
         const val ACTION_REFRESH_TYPE = "io.haoma.calculator.fgs.REFRESH_TYPE"
 
         
         const val ACTION_RESTART_DAEMONS = "io.haoma.calculator.fgs.RESTART_DAEMONS"
+
+        
+        const val ACTION_STOP_HAOMA_ONLY = "io.haoma.calculator.fgs.STOP_HAOMA_ONLY"
 
         
         fun start(context: Context) {
@@ -516,6 +595,17 @@ class HaomaCoreService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, HaomaCoreService::class.java)
             context.stopService(intent)
+        }
+
+        
+        fun stopHaomaOnly(context: Context) {
+            val intent = Intent(context, HaomaCoreService::class.java)
+                .setAction(ACTION_STOP_HAOMA_ONLY)
+            try {
+                context.startForegroundService(intent)
+            } catch (t: Throwable) {
+                Logger.w("fgs", "stopHaomaOnly dispatch failed: ${t.message}")
+            }
         }
     }
 }
