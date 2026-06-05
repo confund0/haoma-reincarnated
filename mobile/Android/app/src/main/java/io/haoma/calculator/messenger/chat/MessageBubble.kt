@@ -36,10 +36,19 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -216,14 +225,75 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
             }
         }
         else -> {
+            val context = LocalContext.current
+            val store = (context.applicationContext as HaomaApp).messengerStore
+            val raw = event.bodyTextOrEmpty().ifEmpty { "(empty)" }
+            val onUrl = remember(context, store) {
+                { url: String ->
+                    val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    val launchIntent = if (store.currentUrlForceChooser()) {
+                        Intent.createChooser(viewIntent, "Open with")
+                    } else {
+                        viewIntent
+                    }
+                    runCatching { context.startActivity(launchIntent) }
+                        .onFailure { t ->
+                            Logger.w(
+                                "message-bubble",
+                                "url open failed url=$url err=${t.message ?: "?"}",
+                            )
+                        }
+                    Unit
+                }
+            }
+            val rendered = remember(raw) { linkifyChatText(raw, onUrl) }
             Text(
-                text = event.bodyTextOrEmpty().ifEmpty { "(empty)" },
+                text = rendered,
                 color = textColor,
                 fontSize = 14.sp,
             )
         }
     }
 }
+
+
+private val URL_REGEX = Regex("""https?://[^\s<>"'`)\]]+""")
+
+
+private fun linkifyChatText(text: String, onUrl: (String) -> Unit): AnnotatedString =
+    buildAnnotatedString {
+        var i = 0
+        for (match in URL_REGEX.findAll(text)) {
+            if (match.range.first > i) append(text.substring(i, match.range.first))
+            var url = match.value
+            var trailing = ""
+            while (url.isNotEmpty() && url.last() in ".,;:!?)") {
+                trailing = url.last() + trailing
+                url = url.dropLast(1)
+            }
+            if (url.isEmpty()) {
+                append(match.value)
+            } else {
+                withLink(
+                    LinkAnnotation.Url(
+                        url = url,
+                        styles = TextLinkStyles(
+                            style = SpanStyle(
+                                color = ChatPalette.Link,
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                        ),
+                        linkInteractionListener = { onUrl(url) },
+                    ),
+                ) {
+                    append(url)
+                }
+                if (trailing.isNotEmpty()) append(trailing)
+            }
+            i = match.range.last + 1
+        }
+        if (i < text.length) append(text.substring(i))
+    }
 
 
 @Composable

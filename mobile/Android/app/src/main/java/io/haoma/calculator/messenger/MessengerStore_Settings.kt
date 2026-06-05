@@ -216,6 +216,27 @@ fun MessengerStore.loadSecurityWarnings(): List<String>? {
 }
 
 
+fun MessengerStore.loadAdvancedSettings(): AdvancedSettings? {
+    val session = vaultSessionProvider() ?: return null
+    val snap = session.snapshot()
+    return AdvancedSettings(
+        urlForceChooser = snap.optBoolean("url_force_chooser", true),
+    )
+}
+
+
+suspend fun MessengerStore.saveAdvancedSettings(settings: AdvancedSettings): Result<Unit> =
+    resealVault("advanced", "advanced settings saved", pushSync = false) { p ->
+        p.put("url_force_chooser", settings.urlForceChooser)
+    }
+
+
+fun MessengerStore.currentUrlForceChooser(): Boolean {
+    val session = vaultSessionProvider() ?: return true
+    return session.snapshot().optBoolean("url_force_chooser", true)
+}
+
+
 suspend fun MessengerStore.saveLock(settings: LockSettings, clearThreatProfile: Boolean): Result<Unit> =
     resealVault("lock", "lock saved") { p ->
         p.put("idle_action", settings.idleAction)
@@ -317,6 +338,11 @@ data class ThreatPresetBundle(
     val idleTimeoutSeconds: Int,
     val pinValiditySec: Int,
     val panicAction: String,
+)
+
+
+data class AdvancedSettings(
+    val urlForceChooser: Boolean,
 )
 
 internal val THREAT_PRESET_BUNDLES: Map<String, ThreatPresetBundle> = mapOf(

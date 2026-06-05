@@ -52,6 +52,8 @@ const (
 	DefaultNotifyShell      = true
 	DefaultNotifyShowSender = false
 	DefaultNotifyShowBody   = false
+
+	DefaultURLForceChooser = true
 )
 
 const (
@@ -119,7 +121,7 @@ type Payload struct {
 
 	DefaultSendReceipts bool `json:"default_send_receipts"`
 
-	NotifyShellEnabled bool `json:"notify_shell_enabled,omitempty"`
+	NotifyShellEnabled bool `json:"notify_shell_enabled"`
 
 	NotifyShowSender bool `json:"notify_show_sender,omitempty"`
 
@@ -131,6 +133,8 @@ type Payload struct {
 
 	DefaultSaveDir        string `json:"default_save_dir,omitempty"`
 	DefaultAttachStartDir string `json:"default_attach_start_dir,omitempty"`
+
+	URLForceChooser bool `json:"url_force_chooser"`
 }
 
 func (p Payload) Validate() error {
@@ -241,11 +245,20 @@ func openBytes(raw []byte, passphrase string) (Payload, KDFParams, error) {
 	}
 	defer zero(plaintext)
 
-	var p Payload
+	p := defaultSeededPayload()
 	if err := json.Unmarshal(plaintext, &p); err != nil {
 		return Payload{}, KDFParams{}, fmt.Errorf("vault: decode payload: %w", err)
 	}
 	return p, params, nil
+}
+
+func defaultSeededPayload() Payload {
+	return Payload{
+		NotificationsOnLock: true,
+		DefaultSendReceipts: DefaultSendReceipts,
+		NotifyShellEnabled:  DefaultNotifyShell,
+		URLForceChooser:     DefaultURLForceChooser,
+	}
 }
 
 func Create(path, passphrase string, payload Payload, params KDFParams) error {
@@ -397,6 +410,7 @@ func MintFreshPayload() (Payload, error) {
 		NotifyShowBody:        DefaultNotifyShowBody,
 		DefaultSaveDir:        saveDir,
 		DefaultAttachStartDir: attachDir,
+		URLForceChooser:       DefaultURLForceChooser,
 	}, nil
 }
 

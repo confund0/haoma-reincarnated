@@ -21,4 +21,7 @@ internal object ChatPalette {
     
     
     val AnchorPulse = Color(0x66D79921)
+    
+    
+    val Link = Color(0xFF83A598)
 }

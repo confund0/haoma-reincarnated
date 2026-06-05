@@ -316,6 +316,65 @@ func TestMintFreshPayload_AppliesDefaults(t *testing.T) {
 	if p.DefaultAttachStartDir == "" {
 		t.Error("DefaultAttachStartDir should be seeded from paths.DefaultAttachStartDir on mint")
 	}
+	if !p.URLForceChooser {
+		t.Error("URLForceChooser should default true (paranoid posture — force the app picker on URL taps)")
+	}
+}
+
+func TestPayload_DefaultTrueBoolsSurviveOldVaults(t *testing.T) {
+
+	oldVaultJSON := []byte(`{
+		"haomad_store_passphrase":   "a",
+		"frontend_store_passphrase": "b",
+		"haomad_token":              "c"
+	}`)
+	p := defaultSeededPayload()
+	if err := json.Unmarshal(oldVaultJSON, &p); err != nil {
+		t.Fatalf("decode old vault: %v", err)
+	}
+	if !p.NotificationsOnLock {
+		t.Error("NotificationsOnLock should remain true on old-vault upgrade " +
+			"(absent key) — defaultSeededPayload seeds it before decode")
+	}
+	if !p.DefaultSendReceipts {
+		t.Error("DefaultSendReceipts should remain true on old-vault upgrade " +
+			"(absent key)")
+	}
+	if !p.NotifyShellEnabled {
+		t.Error("NotifyShellEnabled should remain true on old-vault upgrade " +
+			"(absent key) — also requires the tag to drop omitempty so " +
+			"user-set-false survives save")
+	}
+	if !p.URLForceChooser {
+		t.Error("URLForceChooser should remain true on old-vault upgrade " +
+			"(absent key)")
+	}
+
+	userOptOuts := []byte(`{
+		"haomad_store_passphrase":   "a",
+		"frontend_store_passphrase": "b",
+		"haomad_token":              "c",
+		"notifications_on_lock":     false,
+		"default_send_receipts":     false,
+		"notify_shell_enabled":      false,
+		"url_force_chooser":         false
+	}`)
+	p2 := defaultSeededPayload()
+	if err := json.Unmarshal(userOptOuts, &p2); err != nil {
+		t.Fatalf("decode opt-outs: %v", err)
+	}
+	if p2.NotificationsOnLock {
+		t.Error("notifications_on_lock=false in JSON must overwrite seed")
+	}
+	if p2.DefaultSendReceipts {
+		t.Error("default_send_receipts=false in JSON must overwrite seed")
+	}
+	if p2.NotifyShellEnabled {
+		t.Error("notify_shell_enabled=false in JSON must overwrite seed")
+	}
+	if p2.URLForceChooser {
+		t.Error("url_force_chooser=false in JSON must overwrite seed")
+	}
 }
 
 func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
@@ -335,7 +394,8 @@ func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 		"idle_timeout_seconds":      900,
 		"pin_validity_sec":          0,
 		"panic_action":              "hard-lock",
-		"threat_profile":            "privacy"
+		"threat_profile":            "privacy",
+		"url_force_chooser":         true
 	}`
 
 	dec := json.NewDecoder(bytes.NewReader([]byte(mobilePayload)))
@@ -372,6 +432,8 @@ func TestPayload_RoundTripsAllFields(t *testing.T) {
 
 	want.DefaultSaveDir = "/tmp/haoma-test-saves"
 	want.DefaultAttachStartDir = "/tmp/haoma-test-attach"
+
+	want.URLForceChooser = false
 
 	if err := Create(path, "pw", want, fastParams); err != nil {
 		t.Fatalf("create: %v", err)
