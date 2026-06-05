@@ -46,8 +46,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 private const val HARD_LOCK_HANGUP_GRACE_MS = 200L
 
 class HaomaApp : Application(), ImageLoaderFactory {
-    
+    companion object {
+        
 
+        val PROCESS_STARTED_MS: Long = System.currentTimeMillis()
+    }
+
+    
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .diskCachePolicy(CachePolicy.DISABLED)
         .respectCacheHeaders(false)

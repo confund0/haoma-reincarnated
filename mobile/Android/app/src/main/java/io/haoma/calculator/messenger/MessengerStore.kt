@@ -13,6 +13,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -170,6 +171,17 @@ class MessengerStore(
     
     internal val _replyTargets = MutableStateFlow<Map<String, TimelineEvent>>(emptyMap())
     val replyTargets: StateFlow<Map<String, TimelineEvent>> = _replyTargets.asStateFlow()
+
+    
+    internal val _pendingAnchors = MutableStateFlow<Map<String, AnchorState>>(emptyMap())
+    val pendingAnchors: StateFlow<Map<String, AnchorState>> = _pendingAnchors.asStateFlow()
+
+    
+    internal val anchorSeq = AtomicLong(0L)
+
+    
+    internal val _chatSearch = MutableStateFlow<ChatSearchState?>(null)
+    val chatSearch: StateFlow<ChatSearchState?> = _chatSearch.asStateFlow()
 
     
     private val envelopeIndex = HashMap<String, String>()
@@ -336,6 +348,8 @@ class MessengerStore(
         
         _drafts.value = emptyMap()
         _replyTargets.value = emptyMap()
+        _pendingAnchors.value = emptyMap()
+        _chatSearch.value = null
     }
 
     

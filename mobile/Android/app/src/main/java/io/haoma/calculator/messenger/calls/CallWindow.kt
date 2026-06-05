@@ -11,7 +11,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -95,29 +99,28 @@ private fun Header(label: String, onEnd: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 20.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
-            color = CallWindowTheme.Text,
+            color = CallWindowTheme.PeerNick,
             fontSize = 18.sp,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f),
         )
+        
+        
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(percent = 50))
-                .background(CallWindowTheme.Accent)
-                .clickable { onEnd() }
-                .padding(horizontal = 18.dp, vertical = 10.dp),
+                .size(48.dp)
+                .clickable { onEnd() },
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = "End call",
-                color = CallWindowTheme.Text,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp,
+            Icon(
+                imageVector = Icons.Filled.Call,
+                contentDescription = "End call",
+                tint = CallWindowTheme.Accent,
             )
         }
     }

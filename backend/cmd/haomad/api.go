@@ -302,10 +302,41 @@ type torHealth struct {
 }
 
 func (d *daemon) handleSystem(w http.ResponseWriter, _ *http.Request) {
+	torVer, torStarted := d.torIdentity()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":    version,
 		"started_at": d.startedAt.UTC().Format(time.RFC3339),
+		"tor": map[string]any{
+			"version":    torVer,
+			"started_at": torStarted,
+		},
 	})
+}
+
+func (d *daemon) torIdentity() (version, startedAt string) {
+	d.ctrlMu.Lock()
+	conn := d.ctrlConn
+	d.ctrlMu.Unlock()
+	if conn == nil {
+		return "", ""
+	}
+	v, err := conn.GetInfo("version")
+	if err != nil {
+		slog.Debug("torIdentity: GETINFO version", slog.Any("err", err))
+		return "", ""
+	}
+	u, err := conn.GetInfo("uptime")
+	if err != nil {
+		slog.Debug("torIdentity: GETINFO uptime", slog.Any("err", err))
+		return v, ""
+	}
+	secs, err := strconv.Atoi(strings.TrimSpace(u))
+	if err != nil {
+		slog.Debug("torIdentity: parse uptime", slog.String("raw", u), slog.Any("err", err))
+		return v, ""
+	}
+	started := time.Now().UTC().Add(-time.Duration(secs) * time.Second)
+	return v, started.Format(time.RFC3339)
 }
 
 func (d *daemon) handleTor(w http.ResponseWriter, _ *http.Request) {

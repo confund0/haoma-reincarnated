@@ -18,4 +18,7 @@ internal object ChatPalette {
     
     val CallSummaryOk = Color(0xFF98971A)
     val CallSummaryBad = Color(0xFFCC241D)
+    
+    
+    val AnchorPulse = Color(0x66D79921)
 }

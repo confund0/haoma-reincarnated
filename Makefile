@@ -29,7 +29,14 @@ STREAMS_LOCKFILE  := $(STREAMS_BUILD)/streams-prebuilt.lock
 # from API 29 onward).
 ANDROID_GOBINS := $(ANDROID)/app/build/go-bins/arm64-v8a
 
-GO_LDFLAGS    := -s -w
+# Version stamp injected into every Go binary as main.version via
+# -ldflags "-X". Dev builds get `git describe --tags --dirty --always`
+# (e.g. v0.0.20-beta-3-g9d2fa11 or v0.0.20-beta-3-g9d2fa11-dirty);
+# tools/release.sh overrides with the clean tag (VERSION=$TAG).
+# Fallback "dev" keeps things working in a non-git tree (rsync'd
+# public tree before tagging, throwaway docker builds, etc).
+VERSION       ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
+GO_LDFLAGS    := -s -w -X main.version=$(VERSION)
 GO_BUILD_FLAGS = -ldflags="$(GO_LDFLAGS)" -trimpath
 export CGO_ENABLED = 0
 

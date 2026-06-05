@@ -79,6 +79,10 @@ object FrameType {
     const val ChatEnsured = "chat_ensured"
 
     
+    const val ChatSearch = "chat_search"
+    const val ChatSearched = "chat_searched"
+
+    
     const val SetAlias = "set_alias"
     const val AliasUpdated = "alias_updated"
     const val PeerAction = "peer_action"

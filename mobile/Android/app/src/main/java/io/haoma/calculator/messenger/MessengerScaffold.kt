@@ -165,7 +165,7 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: 
     }
 }
 
-private val NAV_BAR_HEIGHT = 58.dp
+private val NAV_BAR_HEIGHT = 52.dp
 private val NAV_ICON_SIZE = 20.dp
 
 private data class NavTabEntry(val tab: Tab, val label: String, val icon: ImageVector?)

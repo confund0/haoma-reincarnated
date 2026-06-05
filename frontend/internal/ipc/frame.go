@@ -190,6 +190,9 @@ const (
 	FrameRotateUserDecline FrameType = "rotate_user_decline"
 	FrameRotateRequested   FrameType = "rotate.requested"
 	FrameRotateLifecycle   FrameType = "rotate.lifecycle"
+
+	FrameChatSearch   FrameType = "chat_search"
+	FrameChatSearched FrameType = "chat_searched"
 )
 
 type Frame struct {
@@ -243,7 +246,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 40
+const ProtocolVersion = 41
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -388,6 +391,7 @@ type SystemInfoComponent struct {
 type SystemInfoResponsePayload struct {
 	Haoma  SystemInfoComponent `json:"haoma"`
 	Haomad SystemInfoComponent `json:"haomad"`
+	Tor    SystemInfoComponent `json:"tor"`
 }
 
 type PeerEntry struct {
@@ -476,6 +480,24 @@ type InspectEventRequest struct {
 
 type EventInspectedResponse struct {
 	Event json.RawMessage `json:"event"`
+}
+
+type ChatSearchRequest struct {
+	ChatID string `json:"chat_id"`
+	Query  string `json:"query"`
+}
+
+type ChatSearchMatch struct {
+	MsgID      string `json:"msg_id"`
+	DisplayTs  int64  `json:"display_ts"`
+	BodyOffset int    `json:"body_offset"`
+}
+
+type ChatSearchResponse struct {
+	ChatID    string            `json:"chat_id"`
+	Query     string            `json:"query"`
+	Matches   []ChatSearchMatch `json:"matches"`
+	Truncated bool              `json:"truncated,omitempty"`
 }
 
 type PeerActionAppliedResponse struct {

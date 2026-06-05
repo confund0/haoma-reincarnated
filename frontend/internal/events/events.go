@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -878,6 +879,90 @@ func (l *Log) ListBefore(chatID chat.ChatID, beforeDisplayTs int64, limit int) (
 		return nil
 	})
 	return out, err
+}
+
+const DefaultSearchCap = 500
+
+type SearchHit struct {
+	MsgID      string
+	DisplayTs  int64
+	RecvSeq    uint64
+	BodyOffset int
+}
+
+func (l *Log) SearchInChat(chatID chat.ChatID, query string, maxMatches int) (matches []SearchHit, truncated bool, err error) {
+	if chatID == "" {
+		return nil, false, errors.New("events: empty chat id")
+	}
+	if query == "" {
+		return nil, false, errors.New("events: empty query")
+	}
+	if maxMatches <= 0 {
+		maxMatches = DefaultSearchCap
+	}
+	qLower := strings.ToLower(query)
+
+	chatPrefix := append([]byte(prefix), chatID...)
+	chatPrefix = append(chatPrefix, ':')
+
+	err = l.st.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = chatPrefix
+		opts.Reverse = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		seekEnd := append(append([]byte(nil), chatPrefix...), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
+		it.Seek(seekEnd)
+
+		for ; it.Valid(); it.Next() {
+			item := it.Item()
+			var ev Event
+			if vErr := item.Value(func(v []byte) error {
+				return json.Unmarshal(v, &ev)
+			}); vErr != nil {
+				return vErr
+			}
+			if ev.Kind != KindText {
+				continue
+			}
+			if ev.DeletedAt != 0 {
+				continue
+			}
+			if ev.DecryptStatus == DecryptFailed {
+				continue
+			}
+			if ev.MsgID == "" {
+				continue
+			}
+			var tb TextBody
+			if uErr := json.Unmarshal(ev.Body, &tb); uErr != nil {
+				continue
+			}
+			if tb.Text == "" {
+				continue
+			}
+			idx := strings.Index(strings.ToLower(tb.Text), qLower)
+			if idx < 0 {
+				continue
+			}
+			if len(matches) >= maxMatches {
+				truncated = true
+				return nil
+			}
+			matches = append(matches, SearchHit{
+				MsgID:      ev.MsgID,
+				DisplayTs:  ev.DisplayTs,
+				RecvSeq:    ev.RecvSeq,
+				BodyOffset: idx,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("events: search in chat %s: %w", chatID, err)
+	}
+	return matches, truncated, nil
 }
 
 func (l *Log) DeleteByChat(chatID chat.ChatID) (int, error) {

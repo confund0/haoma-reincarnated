@@ -100,6 +100,8 @@ internal fun MessengerStore.dispatch(frame: Frame) {
             val u = ChatClearedPayload.fromJson(payload)
             if (u.chatId.isNotEmpty()) {
                 _timelines.update { it - u.chatId }
+                _pendingAnchors.update { if (u.chatId in it) it - u.chatId else it }
+                if (_chatSearch.value?.chatId == u.chatId) closeChatSearch()
                 forgetEnvelopesFor(u.chatId)
             }
             appendStatus("chat cleared: ${shortChat(u.chatId)} (${u.deletedCount} events)")
@@ -112,6 +114,8 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                 _timelines.update { it - u.chatId }
                 _drafts.update { if (u.chatId in it) it - u.chatId else it }
                 _replyTargets.update { if (u.chatId in it) it - u.chatId else it }
+                _pendingAnchors.update { if (u.chatId in it) it - u.chatId else it }
+                if (_chatSearch.value?.chatId == u.chatId) closeChatSearch()
                 forgetEnvelopesFor(u.chatId)
                 appendStatus("chat deleted: ${shortChat(u.chatId)} (${u.deletedCount} events)")
             }

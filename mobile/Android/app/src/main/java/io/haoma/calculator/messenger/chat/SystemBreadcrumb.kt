@@ -37,7 +37,7 @@ internal fun SystemBreadcrumb(event: TimelineEvent, modifier: Modifier = Modifie
             color = breadcrumbColor(event),
             fontFamily = FontFamily.Monospace,
             fontStyle = FontStyle.Italic,
-            fontSize = 12.sp,
+            fontSize = 13.sp,
         )
     }
 }

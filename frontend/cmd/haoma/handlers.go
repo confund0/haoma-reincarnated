@@ -229,6 +229,8 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleEnsureChat(ctx, sess, f)
 	case ipc.FrameInspectEvent:
 		sd.handleInspectEvent(ctx, sess, f)
+	case ipc.FrameChatSearch:
+		sd.handleChatSearch(ctx, sess, f)
 	case ipc.FrameGetPeerFingerprint:
 		sd.handleGetPeerFingerprint(sess, f)
 	case ipc.FrameGetChatSettings:
@@ -1024,6 +1026,10 @@ func (sd *sessionDispatcher) handleSystemInfo(ctx context.Context, sess *ipc.Ses
 				Version:   info.Version,
 				StartedAt: info.StartedAt,
 			}
+			payload.Tor = ipc.SystemInfoComponent{
+				Version:   info.Tor.Version,
+				StartedAt: info.Tor.StartedAt,
+			}
 		} else {
 			slog.Warn("system_info: backend fetch failed", slog.Any("err", err))
 		}
@@ -1295,6 +1301,54 @@ func (sd *sessionDispatcher) handleInspectEvent(ctx context.Context, sess *ipc.S
 	}
 	if err := sess.Send(resp); err != nil {
 		slog.Warn("send event_inspected frame failed", slog.Any("err", err))
+	}
+}
+
+func (sd *sessionDispatcher) handleChatSearch(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
+	_ = ctx
+	slog.Debug("handle chat_search")
+	var req ipc.ChatSearchRequest
+	if err := json.Unmarshal(f.Payload, &req); err != nil {
+		sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
+		return
+	}
+	if req.ChatID == "" {
+		sendError(sess, f.ID, "bad_request", "chat_id required")
+		return
+	}
+	if req.Query == "" {
+		sendError(sess, f.ID, "bad_request", "query required")
+		return
+	}
+	if sd.d.events == nil {
+		sendError(sess, f.ID, "not_ready", "events log not wired")
+		return
+	}
+	hits, truncated, err := sd.d.events.SearchInChat(chat.ChatID(req.ChatID), req.Query, 0)
+	if err != nil {
+		sendError(sess, f.ID, "internal", err.Error())
+		return
+	}
+	matches := make([]ipc.ChatSearchMatch, len(hits))
+	for i, h := range hits {
+		matches[i] = ipc.ChatSearchMatch{
+			MsgID:      h.MsgID,
+			DisplayTs:  h.DisplayTs,
+			BodyOffset: h.BodyOffset,
+		}
+	}
+	resp, err := ipc.NewFrame(ipc.FrameChatSearched, f.ID, ipc.ChatSearchResponse{
+		ChatID:    req.ChatID,
+		Query:     req.Query,
+		Matches:   matches,
+		Truncated: truncated,
+	})
+	if err != nil {
+		sendError(sess, f.ID, "encode_frame", err.Error())
+		return
+	}
+	if err := sess.Send(resp); err != nil {
+		slog.Warn("send chat_searched frame failed", slog.Any("err", err))
 	}
 }
 

@@ -161,11 +161,13 @@ data class SystemInfoComponent(
 data class SystemInfoResponse(
     val haoma: SystemInfoComponent,
     val haomad: SystemInfoComponent,
+    val tor: SystemInfoComponent,
 ) {
     companion object {
         fun fromJson(o: JSONObject): SystemInfoResponse = SystemInfoResponse(
             haoma = o.optJSONObject("haoma")?.let { SystemInfoComponent.fromJson(it) } ?: SystemInfoComponent.EMPTY,
             haomad = o.optJSONObject("haomad")?.let { SystemInfoComponent.fromJson(it) } ?: SystemInfoComponent.EMPTY,
+            tor = o.optJSONObject("tor")?.let { SystemInfoComponent.fromJson(it) } ?: SystemInfoComponent.EMPTY,
         )
     }
 }
@@ -736,6 +738,57 @@ data class TimelineEventDeletedPayload(
             chatId = o.optStringOrEmpty("chat_id"),
             recvSeq = o.optLong("recv_seq", 0L),
         )
+    }
+}
+
+
+data class ChatSearchRequest(
+    val chatId: String,
+    val query: String,
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("chat_id", chatId)
+        put("query", query)
+    }
+}
+
+
+data class ChatSearchMatch(
+    val msgId: String,
+    val displayTs: Long,
+    val bodyOffset: Int,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ChatSearchMatch = ChatSearchMatch(
+            msgId = o.optStringOrEmpty("msg_id"),
+            displayTs = o.optLong("display_ts", 0L),
+            bodyOffset = o.optInt("body_offset", 0),
+        )
+    }
+}
+
+
+data class ChatSearchResponse(
+    val chatId: String,
+    val query: String,
+    val matches: List<ChatSearchMatch>,
+    val truncated: Boolean,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ChatSearchResponse {
+            val arr = o.optJSONArray("matches")
+            val matches = if (arr == null) emptyList() else buildList {
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { add(ChatSearchMatch.fromJson(it)) }
+                }
+            }
+            return ChatSearchResponse(
+                chatId = o.optStringOrEmpty("chat_id"),
+                query = o.optStringOrEmpty("query"),
+                matches = matches,
+                truncated = o.optBoolean("truncated", false),
+            )
+        }
     }
 }
 

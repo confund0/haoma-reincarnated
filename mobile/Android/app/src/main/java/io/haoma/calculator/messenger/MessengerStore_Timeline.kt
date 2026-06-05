@@ -1,11 +1,14 @@
 package io.haoma.calculator.messenger
 
 import io.haoma.calculator.core.ipc.FrameType
+import io.haoma.calculator.log.Logger
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 
@@ -61,6 +64,75 @@ fun MessengerStore.loadTimeline(chatId: String) {
         }
     }
 }
+
+
+data class AnchorState(val msgId: String, val seq: Long)
+
+
+fun MessengerStore.scrollToMsgId(
+    chatId: String,
+    msgId: String,
+    onMiss: () -> Unit = {},
+) {
+    if (chatId.isEmpty() || msgId.isEmpty()) return
+    bumpAnchor(chatId, msgId)
+
+    val cache = _timelines.value[chatId]
+    if (cache != null && cache.events.any { it.msgId == msgId }) return
+
+    
+    if (cache != null && !cache.hasMore && cache.events.isNotEmpty()) {
+        Logger.i("anchor", "miss (no more pages) chat=${shortChat(chatId)} msg=${shortChat(msgId)}")
+        _pendingAnchors.update { it - chatId }
+        onMiss()
+        return
+    }
+
+    scope.launch {
+        var tries = 0
+        while (tries < MAX_ANCHOR_PAGES) {
+            val before = _timelines.value[chatId] ?: TimelineCache(chatId = chatId)
+            if (!before.hasMore && before.events.isNotEmpty()) break
+            
+            
+            while (_timelines.value[chatId]?.loading == true) delay(ANCHOR_POLL_MS)
+            loadTimeline(chatId)
+            while (_timelines.value[chatId]?.loading == true) delay(ANCHOR_POLL_MS)
+            val after = _timelines.value[chatId]
+            if (after != null && after.events.any { it.msgId == msgId }) {
+                
+                
+                return@launch
+            }
+            tries++
+        }
+        Logger.i(
+            "anchor",
+            "miss (paging exhausted after $tries tries) chat=${shortChat(chatId)} msg=${shortChat(msgId)}",
+        )
+        _pendingAnchors.update { it - chatId }
+        onMiss()
+    }
+}
+
+
+fun MessengerStore.consumeAnchor(chatId: String, seq: Long) {
+    _pendingAnchors.update { map ->
+        val cur = map[chatId] ?: return@update map
+        if (cur.seq == seq) map - chatId else map
+    }
+}
+
+
+internal fun MessengerStore.bumpAnchor(chatId: String, msgId: String) {
+    val nextSeq = anchorSeq.incrementAndGet()
+    _pendingAnchors.update { map ->
+        map + (chatId to AnchorState(msgId = msgId, seq = nextSeq))
+    }
+}
+
+private const val MAX_ANCHOR_PAGES = 20
+private const val ANCHOR_POLL_MS = 25L
 
 
 fun MessengerStore.sendText(chatId: String, text: String) {

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -96,14 +97,18 @@ internal fun ChatInput(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.Bottom,
+            
+            
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Surface(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = InputMinHeight),
-                shape = RoundedCornerShape(percent = 50),
+                
+                
+                shape = RoundedCornerShape(InputCornerRadius),
                 color = ChatPalette.InboundBubble,
                 border = BorderStroke(
                     width = 1.dp,
@@ -115,8 +120,11 @@ internal fun ChatInput(
                     onValueChange = {
                         if (editing) editBuffer = it else onComposeChange(it)
                     },
+                    
+                    
                     modifier = Modifier
                         .fillMaxWidth()
+                        .wrapContentHeight(Alignment.CenterVertically)
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                     textStyle = TextStyle(color = ChatPalette.Text, fontSize = 14.sp),
                     cursorBrush = SolidColor(ChatPalette.Accent),
@@ -225,7 +233,9 @@ private fun SendStack(
                 onClick = onSend,
                 colors = IconButtonDefaults.iconButtonColors(
                     contentColor = ChatPalette.Surface,
-                    containerColor = ChatPalette.Accent,
+                    
+                    
+                    containerColor = SendButtonContainer,
                 ),
             ) {
                 Icon(
@@ -248,4 +258,6 @@ private fun SendStack(
 }
 
 private val StackSize = 40.dp
-private val InputMinHeight = 40.dp
+private val InputMinHeight = 46.dp
+private val InputCornerRadius = 23.dp
+private val SendButtonContainer = androidx.compose.ui.graphics.Color(0xFFD79921)

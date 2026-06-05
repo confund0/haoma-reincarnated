@@ -8,4 +8,7 @@ internal object CallWindowTheme {
     val Text = Color(0xFFFBF1C7)             
     val Accent = Color(0xFFFB4934)           
     val PlaceholderBg = Color(0xFF101010)    
+    
+    
+    val PeerNick = Color(0xFFD79921)
 }

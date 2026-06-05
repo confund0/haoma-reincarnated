@@ -91,6 +91,9 @@ func (a *App) handleInput(_ tcell.Key) {
 	case "/fsbrowse":
 		a.cmdFsBrowse(rest)
 		return
+	case "/about":
+		a.cmdAbout()
+		return
 	}
 
 	a.winMu.Lock()
@@ -136,6 +139,8 @@ func (a *App) handleInput(_ tcell.Key) {
 		a.cmdTorInfo()
 	case "/inspect":
 		a.cmdInspect(rest)
+	case "/search":
+		a.cmdSearch(rest)
 	case "/edit":
 		a.cmdEdit()
 	case "/delete":
@@ -209,6 +214,7 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/status [available|away|busy][white]        — set your presence; broadcasts (status pane) or targets the chat peer (chat pane). No arg = reset to available.")
 	a.log("  [yellow]/nick [name][white]                          — set your self-nick (embedded in outgoing invites). No arg = show current.")
 	a.log("  [yellow]/inspect <msg_id>[white]                     — dev: dump the event row for a msg_id")
+	a.log("  [yellow]/about[white]                                — build identity: haoma-text + haoma + haomad versions, uptimes, protocol")
 	a.log("  [yellow]/help, /h[white]                             — this list")
 	a.log("  [yellow]/quit, /q, /panic[white]                     — exit (Ctrl-D also works; full panic actions land later)")
 	a.log("vault (require --cfg-dir flow):")
@@ -676,6 +682,66 @@ func (a *App) cmdTorInfo() {
 			a.log("[green]tor slot %d[white] %s", s.Slot, s.URL)
 		}
 	})
+}
+
+func (a *App) cmdAbout() {
+	textVer := a.Version
+	if textVer == "" {
+		textVer = "dev"
+	}
+	a.log("about:")
+	a.log("  haoma-text  %s", textVer)
+	a.log("  protocol    v%d", ipc.ProtocolVersion)
+
+	a.winMu.Lock()
+	haomaUp := a.haomaConnected
+	a.winMu.Unlock()
+	if !haomaUp {
+		a.log("  [yellow]haoma + haomad versions unavailable[white] — daemon disconnected")
+		return
+	}
+	a.sendRequest(ipc.FrameSystemInfo, nil, func(f ipc.Frame) {
+		if f.Type == ipc.FrameError {
+			a.renderError(f)
+			return
+		}
+		if f.Type != ipc.FrameSystemInfoResponse {
+			a.log("[red]about[white] unexpected response type: %s", f.Type)
+			return
+		}
+		var p ipc.SystemInfoResponsePayload
+		if err := json.Unmarshal(f.Payload, &p); err != nil {
+			a.log("[red]about[white] decode response: %v", err)
+			return
+		}
+		a.log("  haoma       %s", formatVersionRow(p.Haoma))
+		a.log("  haomad      %s", formatVersionRow(p.Haomad))
+		a.log("  tor         %s", formatVersionRow(p.Tor))
+	})
+}
+
+func formatVersionRow(c ipc.SystemInfoComponent) string {
+	if c.Version == "" {
+		return "(unwired)"
+	}
+	started, err := time.Parse(time.RFC3339, c.StartedAt)
+	if err != nil || started.IsZero() {
+		return c.Version
+	}
+	return fmt.Sprintf("%s · up %s", c.Version, formatUptime(time.Since(started)))
+}
+
+func formatUptime(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 func (a *App) renderError(f ipc.Frame) {

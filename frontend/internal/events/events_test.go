@@ -2157,3 +2157,202 @@ func TestEventDeletable_OtherKindsRefused(t *testing.T) {
 		}
 	}
 }
+
+func tickClock(start int64) func() time.Time {
+	t := start
+	return func() time.Time {
+		t++
+		return time.Unix(t, 0)
+	}
+}
+
+func appendText(t *testing.T, l *events.Log, chatID, msgID, text string) events.Event {
+	t.Helper()
+	body, _ := json.Marshal(events.TextBody{Text: text})
+	ev, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:     chat.ChatID(chatID),
+		Kind:       events.KindText,
+		SenderSeq:  1,
+		EnvelopeID: "env-" + msgID,
+		MsgID:      msgID,
+		Body:       body,
+	})
+	if err != nil {
+		t.Fatalf("append %q: %v", msgID, err)
+	}
+	return ev
+}
+
+func TestSearchInChat_MatchesOrderingNewestFirst(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+	appendText(t, l, "alice", "m1", "Hello world")
+	appendText(t, l, "alice", "m2", "no hits here")
+	appendText(t, l, "alice", "m3", "say HELLO again")
+	appendText(t, l, "alice", "m4", "irrelevant")
+	appendText(t, l, "alice", "m5", "HeLLo at the end")
+
+	hits, truncated, err := l.SearchInChat(chat.ChatID("alice"), "hello", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Errorf("truncated = true, want false")
+	}
+	if got, want := len(hits), 3; got != want {
+		t.Fatalf("hits = %d, want %d", got, want)
+	}
+
+	wantOrder := []string{"m5", "m3", "m1"}
+	for i, h := range hits {
+		if h.MsgID != wantOrder[i] {
+			t.Errorf("hits[%d].MsgID = %q, want %q", i, h.MsgID, wantOrder[i])
+		}
+	}
+
+	if hits[2].BodyOffset != 0 {
+		t.Errorf("m1 offset = %d, want 0", hits[2].BodyOffset)
+	}
+	if hits[1].BodyOffset != 4 {
+		t.Errorf("m3 offset = %d, want 4", hits[1].BodyOffset)
+	}
+	if hits[0].BodyOffset != 0 {
+		t.Errorf("m5 offset = %d, want 0", hits[0].BodyOffset)
+	}
+}
+
+func TestSearchInChat_SkipsTombstones(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+	appendText(t, l, "alice", "m1", "find me one")
+	appendText(t, l, "alice", "m2", "find me two")
+
+	if _, err := l.ApplyDelete("m1", 1742643999, ""); err != nil {
+		t.Fatalf("tombstone m1: %v", err)
+	}
+
+	hits, _, err := l.SearchInChat(chat.ChatID("alice"), "find me", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits = %d, want 1 (m1 should be skipped as tombstoned)", len(hits))
+	}
+	if hits[0].MsgID != "m2" {
+		t.Errorf("hits[0].MsgID = %q, want m2", hits[0].MsgID)
+	}
+}
+
+func TestSearchInChat_SkipsNonTextKinds(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+	appendText(t, l, "alice", "m1", "ping match")
+
+	body, _ := json.Marshal(events.TimerChangeBody{From: 0, To: 60})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:    chat.ChatID("alice"),
+		Kind:      events.KindTimerChange,
+		SenderSeq: 2,
+		MsgID:     "tc-1",
+		Body:      body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, _, err := l.SearchInChat(chat.ChatID("alice"), "ping", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].MsgID != "m1" {
+		t.Fatalf("hits = %+v, want exactly m1", hits)
+	}
+}
+
+func TestSearchInChat_SkipsLegacyEmptyMsgID(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+	body, _ := json.Marshal(events.TextBody{Text: "legacy ghost"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:    chat.ChatID("alice"),
+		Kind:      events.KindText,
+		SenderSeq: 1,
+
+		Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, _, err := l.SearchInChat(chat.ChatID("alice"), "legacy", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("hits = %d, want 0 (legacy row without msg_id is unaddressable)", len(hits))
+	}
+}
+
+func TestSearchInChat_TruncatedAtCap(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+
+	for i := 0; i < 6; i++ {
+		appendText(t, l, "alice", fmt.Sprintf("m%d", i), fmt.Sprintf("hit %d", i))
+	}
+	hits, truncated, err := l.SearchInChat(chat.ChatID("alice"), "hit", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Errorf("truncated = false, want true")
+	}
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d, want 2", len(hits))
+	}
+}
+
+func TestSearchInChat_TruncatedFalseAtExactCount(t *testing.T) {
+
+	l, _ := newLog(t, tickClock(1742643890))
+	for i := 0; i < 3; i++ {
+		appendText(t, l, "alice", fmt.Sprintf("m%d", i), fmt.Sprintf("hit %d", i))
+	}
+	hits, truncated, err := l.SearchInChat(chat.ChatID("alice"), "hit", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Errorf("truncated = true, want false (exact cap, no spillover)")
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits = %d, want 3", len(hits))
+	}
+}
+
+func TestSearchInChat_NoMatch(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+	appendText(t, l, "alice", "m1", "totally unrelated")
+	hits, truncated, err := l.SearchInChat(chat.ChatID("alice"), "xyzzy", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(hits) != 0 {
+		t.Errorf("hits=%d truncated=%v, want empty + false", len(hits), truncated)
+	}
+}
+
+func TestSearchInChat_EmptyArgsRejected(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+	if _, _, err := l.SearchInChat("", "x", 0); err == nil {
+		t.Errorf("empty chat id: err = nil, want error")
+	}
+	if _, _, err := l.SearchInChat(chat.ChatID("alice"), "", 0); err == nil {
+		t.Errorf("empty query: err = nil, want error")
+	}
+}
+
+func TestSearchInChat_ScopedToChat(t *testing.T) {
+	l, _ := newLog(t, tickClock(1742643890))
+	appendText(t, l, "alice", "a1", "shared keyword")
+	appendText(t, l, "bob", "b1", "shared keyword")
+	hits, _, err := l.SearchInChat(chat.ChatID("alice"), "shared", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].MsgID != "a1" {
+		t.Fatalf("hits = %+v, want exactly a1 (bob's chat should not leak)", hits)
+	}
+}

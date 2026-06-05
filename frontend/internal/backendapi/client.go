@@ -78,6 +78,12 @@ func (c *Client) TorInfo(ctx context.Context) (TorInfoResponse, error) {
 }
 
 type SystemInfo struct {
+	Version   string  `json:"version"`
+	StartedAt string  `json:"started_at"`
+	Tor       TorInfo `json:"tor"`
+}
+
+type TorInfo struct {
 	Version   string `json:"version"`
 	StartedAt string `json:"started_at"`
 }

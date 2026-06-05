@@ -146,6 +146,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 
 	app := tui.New(client)
 	app.DataDir = textDataDir
+	app.Version = version
 	app.SweepVideoFifos()
 	app.VaultCtl = vc
 

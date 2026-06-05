@@ -91,3 +91,9 @@ var (
 	ColorRotationActive   = tcell.ColorRed
 	ColorRotationCooldown = tcell.ColorYellow
 )
+
+const (
+	StyleSearchHighlight        = "[black:#D79921]"
+	StyleSearchHighlightCurrent = "[white:#9D0006]"
+	StyleSearchHighlightOff     = "[-:-][white]"
+)

@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rivo/tview"
@@ -28,11 +29,15 @@ type chatPage struct {
 	msgIDIndex map[string]int
 
 	fileProgress map[string]uint64
+
+	searchQuery    string
+	searchCurMsgID string
 }
 
 func newChatPage(chatID, peerID, nickname string, retiredAt int64) *chatPage {
 	view := tview.NewTextView().
 		SetDynamicColors(true).
+		SetRegions(true).
 		SetScrollable(true)
 	view.SetBorder(true)
 	cp := &chatPage{
@@ -233,7 +238,21 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 		if ev.EditedAt > 0 {
 			suffix = " [gray](edited)[white]"
 		}
-		return fmt.Sprintf("[gray]%s[white] %s %s%s", stamp, arrow, body.Text, suffix)
+
+		text := body.Text
+		regionOpen, regionClose := "", ""
+		if cp.searchQuery != "" {
+			openTag := StyleSearchHighlight
+			if ev.MsgID != "" && ev.MsgID == cp.searchCurMsgID {
+				openTag = StyleSearchHighlightCurrent
+			}
+			text = highlightAllInsensitiveStyle(text, cp.searchQuery, openTag, StyleSearchHighlightOff)
+			if ev.MsgID != "" {
+				regionOpen = "[\"msg:" + ev.MsgID + "\"]"
+				regionClose = "[\"\"]"
+			}
+		}
+		return fmt.Sprintf("[gray]%s[white] %s %s%s%s%s", stamp, arrow, regionOpen, text, suffix, regionClose)
 	case "file":
 
 		if ev.DeletedAt > 0 {
@@ -388,6 +407,58 @@ func (cp *chatPage) rebuildNoScroll() {
 	for _, e := range cp.entries {
 		fmt.Fprintln(cp.view, cp.renderEntry(e))
 	}
+}
+
+func (cp *chatPage) setSearchHighlight(query, curMsgID string) {
+	cp.searchQuery = query
+	cp.searchCurMsgID = curMsgID
+}
+
+func (cp *chatPage) clearSearchHighlight() {
+	cp.searchQuery = ""
+	cp.searchCurMsgID = ""
+	cp.view.Highlight()
+}
+
+func (cp *chatPage) scrollToMsgID(msgID string) {
+	if msgID == "" {
+		return
+	}
+	if idx, ok := cp.msgIDIndex[msgID]; ok {
+		target := idx - 5
+		if target < 0 {
+			target = 0
+		}
+		cp.view.ScrollTo(target, 0)
+	}
+	cp.view.Highlight("msg:" + msgID)
+}
+
+func highlightAllInsensitive(s, query string) string {
+	return highlightAllInsensitiveStyle(s, query, StyleSearchHighlight, StyleSearchHighlightOff)
+}
+
+func highlightAllInsensitiveStyle(s, query, openTag, closeTag string) string {
+	if query == "" || s == "" {
+		return s
+	}
+	lo := strings.ToLower(s)
+	q := strings.ToLower(query)
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		rel := strings.Index(lo[i:], q)
+		if rel < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		b.WriteString(s[i : i+rel])
+		b.WriteString(openTag)
+		b.WriteString(s[i+rel : i+rel+len(q)])
+		b.WriteString(closeTag)
+		i = i + rel + len(q)
+	}
+	return b.String()
 }
 
 func (cp *chatPage) appendEvent(evJSON json.RawMessage) {

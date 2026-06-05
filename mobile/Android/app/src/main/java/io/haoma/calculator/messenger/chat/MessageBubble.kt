@@ -23,6 +23,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,6 +55,8 @@ import io.haoma.calculator.messenger.humanBytes
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
 
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -60,6 +64,7 @@ import java.util.Locale
 internal fun MessageBubble(
     event: TimelineEvent,
     reactions: Map<String, Reaction> = emptyMap(),
+    pulseEvents: Flow<String>? = null,
     onLongPress: (TimelineEvent) -> Unit = {},
     onTapReaction: (TimelineEvent, String) -> Unit = { _, _ -> },
     onTapImage: (TimelineEvent) -> Unit = {},
@@ -79,6 +84,19 @@ internal fun MessageBubble(
     
     
     val tappableImage = event.isReadyImage()
+    
+    
+    val pulseAlpha = remember { Animatable(0f) }
+    if (pulseEvents != null) {
+        val targetMsgId = event.msgId
+        LaunchedEffect(pulseEvents, targetMsgId) {
+            if (targetMsgId.isEmpty()) return@LaunchedEffect
+            pulseEvents.filter { it == targetMsgId }.collect {
+                pulseAlpha.snapTo(1f)
+                pulseAlpha.animateTo(0f, animationSpec = tween(durationMillis = PULSE_DURATION_MS))
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -91,6 +109,7 @@ internal fun MessageBubble(
                 .widthIn(max = BubbleMaxWidth)
                 .clip(BubbleShape)
                 .background(bubbleColor)
+                .background(ChatPalette.AnchorPulse.copy(alpha = pulseAlpha.value * ChatPalette.AnchorPulse.alpha))
                 .combinedClickable(
                     interactionSource = interactionSource,
                     indication = null,
@@ -344,6 +363,8 @@ private fun MessageFooter(event: TimelineEvent) {
         }
     }
 }
+
+private const val PULSE_DURATION_MS = 1000
 
 private val BubbleShape = RoundedCornerShape(12.dp)
 private val BubbleMaxWidth = 280.dp

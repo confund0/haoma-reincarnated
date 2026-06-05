@@ -4,23 +4,33 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +54,7 @@ import io.haoma.calculator.messenger.FileEventBody
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.Reaction
 import io.haoma.calculator.messenger.TimelineEvent
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
@@ -66,6 +77,10 @@ fun ChatDetailScreen(
     val composeDraft = drafts[chatId] ?: ""
     val replyTargets by store.replyTargets.collectAsStateWithLifecycle()
     val replyTarget = replyTargets[chatId]
+    val pendingAnchors by store.pendingAnchors.collectAsStateWithLifecycle()
+    val anchor = pendingAnchors[chatId]
+    val chatSearch by store.chatSearch.collectAsStateWithLifecycle()
+    val searchState = chatSearch?.takeIf { it.chatId == chatId }
     val chat = chats.firstOrNull { it.chatId == chatId }
     val presence = chat?.peerId?.let { presenceMap[it] }
     
@@ -128,6 +143,9 @@ fun ChatDetailScreen(
             
             
             store.wipeAllOpenTransients()
+            
+            
+            store.closeChatSearch()
         }
     }
 
@@ -169,7 +187,18 @@ fun ChatDetailScreen(
             },
             onOpenSettings = { store.openChatSettings(chatId) },
             onViewFiles = { filesPickerOpen = true },
+            onOpenSearch = { store.openChatSearch(chatId) },
         )
+        searchState?.let { s ->
+            SearchBar(
+                state = s,
+                onQueryChange = { text -> store.setChatSearchQuery(text) },
+                onSubmit = { q -> store.runChatSearch(chatId, q) },
+                onStepOlder = { store.stepChatSearch(+1) },
+                onStepNewer = { store.stepChatSearch(-1) },
+                onClose = { store.closeChatSearch() },
+            )
+        }
         callHere?.let { call ->
             
             
@@ -196,8 +225,11 @@ fun ChatDetailScreen(
                 EmptyChatHint(loading = cache.loading)
             } else {
                 MessageList(
+                    chatId = chatId,
                     events = cache.events,
                     reactionsByTarget = cache.reactionsByTarget,
+                    anchor = anchor,
+                    onAnchorConsumed = { seq -> store.consumeAnchor(chatId, seq) },
                     onLongPress = { actionTarget = it },
                     onTapReaction = { ev, emoji -> store.toggleReaction(chatId, ev.msgId, emoji) },
                     onTapImage = { ev ->
@@ -206,7 +238,13 @@ fun ChatDetailScreen(
                         val name = FileEventBody.fromJson(ev.body).name
                         store.openImageViewer(chatId, ev.msgId, name)
                     },
-                    onTapReplyChip = { snapshot -> fullReplyTarget = snapshot },
+                    onTapReplyChip = { snapshot ->
+                        
+                        
+                        store.scrollToMsgId(chatId, snapshot.msgId) {
+                            fullReplyTarget = snapshot
+                        }
+                    },
                     onScrolledToBottom = {
                         
                         
@@ -378,8 +416,11 @@ private fun DeleteMessageDialog(
 
 @Composable
 private fun MessageList(
+    chatId: String,
     events: List<TimelineEvent>,
     reactionsByTarget: Map<String, Map<String, Reaction>>,
+    anchor: AnchorState?,
+    onAnchorConsumed: (Long) -> Unit,
     onLongPress: (TimelineEvent) -> Unit,
     onTapReaction: (TimelineEvent, String) -> Unit,
     onTapImage: (TimelineEvent) -> Unit,
@@ -389,8 +430,37 @@ private fun MessageList(
     val state = rememberLazyListState()
     
     
+    val newestFirst = remember(events) {
+        events.asReversed().filter { it.kind != EventKind.REACTION }
+    }
+    
+    
     LaunchedEffect(events.size) {
-        if (events.isNotEmpty()) state.scrollToItem(0)
+        if (events.isNotEmpty() && anchor == null) state.scrollToItem(0)
+    }
+    
+    
+    val pulseEvents = remember(chatId) { MutableSharedFlow<String>(replay = 0) }
+    
+    
+    val scrolledSeq = remember(chatId) { mutableStateOf(0L) }
+    LaunchedEffect(anchor?.seq, events.size) {
+        val a = anchor ?: return@LaunchedEffect
+        if (a.seq == scrolledSeq.value) {
+            onAnchorConsumed(a.seq)
+            return@LaunchedEffect
+        }
+        val idx = newestFirst.indexOfFirst { it.msgId == a.msgId }
+        if (idx >= 0) {
+            scrolledSeq.value = a.seq
+            
+            
+            state.animateScrollToItem(idx)
+            
+            
+            pulseEvents.emit(a.msgId)
+            onAnchorConsumed(a.seq)
+        }
     }
     
     
@@ -403,26 +473,60 @@ private fun MessageList(
     }
     
     
-    LazyColumn(
-        state = state,
-        modifier = Modifier.fillMaxSize(),
-        reverseLayout = true,
-        contentPadding = PaddingValues(vertical = 8.dp),
-    ) {
-        
-        
-        val newestFirst = events.asReversed().filter { it.kind != EventKind.REACTION }
-        items(items = newestFirst, key = { rowKey(it) }) { ev ->
-            when (ev.kind) {
-                EventKind.TEXT, EventKind.FILE -> MessageBubble(
-                    event = ev,
-                    reactions = reactionsByTarget[ev.msgId].orEmpty(),
-                    onLongPress = onLongPress,
-                    onTapReaction = onTapReaction,
-                    onTapImage = onTapImage,
-                    onTapReplyChip = onTapReplyChip,
-                )
-                else -> SystemBreadcrumb(event = ev)
+    val showJumpToBottom by remember(state) {
+        derivedStateOf {
+            state.firstVisibleItemIndex > 0 || state.firstVisibleItemScrollOffset > 24
+        }
+    }
+    val coroutineScope = rememberCoroutineScope()
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = state,
+            modifier = Modifier.fillMaxSize(),
+            reverseLayout = true,
+            contentPadding = PaddingValues(vertical = 8.dp),
+        ) {
+            
+            
+            items(items = newestFirst, key = { rowKey(it) }) { ev ->
+                when (ev.kind) {
+                    EventKind.TEXT, EventKind.FILE -> MessageBubble(
+                        event = ev,
+                        reactions = reactionsByTarget[ev.msgId].orEmpty(),
+                        pulseEvents = pulseEvents,
+                        onLongPress = onLongPress,
+                        onTapReaction = onTapReaction,
+                        onTapImage = onTapImage,
+                        onTapReplyChip = onTapReplyChip,
+                    )
+                    else -> SystemBreadcrumb(event = ev)
+                }
+            }
+        }
+        AnimatedVisibility(
+            visible = showJumpToBottom,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 12.dp, bottom = 12.dp),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Surface(
+                onClick = {
+                    coroutineScope.launch { state.animateScrollToItem(0) }
+                },
+                shape = CircleShape,
+                color = ChatPalette.InboundBubble,
+                contentColor = ChatPalette.Accent,
+                shadowElevation = 4.dp,
+                modifier = Modifier.size(40.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Jump to latest",
+                    )
+                }
             }
         }
     }

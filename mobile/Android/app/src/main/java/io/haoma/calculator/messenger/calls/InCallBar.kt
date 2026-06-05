@@ -35,7 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
@@ -96,18 +95,11 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
         animationSpec = pulseSpec,
         label = "in-call dot alpha",
     )
-    val barTint by pulse.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = pulseSpec,
-        label = "in-call bar tint",
-    )
-    val barColor = lerp(BarBg, BarBgPulse, barTint)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(barColor)
+            .background(BarBg)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -361,8 +353,7 @@ private fun spkArrowColor(spk: CallStreamSide?, nowMs: Long): Color {
 }
 
 
-private val BarBg = Color(0xFFB05E0F)        
-private val BarBgPulse = Color(0xFFD97A1F)   
+private val BarBg = Color(0xFF1F3D2E)
 private val BarAccent = Color(0xFFFB4934)    
 private val BarText = Color(0xFFFBF1C7)      
 private val BarTextDim = Color(0xFFFBEEC0)

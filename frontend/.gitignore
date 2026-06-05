@@ -1,6 +1,7 @@
 # Binaries
 /haoma
 /haoma-text
+/haoma-dev-stub
 
 # Build + test artifacts
 *.test

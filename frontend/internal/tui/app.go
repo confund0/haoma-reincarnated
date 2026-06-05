@@ -58,6 +58,8 @@ type App struct {
 
 	DataDir string
 
+	Version string
+
 	escPending bool
 
 	selfPresence string
@@ -82,6 +84,14 @@ type App struct {
 	historyIdx map[string]int
 
 	drafts map[string]string
+
+	searchActive    bool
+	searchChatID    string
+	searchQuery     string
+	searchMatches   []ipc.ChatSearchMatch
+	searchIdx       int
+	searchTruncated bool
+	searchDraft     string
 
 	pendingMu sync.Mutex
 	pending   map[string]responseHandler
@@ -166,6 +176,26 @@ func New(client *ipcclient.Client) *App {
 	a.input.SetDoneFunc(a.handleInput)
 
 	a.input.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+
+		a.winMu.Lock()
+		searching := a.searchActive
+		a.winMu.Unlock()
+		if searching {
+			switch ev.Key() {
+			case tcell.KeyEscape:
+				a.exitSearchMode()
+				return nil
+			case tcell.KeyUp:
+
+				a.stepSearchMatch(+1)
+				return nil
+			case tcell.KeyDown:
+				a.stepSearchMatch(-1)
+				return nil
+			}
+
+			return nil
+		}
 		switch ev.Key() {
 		case tcell.KeyEscape:
 			a.escPending = true
@@ -426,6 +456,8 @@ func (a *App) peerRetiredAt(peerID string) int64 {
 }
 
 func (a *App) switchTo(name string) {
+
+	a.exitSearchMode()
 
 	front, _ := a.pages.GetFrontPage()
 	a.winMu.Lock()

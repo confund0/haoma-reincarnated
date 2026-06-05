@@ -29,6 +29,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.BuildConfig
+import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.core.BinaryFingerprints
 import io.haoma.calculator.core.FingerprintRow
 import io.haoma.calculator.messenger.ExternalReach
@@ -72,7 +74,8 @@ fun HomeSection(store: MessengerStore) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         ConnectivityCard(connected = connected, health = health, peers = peers, nowMs = now)
-        IdentityCard(health = health, systemInfo = systemInfo, nowMs = now)
+        IdentityCard(health = health, systemInfo = systemInfo)
+        UptimesCard(systemInfo = systemInfo, nowMs = now)
         FingerprintCard(snapshot = fingerprints)
     }
 }
@@ -150,7 +153,7 @@ private fun SelfProbeRow(reach: Map<String, SelfReach>, peers: List<PeerEntry>, 
 
 
 @Composable
-private fun IdentityCard(health: SystemHealth, systemInfo: SystemInfoResponse?, nowMs: Long) {
+private fun IdentityCard(health: SystemHealth, systemInfo: SystemInfoResponse?) {
     Card(title = "Identity & versions") {
         val nick = health.selfNick.ifEmpty { "(unset)" }
         Row2(
@@ -158,22 +161,69 @@ private fun IdentityCard(health: SystemHealth, systemInfo: SystemInfoResponse?, 
             text = nick,
             tone = if (health.selfNick.isEmpty() || health.selfNickIsDefault) Tone.WARN else Tone.OK,
         )
-        VersionRow(label = "haoma", c = systemInfo?.haoma, nowMs = nowMs)
-        VersionRow(label = "haomad", c = systemInfo?.haomad, nowMs = nowMs)
+        
+        
+        VersionRowLocal(label = "haoma-android", version = BuildConfig.VERSION_NAME)
+        VersionRow(label = "haoma", c = systemInfo?.haoma)
+        VersionRow(label = "haomad", c = systemInfo?.haomad)
+        VersionRow(label = "tor", c = systemInfo?.tor)
     }
 }
 
 @Composable
-private fun VersionRow(label: String, c: SystemInfoComponent?, nowMs: Long) {
+private fun VersionRow(label: String, c: SystemInfoComponent?) {
     if (c == null || c.version.isEmpty()) {
         Row2(label = label, text = "(unwired)", tone = Tone.DIM)
         return
     }
+    Row2(label = label, text = c.version, tone = Tone.OK)
+}
+
+@Composable
+private fun VersionRowLocal(label: String, version: String) {
+    Row2(label = label, text = version, tone = Tone.OK)
+}
+
+
+@Composable
+private fun UptimesCard(systemInfo: SystemInfoResponse?, nowMs: Long) {
+    Card(title = "Uptimes") {
+        
+        
+        UptimeRowLocal(
+            label = "haoma-android",
+            startedMs = HaomaApp.PROCESS_STARTED_MS,
+            nowMs = nowMs,
+        )
+        UptimeRow(label = "haoma", c = systemInfo?.haoma, nowMs = nowMs)
+        UptimeRow(label = "haomad", c = systemInfo?.haomad, nowMs = nowMs)
+        UptimeRow(label = "tor", c = systemInfo?.tor, nowMs = nowMs)
+    }
+}
+
+@Composable
+private fun UptimeRow(label: String, c: SystemInfoComponent?, nowMs: Long) {
+    if (c == null || c.startedAt.isEmpty()) {
+        Row2(label = label, text = "(unwired)", tone = Tone.DIM)
+        return
+    }
     val startedMs = parseRfc3339OrZero(c.startedAt)
-    val uptimeText = if (startedMs == 0L) "?" else humanAge(((nowMs - startedMs) / 1000L).coerceAtLeast(0))
+    if (startedMs == 0L) {
+        Row2(label = label, text = "?", tone = Tone.DIM)
+        return
+    }
     Row2(
         label = label,
-        text = "${c.version} · up $uptimeText",
+        text = humanAge(((nowMs - startedMs) / 1000L).coerceAtLeast(0)),
+        tone = Tone.OK,
+    )
+}
+
+@Composable
+private fun UptimeRowLocal(label: String, startedMs: Long, nowMs: Long) {
+    Row2(
+        label = label,
+        text = humanAge(((nowMs - startedMs) / 1000L).coerceAtLeast(0)),
         tone = Tone.OK,
     )
 }

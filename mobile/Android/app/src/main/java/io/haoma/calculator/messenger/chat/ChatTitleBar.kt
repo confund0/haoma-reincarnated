@@ -58,6 +58,7 @@ internal fun ChatTitleBar(
     onToggleMute: () -> Unit,
     onOpenSettings: () -> Unit,
     onViewFiles: () -> Unit,
+    onOpenSearch: () -> Unit,
 ) {
     val label = chat?.label.orEmpty().ifEmpty { chatId.take(8) }
     val effective = presence.orEmpty().ifEmpty { chat?.effective.orEmpty() }
@@ -182,6 +183,13 @@ internal fun ChatTitleBar(
                         onClick = {
                             menuOpen = false
                             onToggleMute()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Search…", color = ChatPalette.Accent) },
+                        onClick = {
+                            menuOpen = false
+                            onOpenSearch()
                         },
                     )
                     DropdownMenuItem(
