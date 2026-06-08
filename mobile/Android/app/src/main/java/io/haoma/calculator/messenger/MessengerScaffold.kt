@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.messenger.calls.ChatCallHistoryScreen
 import io.haoma.calculator.messenger.chat.ChatDetailScreen
 import io.haoma.calculator.messenger.chat.ChatSettingsScreen
 import io.haoma.calculator.messenger.chats.ChatsTab
@@ -81,6 +82,11 @@ fun MessengerScaffold(store: MessengerStore) {
                     onBack = { store.popBack() },
                 )
                 is Screen.ChatSettings -> ChatSettingsScreen(
+                    store = store,
+                    chatId = screen.chatId,
+                    onBack = { store.popBack() },
+                )
+                is Screen.ChatCallHistory -> ChatCallHistoryScreen(
                     store = store,
                     chatId = screen.chatId,
                     onBack = { store.popBack() },

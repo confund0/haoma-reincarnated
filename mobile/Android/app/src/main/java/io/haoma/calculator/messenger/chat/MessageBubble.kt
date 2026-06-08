@@ -19,9 +19,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.Image
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -34,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
@@ -77,6 +84,7 @@ internal fun MessageBubble(
     onLongPress: (TimelineEvent) -> Unit = {},
     onTapReaction: (TimelineEvent, String) -> Unit = { _, _ -> },
     onTapImage: (TimelineEvent) -> Unit = {},
+    onTapVideo: (TimelineEvent) -> Unit = {},
     onTapReplyChip: (ReplyToSnapshot) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -93,6 +101,7 @@ internal fun MessageBubble(
     
     
     val tappableImage = event.isReadyImage()
+    val tappableVideo = event.isReadyVideo()
     
     
     val pulseAlpha = remember { Animatable(0f) }
@@ -124,6 +133,8 @@ internal fun MessageBubble(
                     indication = null,
                     onClick = if (tappableImage) {
                         { onTapImage(event) }
+                    } else if (tappableVideo) {
+                        { onTapVideo(event) }
                     } else {
                         {}
                     },
@@ -218,10 +229,13 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
         }
         event.kind == EventKind.FILE -> {
             val body = FileEventBody.fromJson(event.body)
-            if (body.isImage && body.state == FileState.READY) {
-                ImageBody(event = event, body = body)
-            } else {
-                FileCaption(body = body, textColor = textColor)
+            when {
+                body.isImage && body.state == FileState.READY ->
+                    ImageBody(event = event, body = body)
+                body.isVideo && body.state == FileState.READY ->
+                    VideoBody(event = event, body = body)
+                else ->
+                    FileCaption(body = body, textColor = textColor)
             }
         }
         else -> {
@@ -357,6 +371,89 @@ private fun ImageBody(event: TimelineEvent, body: FileEventBody) {
 
 
 @Composable
+private fun VideoBody(event: TimelineEvent, body: FileEventBody) {
+    val context = LocalContext.current
+    val app = context.applicationContext as HaomaApp
+    val store = app.messengerStore
+    val thumbs by store.videoThumbsByMsgId.collectAsStateWithLifecycle()
+    val transients by store.videoTransientByMsgId.collectAsStateWithLifecycle()
+    val thumb = thumbs[event.msgId]
+    val transientReady = transients[event.msgId] != null
+    val sentinel = thumbs.containsKey(event.msgId) && thumb == null
+
+    LaunchedEffect(event.msgId) {
+        if (!thumbs.containsKey(event.msgId)) {
+            store.openVideoForBubble(event.chatId, event.msgId)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .widthIn(max = BubbleMaxWidth - BubbleHorizontalPadding * 2)
+            .heightIn(max = ImageMaxHeight)
+            .clip(ImageCornerShape)
+            .background(ChatPalette.DecryptFailedBg.copy(alpha = 0.25f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            thumb != null -> {
+                Image(
+                    bitmap = thumb.asImageBitmap(),
+                    contentDescription = body.name.ifEmpty { "(video)" },
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(VideoThumbSize),
+                )
+            }
+            sentinel -> {
+                
+                
+                Box(
+                    modifier = Modifier.size(VideoThumbSize),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "video",
+                        color = ChatPalette.TextDim,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+            else -> {
+                Box(
+                    modifier = Modifier.size(ImagePlaceholderSize),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        color = ChatPalette.Accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+            }
+        }
+        
+        
+        if (transientReady) {
+            Box(
+                modifier = Modifier
+                    .size(VideoPlayBadge)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = "Play",
+                    tint = Color.White,
+                    modifier = Modifier.size(VideoPlayIcon),
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
 private fun FileCaption(body: FileEventBody, textColor: androidx.compose.ui.graphics.Color) {
     val displayName = body.name.ifEmpty { "(unnamed)" }
     val parts = mutableListOf<String>()
@@ -444,6 +541,9 @@ private val ReactionOverlap = (-10).dp
 private val ImagePlaceholderSize = 180.dp
 private val ImageMaxHeight = 360.dp
 private val ImageCornerShape = RoundedCornerShape(8.dp)
+private val VideoThumbSize = 240.dp
+private val VideoPlayBadge = 56.dp
+private val VideoPlayIcon = 36.dp
 
 private val HM_FORMATTER = ThreadLocal.withInitial { SimpleDateFormat("HH:mm", Locale.US) }
 

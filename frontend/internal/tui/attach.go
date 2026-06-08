@@ -21,14 +21,17 @@ func (a *App) cmdAttach() {
 		a.log("[red]peer retired[white] — can't attach")
 		return
 	}
+	a.openAttachPicker(active)
+}
 
+func (a *App) openAttachPicker(peerID string) {
 	startDir := paths.ResolveAttachStartDir(a.vaultAttachDir())
 	dlg := haomafiledialog.New(haomafiledialog.Options{
 		Mode:     haomafiledialog.ModeFileSelect,
 		StartDir: startDir,
 		Title:    "attach — pick a file to send",
 		OnPick: func(path string) {
-			a.showAttachConfirm(active, path)
+			a.showAttachConfirm(peerID, path)
 		},
 		OnCancel: func() {
 			a.app.SetFocus(a.input)
@@ -74,14 +77,19 @@ func (a *App) showAttachConfirm(peerID, path string) {
 
 	modal := tview.NewModal().
 		SetText(text).
-		AddButtons([]string{"Send", "Cancel"})
+		AddButtons([]string{"Send", "Pick again", "Cancel"})
 	modal.SetDoneFunc(func(_ int, label string) {
 		a.pages.RemovePage(pageName)
 		switch label {
 		case "Send":
 			a.dispatchSendFileToPeer(peerID, path)
+			a.app.SetFocus(a.input)
+		case "Pick again":
+
+			a.openAttachPicker(peerID)
+		default:
+			a.app.SetFocus(a.input)
 		}
-		a.app.SetFocus(a.input)
 	})
 	a.pages.AddPage(pageName, modal, true, true)
 	a.app.SetFocus(modal)

@@ -16,6 +16,9 @@ class UnlockManager(
     private val state: AppStateRepository,
     private val policySink: (IdlePolicy) -> Unit = {},
     private val sessionSink: (VaultSession?) -> Unit = {},
+    
+    
+    private val passphraseDefaultSink: (Boolean) -> Unit = {},
 ) {
     sealed interface Outcome {
         data object Warmed : Outcome
@@ -95,6 +98,7 @@ class UnlockManager(
             Logger.w("unlock", "haoma-vault returned empty payload — VaultSession not installed; vault writes disabled this session")
             sessionSink(null)
         }
+        passphraseDefaultSink(passphrase == VaultHelper.DefaultPassphrase)
         
         
         val ack = BootstrapPayload.deposit(unsealed.secrets)

@@ -24,6 +24,9 @@ sealed interface Screen {
     data class ChatSettings(val chatId: String) : Screen
 
     
+    data class ChatCallHistory(val chatId: String) : Screen
+
+    
     data class SettingsSection(val domain: String) : Screen
 
     

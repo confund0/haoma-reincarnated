@@ -106,11 +106,12 @@ func (sd *sessionDispatcher) handleSetChatSettings(ctx context.Context, sess *ip
 		if merr != nil {
 			slog.Warn("marshal timer_change body failed", slog.Any("err", merr))
 		} else if _, err := sd.d.events.AppendLocal(events.LocalParams{
-			ChatID:    chatID,
-			Kind:      events.KindTimerChange,
-			Direction: events.DirOut,
-			DisplayTs: now,
-			Body:      body,
+			ChatID:        chatID,
+			Kind:          events.KindTimerChange,
+			Direction:     events.DirOut,
+			DisplayTs:     now,
+			ExpireSeconds: req.RetentionTTL,
+			Body:          body,
 		}); err != nil {
 			slog.Warn("persist timer_change breadcrumb failed", slog.Any("err", err))
 		} else {

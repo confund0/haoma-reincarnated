@@ -244,8 +244,13 @@ private fun RemoteOverlayLayer(
         else -> null
     }
     if (text != null) {
+        
+        
+        val opaque = isPeerMuted || !hasStream || !firstFramePainted
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(if (opaque) Color(0xFF101010) else Color.Transparent),
             contentAlignment = Alignment.Center,
         ) {
             Text(

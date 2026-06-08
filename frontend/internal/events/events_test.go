@@ -638,7 +638,7 @@ func TestDeleteByChat_RemovesOnlyTargetRows(t *testing.T) {
 		}
 	}
 
-	n, err := l.DeleteByChat(chat.ChatID("alice"))
+	n, _, err := l.DeleteByChat(chat.ChatID("alice"))
 	if err != nil {
 		t.Fatalf("DeleteByChat: %v", err)
 	}
@@ -739,7 +739,7 @@ func TestGetByMsgID_EmptyID(t *testing.T) {
 func TestDeleteByChat_EmptyChat(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	n, err := l.DeleteByChat(chat.ChatID("nonexistent"))
+	n, _, err := l.DeleteByChat(chat.ChatID("nonexistent"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -751,8 +751,75 @@ func TestDeleteByChat_EmptyChat(t *testing.T) {
 func TestDeleteByChat_RejectsEmptyID(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	if _, err := l.DeleteByChat(""); err == nil {
+	if _, _, err := l.DeleteByChat(""); err == nil {
 		t.Error("expected error for empty chat id")
+	}
+}
+
+func TestDeleteByChat_PublishesFileDeletionsOnly(t *testing.T) {
+	clock := fixedClock(1742643890)
+	l, bus := newLog(t, clock)
+
+	textBody, _ := json.Marshal(events.TextBody{Text: "hello"})
+	fileBody, _ := json.Marshal(map[string]string{"name": "doc.pdf"})
+
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindText, SenderSeq: 1,
+		EnvelopeID: "env-text-1", MsgID: "mid-text-1", Body: textBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindFile, SenderSeq: 2,
+		EnvelopeID: "env-file-1", MsgID: "mid-file-1", Body: fileBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.AppendInbound(events.InboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindFile, SenderTs: 1742643880,
+		EnvelopeID: "env-file-2", MsgID: "mid-file-2", Status: events.DecryptOK, Body: fileBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.AppendInbound(events.InboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindText, SenderTs: 1742643881,
+		EnvelopeID: "env-text-2", MsgID: "mid-text-2", Status: events.DecryptOK, Body: textBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	delCh, cancel := bus.SubscribeDeletions(8)
+	defer cancel()
+
+	n, _, err := l.DeleteByChat(chat.ChatID("alice"))
+	if err != nil {
+		t.Fatalf("DeleteByChat: %v", err)
+	}
+	if n != 4 {
+		t.Fatalf("deleted count = %d, want 4", n)
+	}
+
+	got := make(map[string]bool)
+	timeout := time.After(time.Second)
+	for len(got) < 2 {
+		select {
+		case d := <-delCh:
+			if d.ChatID != chat.ChatID("alice") {
+				t.Errorf("Deletion ChatID = %q, want alice", d.ChatID)
+			}
+			got[d.MsgID] = true
+		case <-timeout:
+			t.Fatalf("expected 2 KindFile deletions on bus, got %d: %v", len(got), got)
+		}
+	}
+	if !got["mid-file-1"] || !got["mid-file-2"] {
+		t.Errorf("missing KindFile deletions: got=%v", got)
+	}
+
+	select {
+	case d := <-delCh:
+		t.Errorf("unexpected non-KindFile deletion on bus: %+v", d)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -904,12 +971,12 @@ func TestSweepExpired_OutboundFiresFromDisplayTs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := l.SweepExpired(now + 59)
+	n, _, err := l.SweepExpired(now + 59)
 	if err != nil || n != 0 {
 		t.Errorf("before-TTL sweep n=%d err=%v, want 0/nil", n, err)
 	}
 
-	n, err = l.SweepExpired(now + 60)
+	n, _, err = l.SweepExpired(now + 60)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -956,7 +1023,7 @@ func TestSweepExpired_InboundFiresFromReadAt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := l.SweepExpired(now + 59)
+	n, _, err := l.SweepExpired(now + 59)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -964,7 +1031,7 @@ func TestSweepExpired_InboundFiresFromReadAt(t *testing.T) {
 		t.Errorf("pre-TTL sweep n=%d, want 0", n)
 	}
 
-	n, err = l.SweepExpired(now + 60)
+	n, _, err = l.SweepExpired(now + 60)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -990,7 +1057,7 @@ func TestSweepExpired_UnreadInboundSurvives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := l.SweepExpired(now + 1_000_000)
+	n, _, err := l.SweepExpired(now + 1_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1082,7 @@ func TestSweepExpired_PublishesDeletionOnBus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.SweepExpired(now + 10); err != nil {
+	if _, _, err := l.SweepExpired(now + 10); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1032,6 +1099,140 @@ func TestSweepExpired_PublishesDeletionOnBus(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no deletion published on bus")
 	}
+}
+
+func TestSweepExpired_BreadcrumbsExpireOnRecvTs(t *testing.T) {
+	var now int64 = 1742643890
+	clock := func() time.Time { return time.Unix(now, 0) }
+	l, _ := newLog(t, clock)
+
+	tcBody, _ := json.Marshal(events.TimerChangeBody{From: 0, To: 60})
+	if _, err := l.AppendLocal(events.LocalParams{
+		ChatID:        chat.ChatID("alice"),
+		Kind:          events.KindTimerChange,
+		Direction:     events.DirOut,
+		DisplayTs:     now,
+		ExpireSeconds: 60,
+		Body:          tcBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tgtBody, _ := json.Marshal(events.TextBody{Text: "hi"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindText, SenderSeq: 1,
+		EnvelopeID: "env-tgt", MsgID: "mid-tgt", Body: tgtBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.AppendReactionBreadcrumb("mid-tgt", "👍", "", now, 60); err != nil {
+		t.Fatal(err)
+	}
+
+	csBody, _ := json.Marshal(events.CallSummaryBody{
+		CallID: "call-1", Direction: "out", Outcome: events.CallOutcomeCompleted,
+	})
+	if _, err := l.AppendLocal(events.LocalParams{
+		ChatID:        chat.ChatID("alice"),
+		Kind:          events.KindCallSummary,
+		Direction:     events.DirOut,
+		DisplayTs:     now,
+		ExpireSeconds: 60,
+		Body:          csBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, _, err := l.SweepExpired(now + 59)
+	if err != nil || n != 0 {
+		t.Fatalf("pre-TTL sweep n=%d err=%v, want 0/nil", n, err)
+	}
+	rows, _ := l.List(chat.ChatID("alice"), 0, 100)
+
+	if len(rows) != 4 {
+		t.Fatalf("rows before TTL = %d, want 4", len(rows))
+	}
+
+	n, _, err = l.SweepExpired(now + 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("at-TTL sweep n=%d, want 3 (three breadcrumb kinds)", n)
+	}
+	rows, _ = l.List(chat.ChatID("alice"), 0, 100)
+	if len(rows) != 1 || rows[0].Kind != events.KindText {
+		t.Errorf("survivor set drift: got %d rows, kinds=%v", len(rows), kindsOf(rows))
+	}
+}
+
+func TestSweepExpired_DecryptFailedExpiresOnRecvTs(t *testing.T) {
+	var now int64 = 1742643890
+	clock := func() time.Time { return time.Unix(now, 0) }
+	l, _ := newLog(t, clock)
+
+	if _, err := l.AppendInbound(events.InboundParams{
+		ChatID:        chat.ChatID("alice"),
+		Kind:          events.KindText,
+		SenderTs:      now - 5,
+		EnvelopeID:    "env-bad",
+		ExpireSeconds: 10,
+		Status:        events.DecryptFailed,
+		RawBlob:       []byte("garbage"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, _, err := l.SweepExpired(now + 9)
+	if err != nil || n != 0 {
+		t.Fatalf("pre-TTL sweep n=%d err=%v, want 0/nil", n, err)
+	}
+
+	n, _, err = l.SweepExpired(now + 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("at-TTL sweep n=%d, want 1", n)
+	}
+	rows, _ := l.List(chat.ChatID("alice"), 0, 100)
+	if len(rows) != 0 {
+		t.Errorf("decrypt-failed survivor: %d rows", len(rows))
+	}
+}
+
+func TestSweepExpired_BreadcrumbWithoutTTLSurvives(t *testing.T) {
+	var now int64 = 1742643890
+	clock := func() time.Time { return time.Unix(now, 0) }
+	l, _ := newLog(t, clock)
+
+	tcBody, _ := json.Marshal(events.TimerChangeBody{From: 0, To: 60})
+	if _, err := l.AppendLocal(events.LocalParams{
+		ChatID:    chat.ChatID("alice"),
+		Kind:      events.KindTimerChange,
+		Direction: events.DirOut,
+		DisplayTs: now,
+
+		Body: tcBody,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, _, err := l.SweepExpired(now + 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("legacy breadcrumb swept (n=%d), want 0", n)
+	}
+}
+
+func kindsOf(rows []events.Event) []events.Kind {
+	out := make([]events.Kind, len(rows))
+	for i, r := range rows {
+		out[i] = r.Kind
+	}
+	return out
 }
 
 func TestApplyDelete_AllowsKindFile(t *testing.T) {
@@ -1550,7 +1751,7 @@ func TestAppendReactionBreadcrumb_OutboundHappyPath(t *testing.T) {
 	ch, cancel := bus.Subscribe(4)
 	defer cancel()
 
-	ev, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", 1742643920)
+	ev, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", 1742643920, 0)
 	if err != nil {
 		t.Fatalf("AppendReactionBreadcrumb: %v", err)
 	}
@@ -1618,7 +1819,7 @@ func TestAppendReactionBreadcrumb_SortsInlineWithTarget(t *testing.T) {
 	}
 
 	now += 300
-	if _, err := l.AppendReactionBreadcrumb("mid-old", "👍", "", now); err != nil {
+	if _, err := l.AppendReactionBreadcrumb("mid-old", "👍", "", now, 0); err != nil {
 		t.Fatalf("AppendReactionBreadcrumb: %v", err)
 	}
 
@@ -1653,7 +1854,7 @@ func TestAppendReactionBreadcrumb_InboundCarriesReactor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ev, err := l.AppendReactionBreadcrumb("mid-m", "❤️", "peer-bob", 1742643925)
+	ev, err := l.AppendReactionBreadcrumb("mid-m", "❤️", "peer-bob", 1742643925, 0)
 	if err != nil {
 		t.Fatalf("AppendReactionBreadcrumb: %v", err)
 	}
@@ -1677,7 +1878,7 @@ func TestAppendReactionBreadcrumb_EmptyEmojiWritesRemovalAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ev, err := l.AppendReactionBreadcrumb("mid-x", "", "peer-bob", 1742643930)
+	ev, err := l.AppendReactionBreadcrumb("mid-x", "", "peer-bob", 1742643930, 0)
 	if err != nil {
 		t.Fatalf("AppendReactionBreadcrumb empty emoji: %v", err)
 	}
@@ -1691,7 +1892,7 @@ func TestAppendReactionBreadcrumb_EmptyEmojiWritesRemovalAudit(t *testing.T) {
 func TestAppendReactionBreadcrumb_UnknownTarget(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	_, err := l.AppendReactionBreadcrumb("mid-missing", "👍", "", 1)
+	_, err := l.AppendReactionBreadcrumb("mid-missing", "👍", "", 1, 0)
 	if !errors.Is(err, events.ErrEventNotFound) {
 		t.Fatalf("err = %v, want ErrEventNotFound", err)
 	}
@@ -1700,7 +1901,7 @@ func TestAppendReactionBreadcrumb_UnknownTarget(t *testing.T) {
 func TestAppendReactionBreadcrumb_EmptyTargetTreatedAsMissing(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	_, err := l.AppendReactionBreadcrumb("", "👍", "", 1)
+	_, err := l.AppendReactionBreadcrumb("", "👍", "", 1, 0)
 	if !errors.Is(err, events.ErrEventNotFound) {
 		t.Fatalf("err = %v, want ErrEventNotFound", err)
 	}
@@ -1720,7 +1921,7 @@ func TestAppendReactionBreadcrumb_RejectsTombstonedTarget(t *testing.T) {
 	if _, err := l.ApplyDelete("mid-t", 1742643900, ""); err != nil {
 		t.Fatal(err)
 	}
-	_, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", 1742643950)
+	_, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", 1742643950, 0)
 	if !errors.Is(err, events.ErrReactionUnsupportedKind) {
 		t.Fatalf("err = %v, want ErrReactionUnsupportedKind (tombstoned)", err)
 	}
@@ -1747,7 +1948,7 @@ func TestAppendReactionBreadcrumb_RejectsBreadcrumbKind(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = l.AppendReactionBreadcrumb("mid-tc", "👍", "", 1742643900)
+	_, err = l.AppendReactionBreadcrumb("mid-tc", "👍", "", 1742643900, 0)
 	if !errors.Is(err, events.ErrReactionUnsupportedKind) {
 		t.Fatalf("err = %v, want ErrReactionUnsupportedKind (breadcrumb kind)", err)
 	}
@@ -1765,7 +1966,7 @@ func TestAppendReactionBreadcrumb_RejectsFailedDecrypt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := l.AppendReactionBreadcrumb("mid-f", "👍", "peer-bob", 1742643920)
+	_, err := l.AppendReactionBreadcrumb("mid-f", "👍", "peer-bob", 1742643920, 0)
 	if !errors.Is(err, events.ErrReactionUnsupportedKind) {
 		t.Fatalf("err = %v, want ErrReactionUnsupportedKind (failed decrypt)", err)
 	}

@@ -113,13 +113,16 @@ func retentionSweeper(ctx context.Context, d *daemon) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			n, err := d.events.SweepExpired(time.Now().Unix())
+			n, cascade, err := d.events.SweepExpired(time.Now().Unix())
 			if err != nil {
 				slog.Warn("retention sweep failed", slog.Any("err", err))
 				continue
 			}
-			if n > 0 {
-				slog.Debug("retention sweep removed rows", slog.Int("count", n))
+			if n > 0 || cascade > 0 {
+				slog.Debug("retention sweep removed rows",
+					slog.Int("count", n),
+					slog.Int("cascade_keys", cascade),
+				)
 			}
 		}
 	}
@@ -399,12 +402,13 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			return
 		}
 		_, persistErr := d.events.AppendInbound(events.InboundParams{
-			ChatID:     chatID,
-			Kind:       events.KindText,
-			SenderTs:   entry.Envelope.Timestamp,
-			EnvelopeID: entry.Envelope.ID,
-			Status:     events.DecryptFailed,
-			RawBlob:    entry.Envelope.Payload,
+			ChatID:        chatID,
+			Kind:          events.KindText,
+			SenderTs:      entry.Envelope.Timestamp,
+			EnvelopeID:    entry.Envelope.ID,
+			ExpireSeconds: chatRetentionTTL(d, chatID),
+			Status:        events.DecryptFailed,
+			RawBlob:       entry.Envelope.Payload,
 		})
 		if persistErr != nil {
 			slog.Error("persist decrypt-failed event failed",
@@ -430,13 +434,14 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			reason = events.DecryptReasonVersionMismatch
 		}
 		_, persistErr := d.events.AppendInbound(events.InboundParams{
-			ChatID:     chatID,
-			Kind:       events.KindText,
-			SenderTs:   entry.Envelope.Timestamp,
-			EnvelopeID: entry.Envelope.ID,
-			Status:     events.DecryptFailed,
-			FailReason: reason,
-			RawBlob:    plain,
+			ChatID:        chatID,
+			Kind:          events.KindText,
+			SenderTs:      entry.Envelope.Timestamp,
+			EnvelopeID:    entry.Envelope.ID,
+			ExpireSeconds: chatRetentionTTL(d, chatID),
+			Status:        events.DecryptFailed,
+			FailReason:    reason,
+			RawBlob:       plain,
 		})
 		if persistErr != nil {
 			slog.Error("persist unparseable-wrapper event failed",
@@ -613,7 +618,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		}
 
 		clampedTs := events.ClampSenderTs(wrapper.Ts, time.Now().Unix())
-		if _, err := d.events.AppendReactionBreadcrumb(body.Target, body.Emoji, entry.PeerID, clampedTs); err != nil {
+		if _, err := d.events.AppendReactionBreadcrumb(body.Target, body.Emoji, entry.PeerID, clampedTs, wrapper.ExpireSeconds); err != nil {
 			switch {
 			case errors.Is(err, events.ErrEventNotFound):
 				slog.Info("inbound reaction: target missing (swept or out-of-order)",
@@ -915,12 +920,13 @@ func writeTimerChangeBreadcrumb(d *daemon, chatID chat.ChatID, senderPeerID stri
 	}
 	clampedTs := events.ClampSenderTs(senderTs, time.Now().Unix())
 	if _, err := d.events.AppendLocal(events.LocalParams{
-		ChatID:       chatID,
-		Kind:         events.KindTimerChange,
-		Direction:    events.DirIn,
-		DisplayTs:    clampedTs,
-		SenderPeerID: senderPeerID,
-		Body:         body,
+		ChatID:        chatID,
+		Kind:          events.KindTimerChange,
+		Direction:     events.DirIn,
+		DisplayTs:     clampedTs,
+		SenderPeerID:  senderPeerID,
+		ExpireSeconds: newTTL,
+		Body:          body,
 	}); err != nil {
 		slog.Warn("persist timer_change breadcrumb failed", slog.Any("err", err))
 	} else {
@@ -941,6 +947,17 @@ func resolveChatForPeer(ctx context.Context, d *daemon, peerID string) (chat.Cha
 		)
 	}
 	return dc.ID, nil
+}
+
+func chatRetentionTTL(d *daemon, chatID chat.ChatID) uint32 {
+	if d == nil || d.chats == nil || chatID == "" {
+		return 0
+	}
+	c, err := d.chats.Get(chatID)
+	if err != nil {
+		return 0
+	}
+	return c.Retention()
 }
 
 func notificationToStatusEvent(n backendapi.Notification) ipc.StatusEventPayload {

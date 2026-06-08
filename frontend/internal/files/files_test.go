@@ -480,7 +480,7 @@ func TestJanitor_HandlesRetentionDeletion(t *testing.T) {
 	defer cancel()
 	waitForSubscribers(t, bus, 1, 1)
 
-	if _, err := log.SweepExpired(now + 10); err != nil {
+	if _, _, err := log.SweepExpired(now + 10); err != nil {
 		t.Fatalf("SweepExpired: %v", err)
 	}
 

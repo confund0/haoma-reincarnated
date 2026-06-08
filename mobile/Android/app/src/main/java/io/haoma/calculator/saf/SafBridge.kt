@@ -154,6 +154,23 @@ object SafBridge {
     }
 
     
+    fun peekMetadata(context: Context, uri: Uri): UriMetadata {
+        val resolver = context.contentResolver
+        val name = queryDisplayName(resolver, uri) ?: "attachment"
+        val mime = resolver.getType(uri).orEmpty()
+        var size = 0L
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                val idx = c.getColumnIndex(OpenableColumns.SIZE)
+                if (idx >= 0 && !c.isNull(idx)) {
+                    size = c.getLong(idx)
+                }
+            }
+        }
+        return UriMetadata(displayName = name, mime = mime, sizeBytes = size)
+    }
+
+    
     private fun sanitizeName(raw: String): String {
         val cleaned = raw.replace(Regex("""[/\\\u0000]"""), "_").trim()
         if (cleaned.isEmpty()) return "attachment"
@@ -195,3 +212,6 @@ object SafBridge {
 }
 
 data class CopyInResult(val path: String, val displayName: String)
+
+
+data class UriMetadata(val displayName: String, val mime: String, val sizeBytes: Long)

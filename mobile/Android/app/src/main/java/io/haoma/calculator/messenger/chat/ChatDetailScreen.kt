@@ -1,5 +1,6 @@
 package io.haoma.calculator.messenger.chat
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -99,6 +100,7 @@ fun ChatDetailScreen(
     var filesPickerOpen by remember { mutableStateOf(false) }
     var fileActionTarget by remember { mutableStateOf<FileActionTarget?>(null) }
     var imageSaveTarget by remember { mutableStateOf<TimelineEvent?>(null) }
+    var videoSaveTarget by remember { mutableStateOf<TimelineEvent?>(null) }
     
     
     var fullReplyTarget by remember { mutableStateOf<ReplyToSnapshot?>(null) }
@@ -124,10 +126,28 @@ fun ChatDetailScreen(
     }
     
     
+    val saveVideoLauncher = rememberLauncherForActivityResult(
+        contract = remember { ActivityResultContracts.CreateDocument("video/*") },
+    ) { uri ->
+        val tgt = videoSaveTarget
+        videoSaveTarget = null
+        if (uri != null && tgt != null) {
+            scope.launch { store.saveFileToUri(chatId, tgt.msgId, uri) }
+        }
+    }
+    LaunchedEffect(videoSaveTarget) {
+        val tgt = videoSaveTarget ?: return@LaunchedEffect
+        val body = FileEventBody.fromJson(tgt.body)
+        val name = body.name.ifEmpty { "video" }
+        saveVideoLauncher.launch(name)
+    }
+    
+    
+    var pendingAttachUri by remember { mutableStateOf<Uri?>(null) }
     val attachLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
-        if (uri != null) store.attachFromUri(chatId, uri)
+        pendingAttachUri = uri
     }
 
     LaunchedEffect(chatId) {
@@ -153,6 +173,29 @@ fun ChatDetailScreen(
     val viewerTarget by store.viewerTarget.collectAsStateWithLifecycle()
     viewerTarget?.let { target ->
         if (target.chatId == chatId) FullScreenImageViewer(store, target)
+    }
+    
+    
+    val videoViewerTarget by store.videoViewerTarget.collectAsStateWithLifecycle()
+    videoViewerTarget?.let { target ->
+        if (target.chatId == chatId) FullScreenVideoViewer(store, target)
+    }
+
+    
+    pendingAttachUri?.let { uri ->
+        val peerLabel = chat?.peerId?.let { store.peerLabelFor(it) } ?: ""
+        AttachPreviewScreen(
+            uri = uri,
+            peerLabel = peerLabel,
+            onPickAgain = {
+                pendingAttachUri = null
+                attachLauncher.launch(arrayOf("*/*"))
+            },
+            onSend = {
+                store.attachFromUri(chatId, uri)
+                pendingAttachUri = null
+            },
+        )
     }
 
     Column(
@@ -188,6 +231,7 @@ fun ChatDetailScreen(
             onOpenSettings = { store.openChatSettings(chatId) },
             onViewFiles = { filesPickerOpen = true },
             onOpenSearch = { store.openChatSearch(chatId) },
+            onOpenCallHistory = { store.openChatCallHistory(chatId) },
         )
         searchState?.let { s ->
             SearchBar(
@@ -237,6 +281,12 @@ fun ChatDetailScreen(
                         
                         val name = FileEventBody.fromJson(ev.body).name
                         store.openImageViewer(chatId, ev.msgId, name)
+                    },
+                    onTapVideo = { ev ->
+                        
+                        
+                        val body = FileEventBody.fromJson(ev.body)
+                        store.openVideoViewer(chatId, ev.msgId, body.name, body.mime)
                     },
                     onTapReplyChip = { snapshot ->
                         
@@ -321,6 +371,10 @@ fun ChatDetailScreen(
                     val res = store.openFile(chatId, target.msgId) ?: return@launch
                     copyImageToClipboard(context, res.path)
                 }
+                actionTarget = null
+            },
+            onSaveVideo = {
+                videoSaveTarget = target
                 actionTarget = null
             },
         )
@@ -424,6 +478,7 @@ private fun MessageList(
     onLongPress: (TimelineEvent) -> Unit,
     onTapReaction: (TimelineEvent, String) -> Unit,
     onTapImage: (TimelineEvent) -> Unit,
+    onTapVideo: (TimelineEvent) -> Unit,
     onTapReplyChip: (ReplyToSnapshot) -> Unit,
     onScrolledToBottom: () -> Unit,
 ) {
@@ -497,6 +552,7 @@ private fun MessageList(
                         onLongPress = onLongPress,
                         onTapReaction = onTapReaction,
                         onTapImage = onTapImage,
+                        onTapVideo = onTapVideo,
                         onTapReplyChip = onTapReplyChip,
                     )
                     else -> SystemBreadcrumb(event = ev)

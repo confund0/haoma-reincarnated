@@ -2,11 +2,14 @@ package calls_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/chat"
+	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/store"
 )
 
@@ -311,6 +314,117 @@ func TestSweepNonTerminal_FlipsLiveRowsToFailed(t *testing.T) {
 	dead, _ := mgr.GetState("call-dead")
 	if dead.Status != calls.StatusEnded {
 		t.Errorf("call-dead got rewritten: %s", dead.Status)
+	}
+}
+
+func TestCleanupHook_CascadesOnSweepExpired(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Lock() })
+
+	mgr, err := calls.NewManager(st)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	chatID := testChatID
+	now := int64(10_000)
+	bus := events.NewBus()
+	log := events.New(st, bus, func() time.Time { return time.Unix(now, 0) })
+
+	seedOutgoing(t, mgr, "call-A")
+	if _, err := mgr.GetState("call-A"); err != nil {
+		t.Fatalf("seed visible: %v", err)
+	}
+
+	body, err := json.Marshal(events.CallSummaryBody{
+		CallID:    "call-A",
+		Direction: "out",
+		Outcome:   events.CallOutcomeCompleted,
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	if _, err := log.AppendLocal(events.LocalParams{
+		ChatID:        chatID,
+		Kind:          events.KindCallSummary,
+		Direction:     events.DirOut,
+		DisplayTs:     now,
+		ExpireSeconds: 1,
+		Body:          body,
+	}); err != nil {
+		t.Fatalf("AppendLocal: %v", err)
+	}
+
+	now += 60
+	n, _, err := log.SweepExpired(now)
+	if err != nil {
+		t.Fatalf("SweepExpired: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("SweepExpired removed %d rows, want >=1", n)
+	}
+
+	if _, err := mgr.GetState("call-A"); !errors.Is(err, calls.ErrCallNotFound) {
+		t.Errorf("call:<id> not cascaded by SweepExpired hook: err=%v", err)
+	}
+	rest, err := mgr.ListByChat(chatID)
+	if err != nil {
+		t.Fatalf("ListByChat: %v", err)
+	}
+	if len(rest) != 0 {
+		t.Errorf("call-by-chat survivors after sweep: %d", len(rest))
+	}
+}
+
+func TestCleanupHook_CascadesOnDeleteByChat(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Lock() })
+
+	mgr, err := calls.NewManager(st)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	chatID := testChatID
+	now := int64(10_000)
+	bus := events.NewBus()
+	log := events.New(st, bus, func() time.Time { return time.Unix(now, 0) })
+
+	seedOutgoing(t, mgr, "call-A")
+	seedOutgoing(t, mgr, "call-B")
+	for _, id := range []string{"call-A", "call-B"} {
+		body, err := json.Marshal(events.CallSummaryBody{CallID: id, Direction: "out", Outcome: events.CallOutcomeCompleted})
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		if _, err := log.AppendLocal(events.LocalParams{
+			ChatID:    chatID,
+			Kind:      events.KindCallSummary,
+			Direction: events.DirOut,
+			DisplayTs: now,
+			Body:      body,
+		}); err != nil {
+			t.Fatalf("AppendLocal %s: %v", id, err)
+		}
+	}
+
+	n, _, err := log.DeleteByChat(chatID)
+	if err != nil {
+		t.Fatalf("DeleteByChat: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("breadcrumbs deleted=%d, want 2", n)
+	}
+	for _, id := range []string{"call-A", "call-B"} {
+		if _, err := mgr.GetState(id); !errors.Is(err, calls.ErrCallNotFound) {
+			t.Errorf("%s not cascaded by DeleteByChat hook: err=%v", id, err)
+		}
 	}
 }
 

@@ -135,6 +135,13 @@ type Payload struct {
 	DefaultAttachStartDir string `json:"default_attach_start_dir,omitempty"`
 
 	URLForceChooser bool `json:"url_force_chooser"`
+
+	MobileNoticeSnooze map[string]NoticeSnoozeState `json:"mobile_notice_snooze,omitempty"`
+}
+
+type NoticeSnoozeState struct {
+	Until int64 `json:"until,omitempty"`
+	Step  int   `json:"step,omitempty"`
 }
 
 func (p Payload) Validate() error {

@@ -1,8 +1,11 @@
 package io.haoma.calculator.messenger
 
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Base64
 import io.haoma.calculator.core.ipc.FrameType
+import io.haoma.calculator.log.Logger
 import io.haoma.calculator.saf.SafBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.update
@@ -237,5 +240,50 @@ internal fun MessengerStore.clearImageCaches() {
     }
     _imageDimsByMsgId.value = emptyMap()
     _viewerTarget.value = null
+    clearVideoCaches()
     wipeAllOpenTransients()
+}
+
+
+internal fun MessengerStore.clearVideoCaches() {
+    _videoThumbsByMsgId.update { current ->
+        for (b in current.values) b?.recycle()
+        emptyMap()
+    }
+    _videoTransientByMsgId.value = emptyMap()
+    _videoViewerTarget.value = null
+}
+
+
+suspend fun MessengerStore.openVideoForBubble(chatId: String, msgId: String) {
+    if (chatId.isEmpty() || msgId.isEmpty()) return
+    if (_videoThumbsByMsgId.value.containsKey(msgId)) return
+    val result = openFile(chatId, msgId) ?: return
+    if (result.path.isEmpty()) return
+    _videoTransientByMsgId.update { it + (msgId to result.path) }
+    val bitmap = withContext(Dispatchers.IO) {
+        val mmr = MediaMetadataRetriever()
+        try {
+            mmr.setDataSource(result.path)
+            mmr.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } catch (t: Throwable) {
+            Logger.w("video-thumb", "frame extract failed msg=$msgId err=${t.message ?: "?"}")
+            null
+        } finally {
+            runCatching { mmr.release() }
+        }
+    }
+    _videoThumbsByMsgId.update { it + (msgId to bitmap) }
+}
+
+
+fun MessengerStore.openVideoViewer(chatId: String, msgId: String, displayName: String, mime: String) {
+    if (chatId.isEmpty() || msgId.isEmpty()) return
+    val path = _videoTransientByMsgId.value[msgId] ?: return
+    _videoViewerTarget.value = VideoViewerTarget(chatId, msgId, displayName, path, mime)
+}
+
+
+fun MessengerStore.closeVideoViewer() {
+    _videoViewerTarget.value = null
 }

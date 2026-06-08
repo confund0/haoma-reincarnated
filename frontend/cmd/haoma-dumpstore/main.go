@@ -147,6 +147,20 @@ func classify(key []byte) (string, string) {
 		return "pair_mykeys", s
 	case strings.HasPrefix(s, "signal:"):
 		return "signal", s
+	case strings.HasPrefix(s, "call:"):
+		return "call", s
+	case strings.HasPrefix(s, "call-by-chat:"):
+		return "call-by-chat", s
+	case s == "files:master":
+		return "files-master", s
+	case strings.HasPrefix(s, "file:"):
+		return "file", s
+	case strings.HasPrefix(s, "file-by-chat:"):
+		return "file-by-chat", s
+	case strings.HasPrefix(s, "file-by-token:"):
+		return "file-by-token", s
+	case strings.HasPrefix(s, "setting:"):
+		return "setting", s
 	case strings.HasPrefix(s, "badger!"):
 		return "badger-internal", s
 	default:
@@ -173,20 +187,22 @@ func renderValue(group string, v []byte) string {
 			return fmt.Sprintf("uint64 BE = %d", binary.BigEndian.Uint64(v))
 		}
 		return quotedOrHex(v)
-	case "chat", "evt":
+	case "chat", "evt", "call", "file":
 		return prettyJSON(v)
-	case "chat-by-peer", "evt-envid", "evt-msgid":
+	case "chat-by-peer", "evt-envid", "evt-msgid", "call-by-chat", "file-by-chat", "file-by-token":
 
 		if printable(v) {
 			return fmt.Sprintf("%q", string(v))
 		}
 		return hexPreview(v)
-	case "pair_secret":
+	case "pair_secret", "files-master":
 		return hexPreview(v)
 	case "pair_mykeys":
 		return jsonOrHex(v)
 	case "signal":
 		return jsonOrHex(v)
+	case "setting":
+		return quotedOrHex(v)
 	default:
 		return jsonOrHex(v)
 	}

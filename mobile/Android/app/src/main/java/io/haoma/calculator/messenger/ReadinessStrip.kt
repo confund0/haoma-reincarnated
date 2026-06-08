@@ -2,11 +2,13 @@ package io.haoma.calculator.messenger
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
@@ -39,6 +41,10 @@ fun ReadinessStrip(store: MessengerStore, onTap: () -> Unit = {}) {
     val health by store.health.collectAsStateWithLifecycle()
     val screen by store.current.collectAsStateWithLifecycle()
     val chats by store.chats.collectAsStateWithLifecycle()
+    
+    
+    val notices by store.unsnoozedNotices.collectAsStateWithLifecycle()
+    val noticeBorder = noticeBorderColor(notices)
 
     
     var nowSecs by remember { mutableLongStateOf(System.currentTimeMillis() / 1000L) }
@@ -72,6 +78,13 @@ fun ReadinessStrip(store: MessengerStore, onTap: () -> Unit = {}) {
         Column(
             verticalArrangement = Arrangement.spacedBy(LED_GAP),
             horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = if (noticeBorder != null) {
+                Modifier
+                    .border(NOTICE_BORDER_WIDTH, noticeBorder, RoundedCornerShape(NOTICE_BORDER_CORNER))
+                    .padding(NOTICE_BORDER_PADDING)
+            } else {
+                Modifier
+            },
         ) {
             Led(color = topColor)
             Led(color = midColor)
@@ -183,10 +196,23 @@ private val LED_HEIGHT = 4.dp
 private val LED_GAP = 2.dp
 private val LED_CORNER = 1.dp
 private val STRIP_WIDTH = 20.dp
+private val NOTICE_BORDER_WIDTH = 1.dp
+private val NOTICE_BORDER_CORNER = 3.dp
+private val NOTICE_BORDER_PADDING = 2.dp
 private val C_OK = Color(0xFF5FCC1A)
 private val C_WARN = Color(0xFFFABD2F)
 private val C_BAD = Color(0xFFCC241D)
 private val C_DIM = Color(0xFF504945)
+
+private fun noticeBorderColor(notices: List<Notice>): Color? {
+    if (notices.isEmpty()) return null
+    val sev = notices.maxOf { it.severity.ordinal }
+    return when (sev) {
+        NoticeSeverity.SEVERE.ordinal -> C_BAD
+        NoticeSeverity.WARN.ordinal -> C_WARN
+        else -> C_WARN
+    }
+}
 
 
 private val MenuSurface = Color(0xFF32302F)

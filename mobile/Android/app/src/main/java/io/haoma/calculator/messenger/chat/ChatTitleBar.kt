@@ -59,6 +59,7 @@ internal fun ChatTitleBar(
     onOpenSettings: () -> Unit,
     onViewFiles: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenCallHistory: () -> Unit,
 ) {
     val label = chat?.label.orEmpty().ifEmpty { chatId.take(8) }
     val effective = presence.orEmpty().ifEmpty { chat?.effective.orEmpty() }
@@ -127,11 +128,18 @@ internal fun ChatTitleBar(
                 .size(48.dp)
                 .combinedClickable(
                     enabled = inCall || canCall,
-                    onClick = { if (inCall) onHangup() else if (canCall) onPlaceCall() },
-                    onLongClick = {
-                        if (!inCall && canCall) {
-                            Logger.d("call", "long-press call affordance chat=${chatId.take(8)}")
+                    onClick = {
+                        if (inCall) {
+                            onHangup()
+                        } else if (canCall) {
+                            Logger.d("call", "short-press call affordance chat=${chatId.take(8)}")
                             startCallModeOpen = true
+                        }
+                    },
+                    onLongClick = {
+                        if (!inCall) {
+                            Logger.d("call", "long-press call affordance chat=${chatId.take(8)}")
+                            onOpenCallHistory()
                         }
                     },
                 ),
@@ -139,7 +147,7 @@ internal fun ChatTitleBar(
         ) {
             Icon(
                 imageVector = Icons.Filled.Call,
-                contentDescription = if (inCall) "Hang up" else "Voice call (long-press for modes)",
+                contentDescription = if (inCall) "Hang up" else "Start call (long-press for history)",
                 tint = phoneTint,
             )
         }

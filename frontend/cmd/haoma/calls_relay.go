@@ -257,12 +257,13 @@ func writeCallSummaryBreadcrumb(d *daemon, state calls.State) {
 		senderPeerID = state.PeerID
 	}
 	if _, err := d.events.AppendLocal(events.LocalParams{
-		ChatID:       state.ChatID,
-		Kind:         events.KindCallSummary,
-		Direction:    dir,
-		DisplayTs:    displayTs,
-		SenderPeerID: senderPeerID,
-		Body:         body,
+		ChatID:        state.ChatID,
+		Kind:          events.KindCallSummary,
+		Direction:     dir,
+		DisplayTs:     displayTs,
+		SenderPeerID:  senderPeerID,
+		ExpireSeconds: chatRetentionTTL(d, state.ChatID),
+		Body:          body,
 	}); err != nil {
 		slog.Warn("persist call_summary breadcrumb failed",
 			slog.String("call_id", state.CallID),
@@ -270,6 +271,7 @@ func writeCallSummaryBreadcrumb(d *daemon, state calls.State) {
 		)
 		return
 	}
+
 	bumpChatActivity(context.Background(), d, state.ChatID, displayTs)
 }
 

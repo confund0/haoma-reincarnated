@@ -265,6 +265,7 @@ internal fun MessengerStore.applyCallStateChange(call: CallEntry) {
                 callId = call.callId,
                 chatId = call.chatId,
                 peerLabel = label,
+                hasVideo = CallModality.Video in call.modalities,
                 softLocked = lastSoftLocked,
             )
         } else if (call.isTerminal) {
@@ -319,6 +320,7 @@ internal fun MessengerStore.upsertActiveCall(call: CallEntry) {
         _callClockSamples.update { it - call.callId }
         _videoMutedCalls.update { it - call.callId }
         _peerVideoMutedCalls.update { it - call.callId }
+        _videoFacing.update { it - call.callId }
         
         
         if (CallModality.Video in call.modalities && _callWindowOpen.value) {
@@ -389,7 +391,32 @@ internal fun MessengerStore.ensureCameraSource(callId: String) {
         mutedProvider = { _videoMutedCalls.value[callId] == true },
     )
     _cameraSources.update { it + (callId to src) }
+    
+    
+    _videoFacing.update {
+        it + (callId to io.haoma.calculator.messenger.calls.video.CameraFacing.Front)
+    }
     src.start()
+}
+
+
+fun MessengerStore.switchCameraFacing(callId: String) {
+    if (callId.isEmpty()) return
+    val src = _cameraSources.value[callId] ?: run {
+        Logger.d("call", "switchCameraFacing skip no_source call=${shortCallId(callId)}")
+        return
+    }
+    val cur = _videoFacing.value[callId]
+        ?: io.haoma.calculator.messenger.calls.video.CameraFacing.Front
+    val next = when (cur) {
+        io.haoma.calculator.messenger.calls.video.CameraFacing.Front ->
+            io.haoma.calculator.messenger.calls.video.CameraFacing.Back
+        io.haoma.calculator.messenger.calls.video.CameraFacing.Back ->
+            io.haoma.calculator.messenger.calls.video.CameraFacing.Front
+    }
+    Logger.i("call", "switchCameraFacing call=${shortCallId(callId)} $cur → $next")
+    _videoFacing.update { it + (callId to next) }
+    src.requestFacing(next)
 }
 
 

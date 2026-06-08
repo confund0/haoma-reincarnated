@@ -395,7 +395,8 @@ func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 		"pin_validity_sec":          0,
 		"panic_action":              "hard-lock",
 		"threat_profile":            "privacy",
-		"url_force_chooser":         true
+		"url_force_chooser":         true,
+		"mobile_notice_snooze":      {"passphrase_is_default": {"until": 1733600000000, "step": 2}}
 	}`
 
 	dec := json.NewDecoder(bytes.NewReader([]byte(mobilePayload)))
@@ -434,6 +435,10 @@ func TestPayload_RoundTripsAllFields(t *testing.T) {
 	want.DefaultAttachStartDir = "/tmp/haoma-test-attach"
 
 	want.URLForceChooser = false
+
+	want.MobileNoticeSnooze = map[string]NoticeSnoozeState{
+		"passphrase_is_default": {Until: 1733600000000, Step: 2},
+	}
 
 	if err := Create(path, "pw", want, fastParams); err != nil {
 		t.Fatalf("create: %v", err)

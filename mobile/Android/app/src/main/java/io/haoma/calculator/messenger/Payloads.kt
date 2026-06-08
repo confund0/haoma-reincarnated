@@ -637,6 +637,13 @@ data class TimelineEvent(
         return b.isImage && b.state == FileState.READY
     }
 
+    
+    fun isReadyVideo(): Boolean {
+        if (kind != EventKind.FILE || isTombstoned) return false
+        val b = FileEventBody.fromJson(body)
+        return b.isVideo && b.state == FileState.READY
+    }
+
     companion object {
         fun fromJson(o: JSONObject): TimelineEvent = TimelineEvent(
             recvSeq = o.optLong("recv_seq", 0L),
@@ -1444,6 +1451,7 @@ data class FileEntry(
     val deletable: Boolean,
 ) {
     val isImage: Boolean get() = mime.startsWith("image/", ignoreCase = true)
+    val isVideo: Boolean get() = mime.startsWith("video/", ignoreCase = true)
     val isReady: Boolean get() = state == FileState.READY
     val isInbound: Boolean get() = direction == EventDirection.IN
     val isOutbound: Boolean get() = direction == EventDirection.OUT
@@ -1589,6 +1597,7 @@ data class FileEventBody(
     val lastError: String,
 ) {
     val isImage: Boolean get() = mime.startsWith("image/", ignoreCase = true)
+    val isVideo: Boolean get() = mime.startsWith("video/", ignoreCase = true)
 
     companion object {
         val EMPTY = FileEventBody(

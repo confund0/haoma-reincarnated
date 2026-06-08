@@ -69,24 +69,26 @@ func (sd *sessionDispatcher) handleChatAction(ctx context.Context, sess *ipc.Ses
 	snapshot := chatToEntry(c)
 	applyChatLabel(sd.d, &snapshot)
 
-	var deleted int
+	var deleted, cascadeDeleted int
 	switch req.Action {
 	case ipc.ChatActionClear:
-		n, err := sd.d.events.DeleteByChat(chatID)
+		n, cascade, err := sd.d.events.DeleteByChat(chatID)
 		if err != nil {
 			sendError(sess, f.ID, "internal", fmt.Sprintf("clear events: %v", err))
 			return
 		}
 		deleted = n
+		cascadeDeleted = cascade
 
 	case ipc.ChatActionDelete:
 
-		n, err := sd.d.events.DeleteByChat(chatID)
+		n, cascade, err := sd.d.events.DeleteByChat(chatID)
 		if err != nil {
 			sendError(sess, f.ID, "internal", fmt.Sprintf("clear events: %v", err))
 			return
 		}
 		deleted = n
+		cascadeDeleted = cascade
 		if err := sd.d.chats.Delete(chatID); err != nil {
 			sendError(sess, f.ID, "internal", fmt.Sprintf("drop chat: %v", err))
 			return
@@ -101,6 +103,7 @@ func (sd *sessionDispatcher) handleChatAction(ctx context.Context, sess *ipc.Ses
 		slog.String("chat_id", req.ChatID),
 		slog.String("action", string(req.Action)),
 		slog.Int("deleted_count", deleted),
+		slog.Int("cascade_keys", cascadeDeleted),
 	)
 	resp, err := ipc.NewFrame(ipc.FrameChatActionApplied, f.ID, ipc.ChatActionAppliedResponse{
 		Chat:         snapshot,

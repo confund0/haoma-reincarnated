@@ -176,6 +176,7 @@ class NotificationPoster(
         callId: String,
         chatId: String,
         peerLabel: String,
+        hasVideo: Boolean,
         softLocked: Boolean,
     ) {
         val mgr = NotificationManagerCompat.from(app)
@@ -191,7 +192,9 @@ class NotificationPoster(
             return
         }
 
-        val title = app.getString(R.string.calls_incoming_title)
+        val title = app.getString(
+            if (hasVideo) R.string.calls_incoming_video_title else R.string.calls_incoming_title,
+        )
         val body = app.getString(R.string.calls_incoming_body, peerLabel)
 
         val tapIntent = Intent(app, MainActivity::class.java).apply {
@@ -218,8 +221,8 @@ class NotificationPoster(
             .setAutoCancel(false)
             .setOngoing(true)
             .setContentIntent(tap)
-            .addAction(0, app.getString(R.string.calls_answer), answer)
             .addAction(0, app.getString(R.string.calls_decline), decline)
+            .addAction(0, app.getString(R.string.calls_answer), answer)
             .build()
         try {
             mgr.notify(callId, NOTIF_ID_CALL, notification)

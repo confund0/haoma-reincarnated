@@ -126,6 +126,10 @@ func classify(key []byte) (string, string) {
 		return "inbox", s
 	case strings.HasPrefix(s, "inbox-envid:"):
 		return "inbox-envid", s
+	case strings.HasPrefix(s, "file-token:"):
+		return "file-token", s
+	case strings.HasPrefix(s, "file-blob:"):
+		return "file-blob", s
 	case strings.HasPrefix(s, "badger!"):
 		return "badger-internal", s
 	default:
@@ -142,9 +146,9 @@ func asciiOrHex(key []byte) string {
 
 func renderValue(group string, v []byte) string {
 	switch group {
-	case "contact", "outbox", "inbox":
+	case "contact", "outbox", "inbox", "file-token":
 		return prettyJSON(v)
-	case "addr", "outbox-state":
+	case "addr", "outbox-state", "file-blob":
 		return quotedOrHex(v)
 	case "outbox-due":
 

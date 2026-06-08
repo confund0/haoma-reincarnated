@@ -19,6 +19,11 @@ object CallIcons {
     const val MicrophoneSlash = "\uF131"     
     const val Headset = "\uF590"             
     const val Bluetooth = "\uF294"           
+    const val Video = "\uF03D"               
+    const val VideoSlash = "\uF4E2"          
+    
+    
+    const val CameraRotate = "\uF021"        
 }
 
 @Composable

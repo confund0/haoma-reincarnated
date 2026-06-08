@@ -339,12 +339,13 @@ type InboundParams struct {
 }
 
 type LocalParams struct {
-	ChatID       chat.ChatID
-	Kind         Kind
-	Direction    Direction
-	DisplayTs    int64
-	SenderPeerID string
-	Body         json.RawMessage
+	ChatID        chat.ChatID
+	Kind          Kind
+	Direction     Direction
+	DisplayTs     int64
+	SenderPeerID  string
+	ExpireSeconds uint32
+	Body          json.RawMessage
 }
 
 type OutboundParams struct {
@@ -364,13 +365,14 @@ func (l *Log) AppendLocal(p LocalParams) (Event, error) {
 		displayTs = now.Unix()
 	}
 	ev := Event{
-		ChatID:       p.ChatID,
-		Direction:    p.Direction,
-		Kind:         p.Kind,
-		DisplayTs:    displayTs,
-		RecvTs:       now.Unix(),
-		SenderPeerID: p.SenderPeerID,
-		Body:         p.Body,
+		ChatID:        p.ChatID,
+		Direction:     p.Direction,
+		Kind:          p.Kind,
+		DisplayTs:     displayTs,
+		RecvTs:        now.Unix(),
+		SenderPeerID:  p.SenderPeerID,
+		ExpireSeconds: p.ExpireSeconds,
+		Body:          p.Body,
 	}
 	return l.append(ev)
 }
@@ -780,7 +782,7 @@ func (l *Log) ApplyDelete(targetMsgID string, deletedAt int64, expectedSenderPee
 	return updated, nil
 }
 
-func (l *Log) AppendReactionBreadcrumb(targetMsgID, emoji, reactorPeerID string, at int64) (Event, error) {
+func (l *Log) AppendReactionBreadcrumb(targetMsgID, emoji, reactorPeerID string, at int64, expireSeconds uint32) (Event, error) {
 	if targetMsgID == "" {
 		return Event{}, ErrEventNotFound
 	}
@@ -803,12 +805,13 @@ func (l *Log) AppendReactionBreadcrumb(targetMsgID, emoji, reactorPeerID string,
 		dir = DirIn
 	}
 	return l.AppendLocal(LocalParams{
-		ChatID:       target.ChatID,
-		Kind:         KindReaction,
-		Direction:    dir,
-		DisplayTs:    target.DisplayTs,
-		SenderPeerID: reactorPeerID,
-		Body:         body,
+		ChatID:        target.ChatID,
+		Kind:          KindReaction,
+		Direction:     dir,
+		DisplayTs:     target.DisplayTs,
+		SenderPeerID:  reactorPeerID,
+		ExpireSeconds: expireSeconds,
+		Body:          body,
 	})
 }
 
@@ -965,20 +968,23 @@ func (l *Log) SearchInChat(chatID chat.ChatID, query string, maxMatches int) (ma
 	return matches, truncated, nil
 }
 
-func (l *Log) DeleteByChat(chatID chat.ChatID) (int, error) {
+func (l *Log) DeleteByChat(chatID chat.ChatID) (int, int, error) {
 	if chatID == "" {
-		return 0, errors.New("events: empty chat id")
+		return 0, 0, errors.New("events: empty chat id")
 	}
 	chatPrefix := append([]byte(prefix), chatID...)
 	chatPrefix = append(chatPrefix, ':')
 
 	deleted := 0
+	cascadeDeleted := 0
 	for {
 
 		type rowRef struct {
 			key     []byte
 			envelID string
 			msgID   string
+			kind    Kind
+			cascade [][]byte
 		}
 		var batch []rowRef
 		err := l.st.View(func(txn *badger.Txn) error {
@@ -995,7 +1001,7 @@ func (l *Log) DeleteByChat(chatID chat.ChatID) (int, error) {
 				}); err != nil {
 					return err
 				}
-				ref := rowRef{key: keyCopy, msgID: ev.MsgID}
+				ref := rowRef{key: keyCopy, msgID: ev.MsgID, kind: ev.Kind, cascade: cascadeKeysFor(ev)}
 				if ev.Direction == DirOut && ev.EnvelopeID != "" {
 					ref.envelID = ev.EnvelopeID
 				}
@@ -1004,10 +1010,10 @@ func (l *Log) DeleteByChat(chatID chat.ChatID) (int, error) {
 			return nil
 		})
 		if err != nil {
-			return deleted, fmt.Errorf("events: scan for delete chat=%s: %w", chatID, err)
+			return deleted, cascadeDeleted, fmt.Errorf("events: scan for delete chat=%s: %w", chatID, err)
 		}
 		if len(batch) == 0 {
-			return deleted, nil
+			return deleted, cascadeDeleted, nil
 		}
 		err = l.st.Update(func(txn *badger.Txn) error {
 			for _, r := range batch {
@@ -1024,13 +1030,30 @@ func (l *Log) DeleteByChat(chatID chat.ChatID) (int, error) {
 						return err
 					}
 				}
+				for _, k := range r.cascade {
+					if err := txn.Delete(k); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		})
 		if err != nil {
-			return deleted, fmt.Errorf("events: delete batch chat=%s: %w", chatID, err)
+			return deleted, cascadeDeleted, fmt.Errorf("events: delete batch chat=%s: %w", chatID, err)
+		}
+
+		if l.bus != nil {
+			for _, r := range batch {
+				if r.kind != KindFile || r.msgID == "" {
+					continue
+				}
+				l.bus.publishDeletion(Deletion{ChatID: chatID, MsgID: r.msgID})
+			}
 		}
 		deleted += len(batch)
+		for _, r := range batch {
+			cascadeDeleted += len(r.cascade)
+		}
 	}
 }
 
@@ -1319,8 +1342,27 @@ func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID 
 	return updated, nil
 }
 
-func (l *Log) SweepExpired(nowSec int64) (int, error) {
+func (ev *Event) expired(nowSec int64) bool {
+	isContent := ev.Kind == KindText || ev.Kind == KindFile
+	if isContent && ev.DecryptStatus != DecryptFailed {
+		switch ev.Direction {
+		case DirOut:
+			return ev.DisplayTs+int64(ev.ExpireSeconds) <= nowSec
+		case DirIn:
+			if ev.DecryptStatus != DecryptOK {
+				return false
+			}
+			return ev.ReadAt > 0 && ev.ReadAt+int64(ev.ExpireSeconds) <= nowSec
+		default:
+			return false
+		}
+	}
+	return ev.RecvTs+int64(ev.ExpireSeconds) <= nowSec
+}
+
+func (l *Log) SweepExpired(nowSec int64) (int, int, error) {
 	deleted := 0
+	cascadeDeleted := 0
 	for {
 		type rowRef struct {
 			key     []byte
@@ -1328,6 +1370,7 @@ func (l *Log) SweepExpired(nowSec int64) (int, error) {
 			recvSeq uint64
 			envelID string
 			msgID   string
+			cascade [][]byte
 		}
 		var batch []rowRef
 		err := l.st.View(func(txn *badger.Txn) error {
@@ -1346,21 +1389,7 @@ func (l *Log) SweepExpired(nowSec int64) (int, error) {
 				if ev.ExpireSeconds == 0 {
 					continue
 				}
-				expired := false
-				switch ev.Direction {
-				case DirOut:
-					if ev.DisplayTs+int64(ev.ExpireSeconds) <= nowSec {
-						expired = true
-					}
-				case DirIn:
-					if ev.DecryptStatus != DecryptOK {
-						continue
-					}
-					if ev.ReadAt > 0 && ev.ReadAt+int64(ev.ExpireSeconds) <= nowSec {
-						expired = true
-					}
-				}
-				if !expired {
+				if !ev.expired(nowSec) {
 					continue
 				}
 				ref := rowRef{
@@ -1368,6 +1397,7 @@ func (l *Log) SweepExpired(nowSec int64) (int, error) {
 					chatID:  ev.ChatID,
 					recvSeq: ev.RecvSeq,
 					msgID:   ev.MsgID,
+					cascade: cascadeKeysFor(ev),
 				}
 				if ev.Direction == DirOut && ev.EnvelopeID != "" {
 					ref.envelID = ev.EnvelopeID
@@ -1377,10 +1407,10 @@ func (l *Log) SweepExpired(nowSec int64) (int, error) {
 			return nil
 		})
 		if err != nil {
-			return deleted, fmt.Errorf("events: SweepExpired scan: %w", err)
+			return deleted, cascadeDeleted, fmt.Errorf("events: SweepExpired scan: %w", err)
 		}
 		if len(batch) == 0 {
-			return deleted, nil
+			return deleted, cascadeDeleted, nil
 		}
 		err = l.st.Update(func(txn *badger.Txn) error {
 			for _, r := range batch {
@@ -1397,11 +1427,16 @@ func (l *Log) SweepExpired(nowSec int64) (int, error) {
 						return err
 					}
 				}
+				for _, k := range r.cascade {
+					if err := txn.Delete(k); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		})
 		if err != nil {
-			return deleted, fmt.Errorf("events: SweepExpired write: %w", err)
+			return deleted, cascadeDeleted, fmt.Errorf("events: SweepExpired write: %w", err)
 		}
 		if l.bus != nil {
 			for _, r := range batch {
@@ -1409,8 +1444,11 @@ func (l *Log) SweepExpired(nowSec int64) (int, error) {
 			}
 		}
 		deleted += len(batch)
+		for _, r := range batch {
+			cascadeDeleted += len(r.cascade)
+		}
 		if len(batch) < deleteBatchSize {
-			return deleted, nil
+			return deleted, cascadeDeleted, nil
 		}
 	}
 }

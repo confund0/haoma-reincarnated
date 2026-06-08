@@ -947,7 +947,7 @@ func (sd *sessionDispatcher) handleSendReaction(ctx context.Context, sess *ipc.S
 		return
 	}
 
-	if _, err := sd.d.events.AppendReactionBreadcrumb(req.TargetMsgID, req.Emoji, "", now); err != nil {
+	if _, err := sd.d.events.AppendReactionBreadcrumb(req.TargetMsgID, req.Emoji, "", now, dc.RetentionTTL); err != nil {
 		slog.Error("append local reaction breadcrumb failed",
 			slog.String("target_msg_id", req.TargetMsgID),
 			slog.String("envelope_id", sendResp.EnvelopeID),
@@ -1201,12 +1201,15 @@ func (sd *sessionDispatcher) handlePeerAction(ctx context.Context, sess *ipc.Ses
 	case ipc.PeerActionDelete:
 
 		if chatID != "" {
-			n, err := sd.d.events.DeleteByChat(chatID)
+			n, cascade, err := sd.d.events.DeleteByChat(chatID)
 			if err != nil {
 				sendError(sess, f.ID, "internal", fmt.Sprintf("clear events: %v", err))
 				return
 			}
 			deleted = n
+			if cascade > 0 {
+				slog.Info("peer-delete cascade", slog.String("chat_id", string(chatID)), slog.Int("cascade_keys", cascade))
+			}
 			if err := sd.d.chats.Delete(chatID); err != nil {
 				sendError(sess, f.ID, "internal", fmt.Sprintf("drop chat: %v", err))
 				return

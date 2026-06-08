@@ -32,9 +32,11 @@ internal fun MessageActionSheet(
     onViewAttachment: () -> Unit = {},
     onSaveImage: () -> Unit = {},
     onCopyImage: () -> Unit = {},
+    onSaveVideo: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState()
     val imageRow = target.isReadyImage()
+    val videoRow = target.isReadyVideo()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -63,6 +65,24 @@ internal fun MessageActionSheet(
                         enabled = imageRow,
                         onClick = onCopyImage,
                     )
+                    ActionItem(label = "Info", enabled = true, onClick = onInfo)
+                }
+                videoRow -> {
+                    
+                    
+                    ActionItem(label = "React", enabled = videoRow, onClick = onReact)
+                    ActionItem(
+                        label = "Save as",
+                        enabled = videoRow && !target.isOutbound,
+                        onClick = onSaveVideo,
+                    )
+                    ActionItem(
+                        label = "Delete",
+                        enabled = canDelete(target),
+                        onClick = onDelete,
+                        destructive = true,
+                    )
+                    HorizontalDivider(color = ChatPalette.TextFaint, thickness = 0.5.dp)
                     ActionItem(label = "Info", enabled = true, onClick = onInfo)
                 }
                 target.kind == EventKind.FILE -> {

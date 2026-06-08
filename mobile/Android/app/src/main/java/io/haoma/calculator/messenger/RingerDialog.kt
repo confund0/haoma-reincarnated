@@ -9,7 +9,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.messenger.calls.CallIcons
+import io.haoma.calculator.messenger.calls.fontAwesomeSolid
 
 
 @Composable
@@ -24,6 +27,9 @@ internal fun RingerDialogHost(store: MessengerStore) {
     val peerLabel = remember(ringing.peerId, ringing.callId) {
         store.peerLabelFor(ringing.peerId)
     }
+    val hasVideo = CallModality.Video in ringing.modalities
+    val glyph = if (hasVideo) CallIcons.Video else CallIcons.Headset
+    val titleText = if (hasVideo) "Incoming video call" else "Incoming audio call"
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -38,8 +44,20 @@ internal fun RingerDialogHost(store: MessengerStore) {
                 
                 
             },
+            icon = {
+                Text(
+                    text = glyph,
+                    color = ModalityGlyph,
+                    fontSize = 26.sp,
+                    fontFamily = fontAwesomeSolid(),
+                )
+            },
             title = {
-                Text(text = "Incoming call", color = DialogText)
+                Text(
+                    text = titleText,
+                    color = DialogText,
+                    fontSize = 22.sp,
+                )
             },
             text = {
                 Text(text = "From: $peerLabel", color = DialogText)
@@ -70,3 +88,4 @@ private val DialogSurface = Color(0xFF32302F)
 private val DialogText = Color(0xFFEBDBB2)      
 private val DialogAccent = Color(0xFFB8BB26)    
 private val DialogReject = Color(0xFFFB4934)    
+private val ModalityGlyph = Color(0xFFD79921)   

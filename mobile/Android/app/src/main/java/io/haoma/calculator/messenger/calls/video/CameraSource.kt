@@ -29,6 +29,10 @@ import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+
+enum class CameraFacing { Front, Back }
 
 
 class CameraSource(
@@ -43,11 +47,23 @@ class CameraSource(
     private val started = AtomicBoolean(false)
     private val stopped = AtomicBoolean(false)
 
-    private var handlerThread: HandlerThread? = null
-    private var handler: Handler? = null
+    
+    private var captureHandlerThread: HandlerThread? = null
+    private var captureHandler: Handler? = null
+    private var controlHandlerThread: HandlerThread? = null
+    private var controlHandler: Handler? = null
     private var imageReader: ImageReader? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
+
+    
+    private val currentFacing = AtomicReference(CameraFacing.Front)
+    
+    
+    private val switchInFlight = AtomicBoolean(false)
+    
+    
+    @Volatile private var sensorOrientation: Int = 270
 
     @Volatile private var socket: LocalSocket? = null
     @Volatile private var socketOut: OutputStream? = null
@@ -96,21 +112,25 @@ class CameraSource(
         socketOut = s.outputStream
         Logger.d("call", "cam: socket connected call=${shortCallId(callId)} unix=$unixName")
 
-        val ht = HandlerThread("haoma-camera-source").apply { start() }
-        handlerThread = ht
-        handler = Handler(ht.looper)
+        val captureHT = HandlerThread("haoma-camera-capture").apply { start() }
+        captureHandlerThread = captureHT
+        captureHandler = Handler(captureHT.looper)
+        val controlHT = HandlerThread("haoma-camera-control").apply { start() }
+        controlHandlerThread = controlHT
+        controlHandler = Handler(controlHT.looper)
 
         val reader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 4)
-        reader.setOnImageAvailableListener({ r -> onImageAvailable(r) }, handler)
+        reader.setOnImageAvailableListener({ r -> onImageAvailable(r) }, captureHandler)
         imageReader = reader
 
         val mgr = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val cameraId = pickFrontCamera(mgr) ?: run {
+        val cameraId = pickCamera(mgr, currentFacing.get()) ?: run {
             Logger.d("call", "cam: no camera available; aborting source call=${shortCallId(callId)}")
             stop()
             return
         }
         logDeviceAndCameraCaps(mgr, cameraId)
+        sensorOrientation = readSensorOrientation(mgr, cameraId)
 
         try {
             mgr.openCamera(cameraId, object : CameraDevice.StateCallback() {
@@ -129,7 +149,7 @@ class CameraSource(
                     device.close()
                     stop()
                 }
-            }, handler)
+            }, controlHandler)
         } catch (e: SecurityException) {
             Logger.d("call", "cam: openCamera SecurityException: ${e.message}")
             stop()
@@ -175,7 +195,7 @@ class CameraSource(
                         stop()
                     }
                 }
-            }, handler)
+            }, controlHandler)
         } catch (e: Exception) {
             Logger.d("call", "cam: createCaptureSession threw: ${e.message}")
             if (preview != null && !stopped.get()) {
@@ -198,7 +218,7 @@ class CameraSource(
             req.addTarget(reader.surface)
             if (preview != null) req.addTarget(preview)
             applyTargetFpsRange(device.id, req)
-            session.setRepeatingRequest(req.build(), null, handler)
+            session.setRepeatingRequest(req.build(), null, controlHandler)
             Logger.d(
                 "call",
                 "cam: session active ${width}x${height} preview=${preview != null} " +
@@ -212,7 +232,7 @@ class CameraSource(
 
     
     fun attachPreviewSurface(surface: Surface) {
-        val h = handler ?: run {
+        val h = controlHandler ?: run {
             
             previewSurface = surface
             return
@@ -236,7 +256,7 @@ class CameraSource(
 
     
     fun detachPreviewSurface() {
-        val h = handler ?: run {
+        val h = controlHandler ?: run {
             previewSurface = null
             return
         }
@@ -319,6 +339,7 @@ class CameraSource(
     private fun packI420(img: Image, dst: ByteArray, dstOffset: Int) {
         val sensorW = width    
         val sensorH = height   
+        val ccw = sensorOrientation != 90
 
         var dstIdx = dstOffset
         for (planeIdx in 0..2) {
@@ -332,12 +353,23 @@ class CameraSource(
             val dstPlaneW = srcPlaneH
             val dstPlaneH = srcPlaneW
 
-            for (yDst in 0 until dstPlaneH) {
-                val srcCol = srcPlaneW - 1 - yDst
-                val srcColByteOff = srcCol * pixelStride
-                val dstRowBase = dstIdx + yDst * dstPlaneW
-                for (xDst in 0 until dstPlaneW) {
-                    dst[dstRowBase + xDst] = src.get(xDst * rowStride + srcColByteOff)
+            if (ccw) {
+                for (yDst in 0 until dstPlaneH) {
+                    val srcCol = srcPlaneW - 1 - yDst
+                    val srcColByteOff = srcCol * pixelStride
+                    val dstRowBase = dstIdx + yDst * dstPlaneW
+                    for (xDst in 0 until dstPlaneW) {
+                        dst[dstRowBase + xDst] = src.get(xDst * rowStride + srcColByteOff)
+                    }
+                }
+            } else {
+                for (yDst in 0 until dstPlaneH) {
+                    val dstRowBase = dstIdx + yDst * dstPlaneW
+                    val srcColByteOff = yDst * pixelStride
+                    for (xDst in 0 until dstPlaneW) {
+                        val srcRow = srcPlaneH - 1 - xDst
+                        dst[dstRowBase + xDst] = src.get(srcRow * rowStride + srcColByteOff)
+                    }
                 }
             }
             dstIdx += dstPlaneW * dstPlaneH
@@ -446,12 +478,17 @@ class CameraSource(
         }
     }
 
-    private fun pickFrontCamera(mgr: CameraManager): String? {
+    
+    private fun pickCamera(mgr: CameraManager, want: CameraFacing): String? {
         val ids = try {
             mgr.cameraIdList
         } catch (e: Exception) {
             Logger.d("call", "cam: cameraIdList failed: ${e.message}")
             return null
+        }
+        val target = when (want) {
+            CameraFacing.Front -> CameraCharacteristics.LENS_FACING_FRONT
+            CameraFacing.Back -> CameraCharacteristics.LENS_FACING_BACK
         }
         for (id in ids) {
             val chars = try {
@@ -460,9 +497,115 @@ class CameraSource(
                 continue
             }
             val facing = chars.get(CameraCharacteristics.LENS_FACING) ?: continue
-            if (facing == CameraCharacteristics.LENS_FACING_FRONT) return id
+            if (facing == target) return id
         }
         return ids.firstOrNull()
+    }
+
+    private fun readSensorOrientation(mgr: CameraManager, cameraId: String): Int {
+        val degrees = try {
+            mgr.getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 270
+        } catch (e: Exception) {
+            Logger.d("call", "cam: sensorOrientation read failed: ${e.message}; defaulting 270")
+            270
+        }
+        if (degrees != 90 && degrees != 270) {
+            Logger.w(
+                "call",
+                "cam: unusual sensorOrientation=$degrees camera=$cameraId — falling back to CCW matrix",
+            )
+        }
+        return degrees
+    }
+
+    
+    fun facing(): CameraFacing = currentFacing.get()
+
+    
+    @SuppressLint("MissingPermission")
+    fun requestFacing(facing: CameraFacing) {
+        val h = controlHandler ?: run {
+            
+            currentFacing.set(facing)
+            Logger.d("call", "cam: requestFacing pre-start stash=$facing call=${shortCallId(callId)}")
+            return
+        }
+        if (!switchInFlight.compareAndSet(false, true)) {
+            Logger.d(
+                "call",
+                "cam: requestFacing dropped target=$facing switch_in_flight call=${shortCallId(callId)}",
+            )
+            return
+        }
+        h.post {
+            var openIssued = false
+            try {
+                if (stopped.get()) return@post
+                if (currentFacing.get() == facing) return@post
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                    != PackageManager.PERMISSION_GRANTED
+                ) {
+                    Logger.w("call", "cam: requestFacing denied CAMERA call=${shortCallId(callId)}")
+                    return@post
+                }
+                val mgr = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                val newId = pickCamera(mgr, facing) ?: run {
+                    Logger.w("call", "cam: requestFacing no lens for $facing call=${shortCallId(callId)}")
+                    return@post
+                }
+                currentFacing.set(facing)
+                Logger.i(
+                    "call",
+                    "cam: requestFacing → $facing id=$newId call=${shortCallId(callId)}",
+                )
+                try { captureSession?.close() } catch (_: Exception) {}
+                captureSession = null
+                try { cameraDevice?.close() } catch (_: Exception) {}
+                cameraDevice = null
+                sensorOrientation = readSensorOrientation(mgr, newId)
+                logDeviceAndCameraCaps(mgr, newId)
+                val reader = imageReader ?: run {
+                    Logger.w("call", "cam: requestFacing no reader call=${shortCallId(callId)}")
+                    return@post
+                }
+                try {
+                    mgr.openCamera(newId, object : CameraDevice.StateCallback() {
+                        override fun onOpened(device: CameraDevice) {
+                            cameraDevice = device
+                            startSession(device, reader)
+                            
+                            
+                            switchInFlight.set(false)
+                        }
+
+                        override fun onDisconnected(device: CameraDevice) {
+                            Logger.d("call", "cam: device disconnected (post-switch) call=${shortCallId(callId)}")
+                            device.close()
+                            switchInFlight.set(false)
+                        }
+
+                        override fun onError(device: CameraDevice, error: Int) {
+                            Logger.d("call", "cam: device error=$error (post-switch) call=${shortCallId(callId)}")
+                            device.close()
+                            switchInFlight.set(false)
+                            stop()
+                        }
+                    }, controlHandler)
+                    openIssued = true
+                } catch (e: SecurityException) {
+                    Logger.d("call", "cam: requestFacing openCamera SecurityException: ${e.message}")
+                    stop()
+                } catch (e: Exception) {
+                    Logger.d("call", "cam: requestFacing openCamera failed: ${e.message}")
+                    stop()
+                }
+            } finally {
+                
+                
+                if (!openIssued) switchInFlight.set(false)
+            }
+        }
     }
 
     
@@ -475,9 +618,15 @@ class CameraSource(
         try { imageReader?.close() } catch (_: Exception) {}
         imageReader = null
         previewSurface = null
-        handlerThread?.quitSafely()
-        handlerThread = null
-        handler = null
+        
+        
+        switchInFlight.set(false)
+        captureHandlerThread?.quitSafely()
+        captureHandlerThread = null
+        captureHandler = null
+        controlHandlerThread?.quitSafely()
+        controlHandlerThread = null
+        controlHandler = null
         
         
         socketOut = null

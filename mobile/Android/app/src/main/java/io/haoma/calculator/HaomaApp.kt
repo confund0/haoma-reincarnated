@@ -138,6 +138,16 @@ class HaomaApp : Application(), ImageLoaderFactory {
             sessionSink = { session ->
                 vaultSession = session
                 Logger.i("app", "vault session installed=${session != null}")
+                
+                
+                if (this::messengerStore.isInitialized && session != null) {
+                    messengerStore.loadNoticeSnoozeFromVault()
+                }
+            },
+            passphraseDefaultSink = { isDefault ->
+                if (this::messengerStore.isInitialized) {
+                    messengerStore.setPassphraseIsDefault(isDefault)
+                }
             },
         )
         idleLockDispatcher = IdleLockDispatcher(

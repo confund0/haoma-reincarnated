@@ -624,6 +624,10 @@ func (cp *chatPage) deleteByRecvSeq(recvSeq uint64) bool {
 		removedMsgID = removedEv.MsgID
 		if removedMsgID != "" {
 			delete(cp.msgIDIndex, removedMsgID)
+
+			if removedMsgID == cp.searchCurMsgID {
+				cp.clearSearchHighlight()
+			}
 		}
 		cp.entries = append(cp.entries[:i], cp.entries[i+1:]...)
 		for k, v := range cp.envIndex {

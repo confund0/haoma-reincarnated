@@ -35,12 +35,16 @@ import io.haoma.calculator.core.BinaryFingerprints
 import io.haoma.calculator.core.FingerprintRow
 import io.haoma.calculator.messenger.ExternalReach
 import io.haoma.calculator.messenger.MessengerStore
+import io.haoma.calculator.messenger.Notice
+import io.haoma.calculator.messenger.NoticeSeverity
 import io.haoma.calculator.messenger.PeerEntry
 import io.haoma.calculator.messenger.SelfReach
 import io.haoma.calculator.messenger.SystemHealth
 import io.haoma.calculator.messenger.SystemInfoComponent
 import io.haoma.calculator.messenger.SystemInfoResponse
 import io.haoma.calculator.messenger.TorHealth
+import io.haoma.calculator.messenger.nextSnoozeLabel
+import io.haoma.calculator.messenger.snoozeNotice
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -55,6 +59,7 @@ fun HomeSection(store: MessengerStore) {
     val systemInfo by store.systemInfo.collectAsStateWithLifecycle()
     val fingerprints by store.fingerprints.collectAsStateWithLifecycle()
     val peers by store.peers.collectAsStateWithLifecycle()
+    val notices by store.unsnoozedNotices.collectAsStateWithLifecycle()
 
     
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -73,11 +78,99 @@ fun HomeSection(store: MessengerStore) {
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (notices.isNotEmpty()) {
+            NoticesCard(store = store, notices = notices)
+        }
         ConnectivityCard(connected = connected, health = health, peers = peers, nowMs = now)
         IdentityCard(health = health, systemInfo = systemInfo)
         UptimesCard(systemInfo = systemInfo, nowMs = now)
         FingerprintCard(snapshot = fingerprints)
     }
+}
+
+
+@Composable
+private fun NoticesCard(store: MessengerStore, notices: List<Notice>) {
+    Card(title = "Notices") {
+        notices.forEachIndexed { idx, n ->
+            if (idx > 0) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .background(FG_DIM.copy(alpha = 0.25f), shape = RoundedCornerShape(1.dp)),
+                ) { Text(text = "", fontSize = 1.sp) }
+            }
+            NoticeRow(store = store, n = n)
+        }
+    }
+}
+
+@Composable
+private fun NoticeRow(store: MessengerStore, n: Notice) {
+    val accent = severityColor(n.severity)
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .background(accent, shape = RoundedCornerShape(2.dp))
+                    .padding(horizontal = 3.dp, vertical = 0.dp),
+            ) {
+                Text(
+                    text = severityGlyph(n.severity),
+                    color = BG_CARD,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                )
+            }
+            Text(
+                text = n.title,
+                color = accent,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+            )
+        }
+        Text(
+            text = n.body,
+            color = FG_LABEL,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Text(
+                text = store.nextSnoozeLabel(n.id),
+                color = FG_TITLE,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clickable { store.snoozeNotice(n.id) }
+                    .background(BG_BASE, shape = RoundedCornerShape(6.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+private fun severityColor(s: NoticeSeverity): Color = when (s) {
+    NoticeSeverity.INFO -> C_OK
+    NoticeSeverity.WARN -> C_WARN
+    NoticeSeverity.SEVERE -> C_BAD
+}
+
+private fun severityGlyph(s: NoticeSeverity): String = when (s) {
+    NoticeSeverity.INFO -> "i"
+    NoticeSeverity.WARN -> "!"
+    NoticeSeverity.SEVERE -> "!!"
 }
 
 

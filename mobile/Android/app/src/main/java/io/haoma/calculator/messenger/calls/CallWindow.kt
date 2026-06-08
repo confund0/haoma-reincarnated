@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,20 +21,26 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.CallAction
 import io.haoma.calculator.messenger.CallEntry
+import io.haoma.calculator.messenger.CallModality
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.calls.video.CallVideoStage
 import io.haoma.calculator.messenger.peerLabelFor
 import io.haoma.calculator.messenger.respondCall
+import io.haoma.calculator.messenger.switchCameraFacing
+import io.haoma.calculator.messenger.toggleVideoMute
 
 
 @Composable
@@ -74,6 +81,8 @@ internal fun CallWindow(call: CallEntry, store: MessengerStore, onDismiss: () ->
         Column(modifier = Modifier.fillMaxSize()) {
             Header(
                 label = store.peerLabelFor(call.peerId),
+                store = store,
+                call = call,
                 onEnd = {
                     Logger.i(
                         "call",
@@ -95,12 +104,23 @@ internal fun CallWindow(call: CallEntry, store: MessengerStore, onDismiss: () ->
 }
 
 @Composable
-private fun Header(label: String, onEnd: () -> Unit) {
+private fun Header(
+    label: String,
+    store: MessengerStore,
+    call: CallEntry,
+    onEnd: () -> Unit,
+) {
+    val hasVideo = CallModality.Video in call.modalities
+    val videoMuted by store.videoMutedCalls.collectAsStateWithLifecycle()
+    val isVideoMuted = videoMuted[call.callId] == true
+    val solid = fontAwesomeSolid()
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(CallWindowTheme.HeaderBg)
             .padding(horizontal = 20.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(
             text = label,
@@ -109,6 +129,26 @@ private fun Header(label: String, onEnd: () -> Unit) {
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f),
         )
+        if (hasVideo) {
+            
+            
+            HeaderIconButton(
+                glyph = if (isVideoMuted) CallIcons.VideoSlash else CallIcons.Video,
+                glyphColor = if (isVideoMuted) CallWindowTheme.Accent else CallWindowTheme.Text,
+                family = solid,
+                contentDescription = if (isVideoMuted) "Camera unmute" else "Camera mute",
+                onClick = { store.toggleVideoMute(call.callId) },
+            )
+            
+            
+            HeaderIconButton(
+                glyph = CallIcons.CameraRotate,
+                glyphColor = CallWindowTheme.Text,
+                family = solid,
+                contentDescription = "Switch camera",
+                onClick = { store.switchCameraFacing(call.callId) },
+            )
+        }
         
         
         Box(
@@ -123,6 +163,30 @@ private fun Header(label: String, onEnd: () -> Unit) {
                 tint = CallWindowTheme.Accent,
             )
         }
+    }
+}
+
+
+@Composable
+private fun HeaderIconButton(
+    glyph: String,
+    glyphColor: Color,
+    family: androidx.compose.ui.text.font.FontFamily,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(width = 36.dp, height = 40.dp)
+            .clickable(onClickLabel = contentDescription) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = glyph,
+            color = glyphColor,
+            fontSize = 15.sp,
+            fontFamily = family,
+        )
     }
 }
 

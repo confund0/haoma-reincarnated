@@ -25,6 +25,10 @@ fun MessengerStore.openChatSettings(chatId: String) {
     _backStack.update { it + Screen.ChatSettings(chatId) }
 }
 
+fun MessengerStore.openChatCallHistory(chatId: String) {
+    _backStack.update { it + Screen.ChatCallHistory(chatId) }
+}
+
 fun MessengerStore.openSettingsSection(domain: String) {
     _backStack.update { it + Screen.SettingsSection(domain) }
 }

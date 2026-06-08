@@ -45,7 +45,7 @@ fun MessengerStore.pushSettingsSync() {
 }
 
 
-private suspend fun MessengerStore.resealVault(
+internal suspend fun MessengerStore.resealVault(
     auditLabel: String,
     successMsg: String,
     failLabel: String = auditLabel,

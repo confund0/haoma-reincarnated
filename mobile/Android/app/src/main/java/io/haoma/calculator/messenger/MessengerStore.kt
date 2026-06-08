@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
@@ -75,6 +76,31 @@ class MessengerStore(
 
     internal val _backStack = MutableStateFlow<List<Screen>>(listOf(Screen.Tabbed(Tab.Chats)))
     val backStack: StateFlow<List<Screen>> = _backStack.asStateFlow()
+
+    
+    internal val _noticePassphraseIsDefault = MutableStateFlow(false)
+    internal val _noticeSnooze = MutableStateFlow<Map<String, NoticeSnoozeEntry>>(emptyMap())
+
+    
+    val notices: StateFlow<List<Notice>> = combine(
+        _noticePassphraseIsDefault,
+        _noticeSnooze,
+    ) { passphraseDefault, snooze ->
+        produceNotices(passphraseDefault, snooze)
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    
+    val unsnoozedNotices: StateFlow<List<Notice>> = combine(
+        notices,
+        kotlinx.coroutines.flow.flow {
+            while (true) {
+                emit(System.currentTimeMillis())
+                kotlinx.coroutines.delay(60_000L)
+            }
+        },
+    ) { all, now ->
+        all.filter { it.snoozeUntil <= now }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     internal val _connection = MutableStateFlow(false)
     val connection: StateFlow<Boolean> = _connection.asStateFlow()
@@ -132,6 +158,12 @@ class MessengerStore(
     val peerVideoMutedCalls: StateFlow<Map<String, Boolean>> = _peerVideoMutedCalls.asStateFlow()
 
     
+    internal val _videoFacing =
+        MutableStateFlow<Map<String, io.haoma.calculator.messenger.calls.video.CameraFacing>>(emptyMap())
+    val videoFacing: StateFlow<Map<String, io.haoma.calculator.messenger.calls.video.CameraFacing>> =
+        _videoFacing.asStateFlow()
+
+    
     val videoCallActive: StateFlow<Boolean> = _activeCalls
         .map { calls -> calls.values.any { !it.isTerminal && CallModality.Video in it.modalities } }
         .distinctUntilChanged()
@@ -160,6 +192,16 @@ class MessengerStore(
     
     internal val _imageDimsByMsgId = MutableStateFlow<Map<String, Pair<Int, Int>>>(emptyMap())
     val imageDimsByMsgId: StateFlow<Map<String, Pair<Int, Int>>> = _imageDimsByMsgId.asStateFlow()
+
+    
+    internal val _videoTransientByMsgId = MutableStateFlow<Map<String, String>>(emptyMap())
+    val videoTransientByMsgId: StateFlow<Map<String, String>> = _videoTransientByMsgId.asStateFlow()
+    internal val _videoThumbsByMsgId = MutableStateFlow<Map<String, android.graphics.Bitmap?>>(emptyMap())
+    val videoThumbsByMsgId: StateFlow<Map<String, android.graphics.Bitmap?>> = _videoThumbsByMsgId.asStateFlow()
+
+    
+    internal val _videoViewerTarget = MutableStateFlow<VideoViewerTarget?>(null)
+    val videoViewerTarget: StateFlow<VideoViewerTarget?> = _videoViewerTarget.asStateFlow()
 
     
     internal val _timelines = MutableStateFlow<Map<String, TimelineCache>>(emptyMap())
@@ -343,6 +385,7 @@ class MessengerStore(
         _callClockSamples.value = emptyMap()
         _videoMutedCalls.value = emptyMap()
         _peerVideoMutedCalls.value = emptyMap()
+        _videoFacing.value = emptyMap()
         _callWindowOpen.value = false
         
         
@@ -640,6 +683,15 @@ data class ViewerTarget(
     val chatId: String,
     val msgId: String,
     val displayName: String,
+)
+
+
+data class VideoViewerTarget(
+    val chatId: String,
+    val msgId: String,
+    val displayName: String,
+    val path: String,
+    val mime: String,
 )
 
 enum class StatusLevel { INFO, WARN }

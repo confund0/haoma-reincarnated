@@ -10,7 +10,8 @@
     <string name="messages_noisy_channel_description">Inbound message banners — standard messenger posture: lock-screen visible + heads-up popup.</string>
     <string name="calls_channel_name">Calls</string>
     <string name="calls_channel_description">Incoming call ringers.</string>
-    <string name="calls_incoming_title">Incoming call</string>
+    <string name="calls_incoming_title">Incoming audio call</string>
+    <string name="calls_incoming_video_title">Incoming video call</string>
     <string name="calls_incoming_body">%1$s is calling</string>
     <string name="calls_answer">Answer</string>
     <string name="calls_decline">Decline</string>
