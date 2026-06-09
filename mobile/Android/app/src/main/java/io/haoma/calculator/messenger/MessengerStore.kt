@@ -420,6 +420,11 @@ class MessengerStore(
                 fetchSystemInfo(c)
                 
                 
+                for (chatId in _timelines.value.keys) {
+                    loadTimeline(chatId, head = true)
+                }
+                
+                
                 requestExternalProbeBurst()
                 requestSelfProbeForActiveSurface()
             } catch (t: Throwable) {

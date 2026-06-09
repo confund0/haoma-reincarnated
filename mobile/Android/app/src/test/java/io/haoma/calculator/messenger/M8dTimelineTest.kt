@@ -163,6 +163,41 @@ class M8dTimelineTest {
         assertEquals(100L, cache.oldestDisplayTs)
     }
 
+    @Test fun mergeTimelineHeadPreservesHasMore() {
+        
+        
+        var cache = TimelineCache(chatId = "chat-1")
+        cache = mergeTimelineEvent(cache, makeEvent(recvSeq = 1, displayTs = 100))
+        cache = mergeTimelineEvent(cache, makeEvent(recvSeq = 2, displayTs = 200))
+        cache = cache.copy(hasMore = false)
+
+        val page = TimelinePageResponse(
+            peerId = "peer-1",
+            events = listOf(makeEvent(recvSeq = 3, displayTs = 300, msgId = "msg-new")),
+            hasMore = true,
+        )
+        cache = mergeTimelineHead(cache, page)
+        assertEquals(listOf(1L, 2L, 3L), cache.events.map { it.recvSeq })
+        assertFalse("head fetch must not flip hasMore back to true", cache.hasMore)
+        assertFalse(cache.loading)
+        assertEquals(100L, cache.oldestDisplayTs)
+    }
+
+    @Test fun mergeTimelineHeadDedupsByMsgId() {
+        
+        
+        var cache = TimelineCache(chatId = "chat-1", loading = true)
+        cache = mergeTimelineEvent(cache, makeEvent(recvSeq = 1, displayTs = 100, msgId = "abc"))
+        val page = TimelinePageResponse(
+            peerId = "peer-1",
+            events = listOf(makeEvent(recvSeq = 1, displayTs = 100, msgId = "abc")),
+            hasMore = false,
+        )
+        cache = mergeTimelineHead(cache, page)
+        assertEquals(1, cache.events.size)
+        assertFalse(cache.loading)
+    }
+
     @Test fun timelineEventDecodesFromWire() {
         val raw = JSONObject(
             """

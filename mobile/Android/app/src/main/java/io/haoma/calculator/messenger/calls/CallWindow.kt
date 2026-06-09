@@ -120,7 +120,6 @@ private fun Header(
             .background(CallWindowTheme.HeaderBg)
             .padding(horizontal = 20.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(
             text = label,
@@ -129,39 +128,47 @@ private fun Header(
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f),
         )
-        if (hasVideo) {
-            
-            
-            HeaderIconButton(
-                glyph = if (isVideoMuted) CallIcons.VideoSlash else CallIcons.Video,
-                glyphColor = if (isVideoMuted) CallWindowTheme.Accent else CallWindowTheme.Text,
-                family = solid,
-                contentDescription = if (isVideoMuted) "Camera unmute" else "Camera mute",
-                onClick = { store.toggleVideoMute(call.callId) },
-            )
-            
-            
-            HeaderIconButton(
-                glyph = CallIcons.CameraRotate,
-                glyphColor = CallWindowTheme.Text,
-                family = solid,
-                contentDescription = "Switch camera",
-                onClick = { store.switchCameraFacing(call.callId) },
-            )
-        }
         
         
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clickable { onEnd() },
-            contentAlignment = Alignment.Center,
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            Icon(
-                imageVector = Icons.Filled.Call,
-                contentDescription = "End call",
-                tint = CallWindowTheme.Accent,
-            )
+            if (hasVideo) {
+                
+                
+                HeaderIconButton(
+                    glyph = CallIcons.VideoSlash,
+                    glyphColor = if (isVideoMuted) CallWindowTheme.Accent else CallWindowTheme.Text,
+                    family = solid,
+                    contentDescription = if (isVideoMuted) "Camera unmute" else "Camera mute",
+                    onClick = { store.toggleVideoMute(call.callId) },
+                )
+                
+                
+                HeaderIconButton(
+                    glyph = CallIcons.CameraRotate,
+                    glyphColor = CallWindowTheme.Text,
+                    family = solid,
+                    contentDescription = "Switch camera",
+                    onClick = { store.switchCameraFacing(call.callId) },
+                )
+            }
+            
+            
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable { onEnd() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Call,
+                    contentDescription = "End call",
+                    tint = CallWindowTheme.Accent,
+                )
+            }
         }
     }
 }
@@ -184,7 +191,7 @@ private fun HeaderIconButton(
         Text(
             text = glyph,
             color = glyphColor,
-            fontSize = 15.sp,
+            fontSize = 12.sp,
             fontFamily = family,
         )
     }

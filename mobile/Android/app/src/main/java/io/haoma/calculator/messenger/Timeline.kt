@@ -128,6 +128,18 @@ fun mergeTimelinePage(cache: TimelineCache, page: TimelinePageResponse): Timelin
     )
 }
 
+
+fun mergeTimelineHead(cache: TimelineCache, page: TimelinePageResponse): TimelineCache {
+    var merged = cache
+    for (ev in page.events) {
+        merged = mergeTimelineEvent(merged, ev)
+    }
+    return merged.copy(
+        loading = false,
+        oldestDisplayTs = oldestOf(merged.events),
+    )
+}
+
 private fun locateEvent(list: List<TimelineEvent>, ev: TimelineEvent): Int {
     if (ev.msgId.isNotEmpty()) {
         val byMsg = list.indexOfFirst { it.msgId == ev.msgId }

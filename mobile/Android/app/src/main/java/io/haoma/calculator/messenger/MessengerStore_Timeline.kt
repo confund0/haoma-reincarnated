@@ -19,7 +19,7 @@ fun MessengerStore.timelineFor(chatId: String): StateFlow<TimelineCache> =
         .stateIn(scope, SharingStarted.Eagerly, TimelineCache(chatId = chatId))
 
 
-fun MessengerStore.loadTimeline(chatId: String) {
+fun MessengerStore.loadTimeline(chatId: String, head: Boolean = false) {
     if (chatId.isEmpty()) return
     val peerId = _chats.value.firstOrNull { it.chatId == chatId }?.peerId.orEmpty()
     if (peerId.isEmpty()) {
@@ -28,7 +28,9 @@ fun MessengerStore.loadTimeline(chatId: String) {
     }
     val current = _timelines.value[chatId] ?: TimelineCache(chatId = chatId)
     if (current.loading) return
-    if (!current.hasMore && current.events.isNotEmpty()) return
+    
+    
+    if (!head && !current.hasMore && current.events.isNotEmpty()) return
 
     upsertTimeline(chatId) { it.copy(loading = true) }
 
@@ -43,7 +45,7 @@ fun MessengerStore.loadTimeline(chatId: String) {
                 type = FrameType.ListTimeline,
                 payload = ListTimelineRequest(
                     peerId = peerId,
-                    beforeDisplayTs = current.oldestDisplayTs,
+                    beforeDisplayTs = if (head) 0L else current.oldestDisplayTs,
                 ).toJson(),
             )
             if (reply.type == FrameType.Error) {
@@ -57,7 +59,9 @@ fun MessengerStore.loadTimeline(chatId: String) {
                 return@launch
             }
             indexEnvelopes(chatId, page.events)
-            upsertTimeline(chatId) { mergeTimelinePage(it, page) }
+            upsertTimeline(chatId) {
+                if (head) mergeTimelineHead(it, page) else mergeTimelinePage(it, page)
+            }
         } catch (t: Throwable) {
             appendStatus("list_timeline failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
             upsertTimeline(chatId) { it.copy(loading = false) }

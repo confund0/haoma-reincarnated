@@ -77,7 +77,7 @@ fun InvitesTab(store: MessengerStore) {
                 singleLine = true,
                 placeholder = {
                     Text(
-                        text = "Alias (optional — local note for this invite)",
+                        text = "Optional alias for this invite",
                         color = FG_DIM,
                         fontSize = 13.sp,
                     )
