@@ -33,10 +33,6 @@ fun MessengerStore.openSettingsSection(domain: String) {
     _backStack.update { it + Screen.SettingsSection(domain) }
 }
 
-fun MessengerStore.openAccept(type: PairType) {
-    _backStack.update { it + Screen.Accept(type) }
-}
-
 
 fun MessengerStore.openChatForPeer(peerId: String) {
     val cached = _chats.value.firstOrNull { it.peerId == peerId }

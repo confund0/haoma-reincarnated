@@ -169,6 +169,7 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                 peerId = c.peerId,
                 nick = c.nick,
             )
+            markFreshPeer(c.peerId)
         }
 
         FrameType.PairOnionFailed -> if (payload != null) {

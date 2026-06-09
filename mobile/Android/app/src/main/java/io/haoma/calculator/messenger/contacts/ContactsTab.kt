@@ -40,6 +40,7 @@ fun ContactsTab(store: MessengerStore) {
     val peers by store.peers.collectAsStateWithLifecycle()
     val presence by store.presence.collectAsStateWithLifecycle()
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
+    val freshPeers by store.freshPeers.collectAsStateWithLifecycle()
     val nowSeconds = System.currentTimeMillis() / 1000L
     val inCallPeers = remember(activeCalls) {
         activeCalls.values
@@ -61,8 +62,15 @@ fun ContactsTab(store: MessengerStore) {
                     presenceLabel = presence[peer.id] ?: peer.effective.ifEmpty { "unknown" },
                     nowSeconds = nowSeconds,
                     inCall = peer.id in inCallPeers,
-                    onOpen = { store.openChatForPeer(peer.id) },
-                    onEdit = { store.openContactDetail(peer.id) },
+                    isFresh = peer.id in freshPeers,
+                    onOpen = {
+                        store.clearFreshPeer(peer.id)
+                        store.openChatForPeer(peer.id)
+                    },
+                    onEdit = {
+                        store.clearFreshPeer(peer.id)
+                        store.openContactDetail(peer.id)
+                    },
                 )
                 HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
             }
@@ -96,6 +104,7 @@ private fun ContactRow(
     presenceLabel: String,
     nowSeconds: Long,
     inCall: Boolean,
+    isFresh: Boolean,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
 ) {
@@ -104,6 +113,7 @@ private fun ContactRow(
     val labelColor = when {
         inCall -> FG_IN_CALL
         retired -> FG_DIM
+        isFresh -> FG_FRESH
         peer.alias.isEmpty() && peer.nick.isEmpty() -> FG_DIM
         else -> FG_PRIMARY
     }
@@ -257,6 +267,9 @@ private val FG_PRIMARY = Color(0xFFEBDBB2)
 private val FG_DIM = Color(0xFF7C6F64)
 private val FG_LINK = Color(0xFF83A598)
 private val FG_IN_CALL = Color(0xFFCC241D)
+
+
+private val FG_FRESH = Color(0xFF5FCC1A)
 
 
 private val C_AVAILABLE = Color(0xFF5FCC1A) 

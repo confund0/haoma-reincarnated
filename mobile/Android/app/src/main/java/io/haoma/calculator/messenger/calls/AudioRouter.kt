@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -95,6 +96,31 @@ class AudioRouter(
     private var scoReceiverRegistered = false
 
     
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(added: Array<out AudioDeviceInfo>?) {
+            val summary = added?.joinToString(prefix = "[", postfix = "]") {
+                "id=${it.id} type=${it.type}(${typeName(it.type)})"
+            } ?: "[]"
+            Logger.i("audio", "device added $summary")
+            if (_inCallActive.value) {
+                dumpAllAudioDevices("device-added")
+                refresh()
+            }
+        }
+        override fun onAudioDevicesRemoved(removed: Array<out AudioDeviceInfo>?) {
+            val summary = removed?.joinToString(prefix = "[", postfix = "]") {
+                "id=${it.id} type=${it.type}(${typeName(it.type)})"
+            } ?: "[]"
+            Logger.i("audio", "device removed $summary")
+            if (_inCallActive.value) {
+                dumpAllAudioDevices("device-removed")
+                refresh()
+            }
+        }
+    }
+    private var audioDeviceCallbackRegistered = false
+
+    
     private var btRouteDesired = false
     private var scoRestartAttempts = 0
     private val scoRestartHandler = Handler(Looper.getMainLooper())
@@ -147,6 +173,7 @@ class AudioRouter(
         
         dumpAllAudioDevices("call-start")
         registerScoReceiver()
+        registerAudioDeviceCallback()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             commDeviceListener?.let {
                 try {
@@ -202,6 +229,7 @@ class AudioRouter(
 
     private fun onCallInactive() {
         Logger.i("audio", "in-call inactive — restoring MODE_NORMAL")
+        unregisterAudioDeviceCallback()
         unregisterScoReceiver()
         scoRestartHandler.removeCallbacksAndMessages(null)
         btRouteDesired = false
@@ -433,6 +461,29 @@ class AudioRouter(
             Logger.w("audio", "unregisterScoReceiver: ${t.message}")
         }
         scoReceiverRegistered = false
+    }
+
+    private fun registerAudioDeviceCallback() {
+        if (audioDeviceCallbackRegistered) return
+        try {
+            audio.registerAudioDeviceCallback(
+                audioDeviceCallback,
+                Handler(Looper.getMainLooper()),
+            )
+            audioDeviceCallbackRegistered = true
+        } catch (t: Throwable) {
+            Logger.w("audio", "registerAudioDeviceCallback: ${t.message}")
+        }
+    }
+
+    private fun unregisterAudioDeviceCallback() {
+        if (!audioDeviceCallbackRegistered) return
+        try {
+            audio.unregisterAudioDeviceCallback(audioDeviceCallback)
+        } catch (t: Throwable) {
+            Logger.w("audio", "unregisterAudioDeviceCallback: ${t.message}")
+        }
+        audioDeviceCallbackRegistered = false
     }
 
     private fun requestAudioFocus() {

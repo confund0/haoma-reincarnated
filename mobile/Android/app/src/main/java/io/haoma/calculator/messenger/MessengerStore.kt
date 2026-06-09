@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -110,6 +111,25 @@ class MessengerStore(
 
     internal val _recentInvites = MutableStateFlow<List<RecentInvite>>(emptyList())
     val recentInvites: StateFlow<List<RecentInvite>> = _recentInvites.asStateFlow()
+
+    
+    internal val _freshPeers = MutableStateFlow<Set<String>>(emptySet())
+    val freshPeers: StateFlow<Set<String>> = _freshPeers.asStateFlow()
+
+    
+    fun markFreshPeer(peerId: String) {
+        _freshPeers.update { it + peerId }
+    }
+
+    
+    fun clearFreshPeer(peerId: String) {
+        _freshPeers.update { it - peerId }
+    }
+
+    
+    fun clearAllFreshPeers() {
+        _freshPeers.value = emptySet()
+    }
 
     
     internal val _activeCalls = MutableStateFlow<Map<String, CallEntry>>(emptyMap())

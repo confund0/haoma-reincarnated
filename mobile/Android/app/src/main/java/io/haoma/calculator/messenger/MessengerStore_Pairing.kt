@@ -72,10 +72,25 @@ suspend fun MessengerStore.acceptOnion(words: List<String>, alias: String): Acce
             ?: return AcceptResult.Error("daemon returned empty payload")
         val label = accepted.nick.ifEmpty { "(no nick)" }
         appendStatus("paired (onion) — $label / ${shortChat(accepted.peerId)}")
+        markFreshPeer(accepted.peerId)
         AcceptResult.Ok(accepted)
     } catch (t: Throwable) {
         AcceptResult.Error(t.message ?: "unknown failure")
     }
+}
+
+
+fun MessengerStore.renamePendingInvite(handleId: String, alias: String) {
+    _pendingInvites.update { list ->
+        list.map {
+            if (it.handleId == handleId) it.copy(alias = alias.trim()) else it
+        }
+    }
+}
+
+
+fun MessengerStore.removeRecentInvite(handleId: String) {
+    _recentInvites.update { list -> list.filterNot { it.handleId == handleId } }
 }
 
 

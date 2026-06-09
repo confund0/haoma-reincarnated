@@ -81,6 +81,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!--
+            QR scanner host. Subclasses zxing-android-embedded's
+            CaptureActivity solely so we can pin portrait orientation —
+            the library default twists the device into landscape mid-pair,
+            which reads as broken on a phone-shape UX.
+        -->
+        <activity
+            android:name=".messenger.invites.PortraitCaptureActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:stateNotNeeded="true"
+            android:theme="@style/Theme.Haoma"
+            android:windowSoftInputMode="stateAlwaysHidden" />
         <service
             android:name=".core.HaomaCoreService"
             android:exported="false"

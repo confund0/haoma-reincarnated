@@ -36,7 +36,6 @@ import io.haoma.calculator.messenger.chat.ChatSettingsScreen
 import io.haoma.calculator.messenger.chats.ChatsTab
 import io.haoma.calculator.messenger.contacts.ContactDetailScreen
 import io.haoma.calculator.messenger.contacts.ContactsTab
-import io.haoma.calculator.messenger.invites.AcceptScreen
 import io.haoma.calculator.messenger.invites.InvitesTab
 import io.haoma.calculator.messenger.settings.SettingsSectionScreen
 import io.haoma.calculator.messenger.settings.SettingsTab
@@ -96,11 +95,6 @@ fun MessengerScaffold(store: MessengerStore) {
                     domain = screen.domain,
                     onBack = { store.popBack() },
                 )
-                is Screen.Accept -> AcceptScreen(
-                    store = store,
-                    type = screen.type,
-                    onBack = { store.popBack() },
-                )
             }
             
             
@@ -132,9 +126,11 @@ private fun KeepScreenOnDuringCalls(store: MessengerStore) {
 private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: MessengerStore) {
     val activeTab = (current as? Screen.Tabbed)?.tab
     val chats by store.chats.collectAsStateWithLifecycle()
+    val freshPeers by store.freshPeers.collectAsStateWithLifecycle()
     
     
     val anyUnread = chats.any { it.unreadCount > 0 }
+    val anyFreshContact = freshPeers.isNotEmpty()
     
     
     NavigationBar(
@@ -147,6 +143,12 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: 
             
             
             val unreadTint = entry.tab == Tab.Chats && anyUnread && !selected
+            val freshTint = entry.tab == Tab.Contacts && anyFreshContact && !selected
+            val accent = when {
+                unreadTint -> FG_UNREAD
+                freshTint -> FG_FRESH
+                else -> null
+            }
             
             
             NavigationBarItem(
@@ -159,7 +161,7 @@ private fun MessengerBottomBar(current: Screen, onSelect: (Tab) -> Unit, store: 
                             imageVector = iv,
                             contentDescription = entry.label,
                             modifier = Modifier.size(NAV_ICON_SIZE),
-                            tint = if (unreadTint) FG_UNREAD else LocalContentColor.current,
+                            tint = accent ?: LocalContentColor.current,
                         )
                     } else {
                         ReadinessStrip(store = store, onTap = { onSelect(entry.tab) })
@@ -179,7 +181,7 @@ private data class NavTabEntry(val tab: Tab, val label: String, val icon: ImageV
 private val NavTabs = listOf(
     NavTabEntry(Tab.Chats, "Chats", Icons.Filled.Email),
     NavTabEntry(Tab.Contacts, "Contacts", Icons.Filled.Person),
-    NavTabEntry(Tab.Invites, "Invites", Icons.Filled.Add),
+    NavTabEntry(Tab.Invites, "Add contact", Icons.Filled.Add),
     NavTabEntry(Tab.Settings, "Settings", Icons.Filled.Settings),
     NavTabEntry(Tab.Status, "Status", icon = null),
 )
@@ -223,3 +225,6 @@ private val FG_BAR_DISABLED = Color(0xFF504945)
 
 
 private val FG_UNREAD = Color(0xFFB16286)
+
+
+private val FG_FRESH = Color(0xFF5FCC1A)

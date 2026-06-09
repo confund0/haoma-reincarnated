@@ -29,13 +29,10 @@ sealed interface Screen {
     
     data class SettingsSection(val domain: String) : Screen
 
-    
-    data class Accept(val type: PairType) : Screen
 }
 
 
 enum class PairType(val label: String) {
     Tor("Tor"),
-    QR("QR"),
     DHT("DHT"),
 }

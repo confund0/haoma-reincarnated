@@ -15,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -140,14 +141,20 @@ fun PassphraseScreen(
                 ),
                 placeholder = { Text("Passphrase", color = Fg2.copy(alpha = 0.5f)) },
                 trailingIcon = {
+                    
+                    
                     IconButton(
                         onClick = { visible = !visible },
                         enabled = !submitting,
+                        modifier = Modifier.padding(end = 6.dp),
                     ) {
-                        Text(
-                            text = if (visible) "hide" else "show",
-                            color = Fg2,
-                            style = TextStyle(fontSize = 12.sp),
+                        Icon(
+                            
+                            
+                            imageVector = if (visible) EyeOpenVector else EyeOffVector,
+                            contentDescription = if (visible) "Hide passphrase" else "Show passphrase",
+                            tint = Fg2,
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                 },
