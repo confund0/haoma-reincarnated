@@ -181,23 +181,6 @@ fun ChatDetailScreen(
         if (target.chatId == chatId) FullScreenVideoViewer(store, target)
     }
 
-    
-    pendingAttachUri?.let { uri ->
-        val peerLabel = chat?.peerId?.let { store.peerLabelFor(it) } ?: ""
-        AttachPreviewScreen(
-            uri = uri,
-            peerLabel = peerLabel,
-            onPickAgain = {
-                pendingAttachUri = null
-                attachLauncher.launch(arrayOf("*/*"))
-            },
-            onSend = {
-                store.attachFromUri(chatId, uri)
-                pendingAttachUri = null
-            },
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -319,6 +302,23 @@ fun ChatDetailScreen(
             
             
             onAttach = { attachLauncher.launch(arrayOf("*/*")) },
+        )
+    }
+
+    
+    pendingAttachUri?.let { uri ->
+        val peerLabel = chat?.peerId?.let { store.peerLabelFor(it) } ?: ""
+        AttachPreviewScreen(
+            uri = uri,
+            peerLabel = peerLabel,
+            onPickAgain = {
+                pendingAttachUri = null
+                attachLauncher.launch(arrayOf("*/*"))
+            },
+            onSend = {
+                store.attachFromUri(chatId, uri)
+                pendingAttachUri = null
+            },
         )
     }
 

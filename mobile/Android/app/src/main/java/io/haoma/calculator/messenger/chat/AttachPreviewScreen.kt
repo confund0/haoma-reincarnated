@@ -1,20 +1,18 @@
 package io.haoma.calculator.messenger.chat
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,8 +38,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import io.haoma.calculator.saf.SafBridge
@@ -65,37 +61,24 @@ internal fun AttachPreviewScreen(
     }
 
     
-    Dialog(
-        onDismissRequest = onPickAgain,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-        ),
+    BackHandler { onPickAgain() }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ChatPalette.Surface),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(ChatPalette.Surface),
-        ) {
-            
-            
-            Column(
+        Column(modifier = Modifier.fillMaxSize()) {
+            HeaderRow(peerLabel = peerLabel, onPickAgain = onPickAgain)
+            Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing),
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center,
             ) {
-                HeaderRow(peerLabel = peerLabel, onPickAgain = onPickAgain)
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    PreviewBody(uri = uri, meta = meta)
-                }
-                MetaFooter(meta = meta)
-                SendRow(onSend = onSend)
+                PreviewBody(uri = uri, meta = meta)
             }
+            MetaFooter(meta = meta)
+            SendRow(onSend = onSend)
         }
     }
 }
