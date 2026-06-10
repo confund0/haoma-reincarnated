@@ -10,6 +10,7 @@ require (
 	github.com/rivo/tview v0.42.0
 	go.mau.fi/libsignal v0.2.1
 	golang.org/x/crypto v0.42.0
+	golang.org/x/image v0.42.0
 	golang.org/x/sys v0.38.0
 	golang.org/x/term v0.37.0
 )
@@ -31,6 +32,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 )

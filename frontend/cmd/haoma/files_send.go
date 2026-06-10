@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -19,8 +21,14 @@ import (
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/files"
+	"haoma-frontend/internal/imgstrip"
 	"haoma-frontend/internal/ipc"
 	"haoma-frontend/internal/msg"
+)
+
+const (
+	imageModeCompressed = "compressed"
+	imageModeOriginal   = "original"
 )
 
 type sendFileResult struct {
@@ -33,12 +41,16 @@ type sendFileResult struct {
 }
 
 func (sd *sessionDispatcher) handleSendFile(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
-	slog.Debug("handle send_file")
 	var req ipc.SendFileRequest
 	if err := json.Unmarshal(f.Payload, &req); err != nil {
 		sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
 		return
 	}
+	slog.Debug("handle send_file",
+		slog.String("peer_id", req.PeerID),
+		slog.String("path", req.Path),
+		slog.String("image_mode", req.ImageMode),
+	)
 	if req.PeerID == "" {
 		sendError(sess, f.ID, "bad_request", "peer_id empty")
 		return
@@ -63,7 +75,7 @@ func (sd *sessionDispatcher) handleSendFile(ctx context.Context, sess *ipc.Sessi
 		return
 	}
 
-	res, code, err := runSendFile(ctx, sd.d, dc, req.PeerID, req.Path)
+	res, code, err := runSendFile(ctx, sd.d, dc, req.PeerID, req.Path, req.ImageMode)
 	if err != nil {
 		sendError(sess, f.ID, code, err.Error())
 		return
@@ -86,10 +98,10 @@ func (sd *sessionDispatcher) handleSendFile(ctx context.Context, sess *ipc.Sessi
 	}
 }
 
-func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, path string) (sendFileResult, string, error) {
+func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, path, imageMode string) (sendFileResult, string, error) {
+
 	logger := slog.With(
 		slog.String("peer_id", peerID),
-		slog.String("path", path),
 	)
 
 	info, err := os.Stat(path)
@@ -113,6 +125,36 @@ func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, pa
 	}
 
 	name := filepath.Base(path)
+
+	imgStripDecision := "skipped_original"
+	imgStripInBytes := len(plaintext)
+	imgStripOutBytes := len(plaintext)
+	if imageMode != imageModeOriginal {
+		maxEdge := imgstrip.DefaultMaxLongEdge
+		stripped, ext, ierr := imgstrip.Process(plaintext, maxEdge)
+		switch {
+		case ierr == nil:
+			plaintext = stripped
+			name = renameWithExt(name, ext)
+			imgStripDecision = "applied"
+			imgStripOutBytes = len(stripped)
+		case errors.Is(ierr, imgstrip.ErrUnsupportedMIME):
+			imgStripDecision = "skipped_unsupported_mime"
+		default:
+			imgStripDecision = "failed_shipped_raw"
+			logger.Warn("imgstrip failed; shipping raw bytes",
+				slog.String("err_kind", "imgstrip"),
+				slog.Any("err", ierr),
+			)
+		}
+	}
+	logger.Debug("imgstrip decision",
+		slog.String("image_mode", imageMode),
+		slog.String("decision", imgStripDecision),
+		slog.Int("in_bytes", imgStripInBytes),
+		slog.Int("out_bytes", imgStripOutBytes),
+	)
+
 	mime := http.DetectContentType(plaintext)
 
 	key := make([]byte, chacha20poly1305.KeySize)
@@ -315,9 +357,10 @@ func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, pa
 		slog.String("msg_id", msgID),
 		slog.String("envelope_id", firstEnvelope),
 		slog.Uint64("sender_seq", firstSeq),
-		slog.String("name", name),
 		slog.Uint64("size", size),
 		slog.String("mime", mime),
+		slog.String("image_mode", imageMode),
+		slog.String("imgstrip", imgStripDecision),
 		slog.Int("recipients", len(recipients)),
 	)
 
@@ -349,4 +392,15 @@ func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+func renameWithExt(name, newExt string) string {
+	if newExt == "" || name == "" {
+		return name
+	}
+	stem := name
+	if dot := strings.LastIndex(name, "."); dot > 0 {
+		stem = name[:dot]
+	}
+	return stem + "." + newExt
 }

@@ -25,6 +25,16 @@ internal fun launchView(context: Context, path: String, mime: String) {
 }
 
 
+internal fun launchShare(context: Context, path: String, mime: String) {
+    try {
+        val intent = SafBridge.shareIntent(context, path, mime)
+        context.startActivity(Intent.createChooser(intent, "Share via"))
+    } catch (t: Throwable) {
+        Logger.w("file-action", "launchShare failed: ${t.message ?: "?"}")
+    }
+}
+
+
 internal fun copyImageToClipboard(context: Context, path: String) {
     try {
         val uri = SafBridge.fileProviderUri(context, path)

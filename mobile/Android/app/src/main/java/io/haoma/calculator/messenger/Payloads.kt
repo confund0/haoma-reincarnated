@@ -1408,10 +1408,11 @@ data class SyncSettingsRequest(
 }
 
 
-data class SendFileRequest(val peerId: String, val path: String) {
+data class SendFileRequest(val peerId: String, val path: String, val imageMode: String = "") {
     fun toJson(): JSONObject = JSONObject().apply {
         put("peer_id", peerId)
         put("path", path)
+        if (imageMode.isNotEmpty()) put("image_mode", imageMode)
     }
 }
 

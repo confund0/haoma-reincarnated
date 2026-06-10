@@ -246,7 +246,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 41
+const ProtocolVersion = 42
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -295,8 +295,9 @@ type SendTextResponse struct {
 }
 
 type SendFileRequest struct {
-	PeerID string `json:"peer_id"`
-	Path   string `json:"path"`
+	PeerID    string `json:"peer_id"`
+	Path      string `json:"path"`
+	ImageMode string `json:"image_mode,omitempty"`
 }
 
 type SendFileResponse struct {

@@ -50,6 +50,9 @@ type Manager struct {
 
 	mu     sync.RWMutex
 	master [32]byte
+
+	openMu         sync.Mutex
+	openTransients map[string]string
 }
 
 func NewManager(st *store.Store, dataDir string) (*Manager, error) {
@@ -67,7 +70,7 @@ func NewManager(st *store.Store, dataDir string) (*Manager, error) {
 		return nil, fmt.Errorf("files: chmod %s: %w", root, err)
 	}
 
-	m := &Manager{st: st, rootDir: root}
+	m := &Manager{st: st, rootDir: root, openTransients: make(map[string]string)}
 	if err := m.loadOrInitMaster(); err != nil {
 		return nil, err
 	}
@@ -308,28 +311,104 @@ func (m *Manager) OpenDir() string {
 	return filepath.Join(m.rootDir, OpenSubdir)
 }
 
-func (m *Manager) OpenPath(msgID string) (string, error) {
+const transientRandLen = 12
+
+var commonMimeExt = map[string]string{
+	"image/jpeg":      ".jpg",
+	"image/png":       ".png",
+	"image/gif":       ".gif",
+	"image/webp":      ".webp",
+	"image/heic":      ".heic",
+	"image/avif":      ".avif",
+	"video/mp4":       ".mp4",
+	"video/webm":      ".webm",
+	"video/quicktime": ".mov",
+	"audio/mpeg":      ".mp3",
+	"audio/ogg":       ".ogg",
+	"audio/opus":      ".opus",
+	"audio/wav":       ".wav",
+	"audio/flac":      ".flac",
+	"application/pdf": ".pdf",
+	"application/zip": ".zip",
+	"text/plain":      ".txt",
+}
+
+func transientExt(originalName, mimeType string) string {
+	if ext := filepath.Ext(originalName); ext != "" {
+		if isSafeExt(ext) {
+			return ext
+		}
+	}
+	if e, ok := commonMimeExt[mimeType]; ok {
+		return e
+	}
+	return ""
+}
+
+func isSafeExt(ext string) bool {
+	if len(ext) < 2 || len(ext) > 16 {
+		return false
+	}
+	if ext[0] != '.' {
+		return false
+	}
+	for _, r := range ext[1:] {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+		if r == '/' || r == '\\' || r == '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func newTransientBasename(ext string) (string, error) {
+	var b [transientRandLen / 2]byte
+	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
+		return "", fmt.Errorf("files: mint transient name: %w", err)
+	}
+	return hex.EncodeToString(b[:]) + ext, nil
+}
+
+func (m *Manager) WriteOpenTransient(chatID chat.ChatID, msgID string) (string, error) {
 	if msgID == "" {
 		return "", errors.New("files: empty msg id")
 	}
 	if !isHex(msgID) {
 		return "", fmt.Errorf("files: msg id %q is not hex", msgID)
 	}
-	return filepath.Join(m.OpenDir(), msgID), nil
-}
-
-func (m *Manager) WriteOpenTransient(chatID chat.ChatID, msgID string) (string, error) {
 	plaintext, err := m.UnsealAtRest(chatID, msgID)
 	if err != nil {
 		return "", err
 	}
-	dst, err := m.OpenPath(msgID)
+
+	ext := ""
+	if meta, mErr := m.GetMeta(msgID); mErr == nil {
+		ext = transientExt(meta.OriginalName, meta.Mime)
+	}
+
+	openDir := m.OpenDir()
+	if err := os.MkdirAll(openDir, dirMode); err != nil {
+		return "", fmt.Errorf("files: mkdir %s: %w", openDir, err)
+	}
+
+	basename, err := newTransientBasename(ext)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), dirMode); err != nil {
-		return "", fmt.Errorf("files: mkdir %s: %w", filepath.Dir(dst), err)
+	dst := filepath.Join(openDir, basename)
+
+	m.openMu.Lock()
+	prior, hadPrior := m.openTransients[msgID]
+	m.openMu.Unlock()
+
+	if hadPrior {
+		if err := os.Remove(prior); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("files: remove prior transient %s: %w", prior, err)
+		}
 	}
+
 	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileMode)
 	if err != nil {
 		return "", fmt.Errorf("files: open transient %s: %w", dst, err)
@@ -343,10 +422,20 @@ func (m *Manager) WriteOpenTransient(chatID chat.ChatID, msgID string) (string, 
 		_ = os.Remove(dst)
 		return "", fmt.Errorf("files: close transient %s: %w", dst, cerr)
 	}
+
+	m.openMu.Lock()
+	m.openTransients[msgID] = dst
+	m.openMu.Unlock()
+
 	return dst, nil
 }
 
 func (m *Manager) WipeOpenTransient() error {
+	m.openMu.Lock()
+	for k := range m.openTransients {
+		delete(m.openTransients, k)
+	}
+	m.openMu.Unlock()
 	if err := os.RemoveAll(m.OpenDir()); err != nil {
 		return fmt.Errorf("files: wipe open transient: %w", err)
 	}
@@ -357,9 +446,14 @@ func (m *Manager) WipeOpenTransientFor(msgID string) error {
 	if msgID == "" {
 		return nil
 	}
-	p, err := m.OpenPath(msgID)
-	if err != nil {
-		return err
+	m.openMu.Lock()
+	p, ok := m.openTransients[msgID]
+	if ok {
+		delete(m.openTransients, msgID)
+	}
+	m.openMu.Unlock()
+	if !ok {
+		return nil
 	}
 	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("files: wipe open transient %s: %w", msgID, err)

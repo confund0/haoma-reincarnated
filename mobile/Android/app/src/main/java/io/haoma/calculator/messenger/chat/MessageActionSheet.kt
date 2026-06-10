@@ -33,6 +33,8 @@ internal fun MessageActionSheet(
     onSaveImage: () -> Unit = {},
     onCopyImage: () -> Unit = {},
     onSaveVideo: () -> Unit = {},
+    onViewMedia: () -> Unit = {},
+    onShareAttachment: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState()
     val imageRow = target.isReadyImage()
@@ -48,11 +50,13 @@ internal fun MessageActionSheet(
                     
                     
                     ActionItem(label = "React", enabled = imageRow, onClick = onReact)
+                    ActionItem(label = "View", enabled = imageRow, onClick = onViewMedia)
                     ActionItem(
                         label = "Save as",
                         enabled = imageRow && !target.isOutbound,
                         onClick = onSaveImage,
                     )
+                    ActionItem(label = "Share", enabled = imageRow, onClick = onShareAttachment)
                     ActionItem(
                         label = "Delete",
                         enabled = canDelete(target),
@@ -71,11 +75,13 @@ internal fun MessageActionSheet(
                     
                     
                     ActionItem(label = "React", enabled = videoRow, onClick = onReact)
+                    ActionItem(label = "View", enabled = videoRow, onClick = onViewMedia)
                     ActionItem(
                         label = "Save as",
                         enabled = videoRow && !target.isOutbound,
                         onClick = onSaveVideo,
                     )
+                    ActionItem(label = "Share", enabled = videoRow, onClick = onShareAttachment)
                     ActionItem(
                         label = "Delete",
                         enabled = canDelete(target),
@@ -88,10 +94,16 @@ internal fun MessageActionSheet(
                 target.kind == EventKind.FILE -> {
                     
                     
+                    ActionItem(label = "React", enabled = canReact(target), onClick = onReact)
                     ActionItem(
                         label = "View attachment",
                         enabled = !target.isTombstoned,
                         onClick = onViewAttachment,
+                    )
+                    ActionItem(
+                        label = "Share",
+                        enabled = !target.isTombstoned,
+                        onClick = onShareAttachment,
                     )
                     ActionItem(
                         label = "Delete",
@@ -127,7 +139,7 @@ private const val MUTATION_WINDOW_SEC = 86_400L
 private fun nowSec(): Long = System.currentTimeMillis() / 1000L
 
 private fun canReact(t: TimelineEvent): Boolean =
-    t.kind == EventKind.TEXT && !t.isTombstoned
+    (t.kind == EventKind.TEXT || t.kind == EventKind.FILE) && !t.isTombstoned
 
 
 private fun canReply(t: TimelineEvent): Boolean =

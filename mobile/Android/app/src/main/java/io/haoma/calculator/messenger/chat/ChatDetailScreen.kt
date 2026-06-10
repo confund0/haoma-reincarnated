@@ -169,17 +169,8 @@ fun ChatDetailScreen(
         }
     }
 
-    
     val viewerTarget by store.viewerTarget.collectAsStateWithLifecycle()
-    viewerTarget?.let { target ->
-        if (target.chatId == chatId) FullScreenImageViewer(store, target)
-    }
-    
-    
     val videoViewerTarget by store.videoViewerTarget.collectAsStateWithLifecycle()
-    videoViewerTarget?.let { target ->
-        if (target.chatId == chatId) FullScreenVideoViewer(store, target)
-    }
 
     Column(
         modifier = Modifier
@@ -315,11 +306,17 @@ fun ChatDetailScreen(
                 pendingAttachUri = null
                 attachLauncher.launch(arrayOf("*/*"))
             },
-            onSend = {
-                store.attachFromUri(chatId, uri)
+            onSend = { compressed ->
+                store.attachFromUri(chatId, uri, compressed)
                 pendingAttachUri = null
             },
         )
+    }
+    viewerTarget?.let { target ->
+        if (target.chatId == chatId) FullScreenImageViewer(store, target)
+    }
+    videoViewerTarget?.let { target ->
+        if (target.chatId == chatId) FullScreenVideoViewer(store, target)
     }
 
     actionTarget?.let { target ->
@@ -375,6 +372,22 @@ fun ChatDetailScreen(
             },
             onSaveVideo = {
                 videoSaveTarget = target
+                actionTarget = null
+            },
+            onViewMedia = {
+                val mime = FileEventBody.fromJson(target.body).mime
+                scope.launch {
+                    val res = store.openFile(chatId, target.msgId) ?: return@launch
+                    launchView(context, res.path, mime)
+                }
+                actionTarget = null
+            },
+            onShareAttachment = {
+                val mime = FileEventBody.fromJson(target.body).mime
+                scope.launch {
+                    val res = store.openFile(chatId, target.msgId) ?: return@launch
+                    launchShare(context, res.path, mime)
+                }
                 actionTarget = null
             },
         )

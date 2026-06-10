@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,9 +67,15 @@ func TestHandleOpenFile_HappyPath_MIMEMatches(t *testing.T) {
 	if !p.MIMEMatches {
 		t.Errorf("MIMEMatches = false, want true (declared=%q sniffed=%q)", "image/png", p.SniffedMIME)
 	}
-	wantPath := filepath.Join(d.dataDir, files.SubdirName, files.OpenSubdir, testOpenMsgID)
-	if p.FullPath != wantPath {
-		t.Errorf("FullPath = %q, want %q", p.FullPath, wantPath)
+	wantDir := filepath.Join(d.dataDir, files.SubdirName, files.OpenSubdir)
+	if filepath.Dir(p.FullPath) != wantDir {
+		t.Errorf("FullPath parent = %q, want %q", filepath.Dir(p.FullPath), wantDir)
+	}
+	if filepath.Ext(p.FullPath) != ".png" {
+		t.Errorf("FullPath ext = %q, want .png (from OriginalName=thing.png)", filepath.Ext(p.FullPath))
+	}
+	if strings.Contains(filepath.Base(p.FullPath), testOpenMsgID) {
+		t.Errorf("FullPath basename %q leaks msgID", filepath.Base(p.FullPath))
 	}
 }
 

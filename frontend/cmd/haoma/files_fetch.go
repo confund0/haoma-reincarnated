@@ -38,9 +38,9 @@ func ingestFileOffer(ctx context.Context, d *daemon, chatID chat.ChatID, entry b
 		slog.String("chat_id", string(chatID)),
 		slog.String("token", body.Token),
 	)
+
 	logger.Info("inbound file_offer received",
 		slog.Uint64("size", body.Size),
-		slog.String("name", body.Name),
 		slog.String("mime", body.Mime),
 	)
 

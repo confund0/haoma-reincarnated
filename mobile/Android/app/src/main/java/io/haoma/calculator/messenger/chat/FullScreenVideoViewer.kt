@@ -39,8 +39,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.VideoViewerTarget
@@ -51,13 +49,10 @@ import kotlin.math.abs
 
 @Composable
 fun FullScreenVideoViewer(store: MessengerStore, target: VideoViewerTarget) {
-    Dialog(
-        onDismissRequest = { store.closeVideoViewer() },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = false,
-        ),
+    FullScreenOverlay(
+        onDismiss = { store.closeVideoViewer() },
+        background = Color.Black,
+        contentAlignment = Alignment.Center,
     ) {
         VideoViewerContent(store = store, target = target)
     }

@@ -792,9 +792,12 @@ func TestWriteOpenTransient_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteOpenTransient: %v", err)
 	}
-	want := filepath.Join(dir, files.SubdirName, files.OpenSubdir, testMsgA)
-	if got != want {
-		t.Errorf("path = %q, want %q", got, want)
+	openDir := filepath.Join(dir, files.SubdirName, files.OpenSubdir)
+	if filepath.Dir(got) != openDir {
+		t.Errorf("transient parent = %q, want %q", filepath.Dir(got), openDir)
+	}
+	if strings.Contains(filepath.Base(got), testMsgA) {
+		t.Errorf("transient basename %q leaks msgID %q", filepath.Base(got), testMsgA)
 	}
 
 	body, err := os.ReadFile(got)
@@ -813,7 +816,7 @@ func TestWriteOpenTransient_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestWriteOpenTransient_OverwritesPrior(t *testing.T) {
+func TestWriteOpenTransient_RerollsAndCleansPrior(t *testing.T) {
 	mgr, _, _ := newManager(t)
 	if _, err := mgr.SealAtRest(testChatID, testMsgA, []byte("v1-shorter")); err != nil {
 		t.Fatalf("SealAtRest v1: %v", err)
@@ -822,7 +825,6 @@ func TestWriteOpenTransient_OverwritesPrior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteOpenTransient v1: %v", err)
 	}
-
 	if _, err := mgr.SealAtRest(testChatID, testMsgA, []byte("v2-much-longer")); err != nil {
 		t.Fatalf("SealAtRest v2: %v", err)
 	}
@@ -830,15 +832,117 @@ func TestWriteOpenTransient_OverwritesPrior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteOpenTransient v2: %v", err)
 	}
-	if pathA != pathB {
-		t.Errorf("paths differ between calls: %q vs %q", pathA, pathB)
+	if pathA == pathB {
+		t.Errorf("paths matched between Open calls (random reroll missing): %q", pathA)
+	}
+	if _, err := os.Stat(pathA); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("prior transient survived re-Open: stat err = %v", err)
 	}
 	body, err := os.ReadFile(pathB)
 	if err != nil {
 		t.Fatalf("read transient: %v", err)
 	}
 	if string(body) != "v2-much-longer" {
-		t.Errorf("plaintext = %q, want v2-much-longer (re-Open should replace)", body)
+		t.Errorf("plaintext = %q, want v2-much-longer", body)
+	}
+}
+
+func TestWriteOpenTransient_ExtensionFromOriginalName(t *testing.T) {
+	mgr, _, _ := newManager(t)
+	if _, err := mgr.SealAtRest(testChatID, testMsgA, []byte("png-bytes")); err != nil {
+		t.Fatalf("SealAtRest: %v", err)
+	}
+	if err := mgr.PutMeta(files.Metadata{
+		MsgID:        testMsgA,
+		ChatID:       testChatID,
+		Direction:    files.DirIn,
+		OriginalName: "photo.png",
+		Mime:         "image/png",
+		State:        files.StateReady,
+	}); err != nil {
+		t.Fatalf("PutMeta: %v", err)
+	}
+	got, err := mgr.WriteOpenTransient(testChatID, testMsgA)
+	if err != nil {
+		t.Fatalf("WriteOpenTransient: %v", err)
+	}
+	if filepath.Ext(got) != ".png" {
+		t.Errorf("transient ext = %q, want .png", filepath.Ext(got))
+	}
+	if strings.Contains(filepath.Base(got), "photo") {
+		t.Errorf("transient basename %q leaks original filename", filepath.Base(got))
+	}
+}
+
+func TestWriteOpenTransient_ExtensionFromMimeFallback(t *testing.T) {
+	mgr, _, _ := newManager(t)
+	if _, err := mgr.SealAtRest(testChatID, testMsgA, []byte("mp4-bytes")); err != nil {
+		t.Fatalf("SealAtRest: %v", err)
+	}
+	if err := mgr.PutMeta(files.Metadata{
+		MsgID:        testMsgA,
+		ChatID:       testChatID,
+		Direction:    files.DirIn,
+		OriginalName: "",
+		Mime:         "video/mp4",
+		State:        files.StateReady,
+	}); err != nil {
+		t.Fatalf("PutMeta: %v", err)
+	}
+	got, err := mgr.WriteOpenTransient(testChatID, testMsgA)
+	if err != nil {
+		t.Fatalf("WriteOpenTransient: %v", err)
+	}
+	if filepath.Ext(got) != ".mp4" {
+		t.Errorf("transient ext = %q, want .mp4", filepath.Ext(got))
+	}
+}
+
+func TestWriteOpenTransient_NoExtensionForUnknownMime(t *testing.T) {
+	mgr, _, _ := newManager(t)
+	if _, err := mgr.SealAtRest(testChatID, testMsgA, []byte("opaque")); err != nil {
+		t.Fatalf("SealAtRest: %v", err)
+	}
+	if err := mgr.PutMeta(files.Metadata{
+		MsgID:        testMsgA,
+		ChatID:       testChatID,
+		Direction:    files.DirIn,
+		OriginalName: "",
+		Mime:         "application/x-not-in-table",
+		State:        files.StateReady,
+	}); err != nil {
+		t.Fatalf("PutMeta: %v", err)
+	}
+	got, err := mgr.WriteOpenTransient(testChatID, testMsgA)
+	if err != nil {
+		t.Fatalf("WriteOpenTransient: %v", err)
+	}
+	if ext := filepath.Ext(got); ext != "" {
+		t.Errorf("transient ext = %q, want empty", ext)
+	}
+}
+
+func TestWipeOpenTransientFor_RemovesNamedFile(t *testing.T) {
+	mgr, _, _ := newManager(t)
+	if _, err := mgr.SealAtRest(testChatID, testMsgA, []byte("hello")); err != nil {
+		t.Fatalf("SealAtRest: %v", err)
+	}
+	got, err := mgr.WriteOpenTransient(testChatID, testMsgA)
+	if err != nil {
+		t.Fatalf("WriteOpenTransient: %v", err)
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Fatalf("stat pre-wipe: %v", err)
+	}
+	if err := mgr.WipeOpenTransientFor(testMsgA); err != nil {
+		t.Fatalf("WipeOpenTransientFor: %v", err)
+	}
+	if _, err := os.Stat(got); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("transient survived per-msgID wipe: stat err = %v", err)
+	}
+
+	if err := mgr.WipeOpenTransientFor(testMsgA); err != nil {
+		t.Errorf("second WipeOpenTransientFor: %v", err)
 	}
 }
 

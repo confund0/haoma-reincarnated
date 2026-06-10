@@ -26,13 +26,13 @@ object SafBridge {
         val resolver = context.contentResolver
         val originalName = queryDisplayName(resolver, uri) ?: "attachment"
         val sourceMime = resolver.getType(uri).orEmpty()
-        val format = stripFormatFor(sourceMime)
-        val finalName = if (format != null) renameForFormat(originalName, format) else originalName
+        val normalize = needsFrameworkNormalize(sourceMime)
+        val finalName = if (normalize) renameToJpeg(originalName) else originalName
         val safe = sanitizeName(finalName)
         val dir = ensureDir(File(context.cacheDir, SAF_IN_DIR))
         val dest = File(dir, "${randomToken()}-$safe")
-        val stripped = format != null && tryStripImage(resolver, uri, format, dest)
-        if (!stripped) {
+        val normalized = normalize && tryNormalizeToJpeg(resolver, uri, dest)
+        if (!normalized) {
             
             
             resolver.openInputStream(uri).use { input ->
@@ -42,43 +42,35 @@ object SafBridge {
         }
         Logger.d(
             "saf",
-            "copy-in: $uri → ${dest.absolutePath} (${dest.length()} bytes, mime=$sourceMime, stripped=$stripped)",
+            "copy-in: $uri → ${dest.absolutePath} (${dest.length()} bytes, mime=$sourceMime, normalized=$normalized)",
         )
-        return CopyInResult(path = dest.absolutePath, displayName = if (stripped) finalName else originalName)
+        return CopyInResult(path = dest.absolutePath, displayName = if (normalized) finalName else originalName)
     }
 
     
-    private fun tryStripImage(
-        resolver: ContentResolver,
-        uri: Uri,
-        format: Bitmap.CompressFormat,
-        dest: File,
-    ): Boolean {
+    private fun tryNormalizeToJpeg(resolver: ContentResolver, uri: Uri, dest: File): Boolean {
         var bitmap: Bitmap? = null
         return try {
             bitmap = resolver.openInputStream(uri).use { input ->
                 requireNotNull(input) { "saf: openInputStream returned null for $uri" }
                 BitmapFactory.decodeStream(input)
             } ?: return run {
-                Logger.w("saf", "exif-strip: decodeStream returned null for $uri; sending raw")
+                Logger.w("saf", "heic-normalize: decodeStream returned null for $uri; sending raw")
                 false
             }
-            val quality = if (format == Bitmap.CompressFormat.PNG) 100 else JPEG_QUALITY
             FileOutputStream(dest).use { out ->
-                if (!bitmap.compress(format, quality, out)) {
-                    Logger.w("saf", "exif-strip: compress returned false for $uri; sending raw")
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)) {
+                    Logger.w("saf", "heic-normalize: compress returned false for $uri; sending raw")
                     return false
                 }
             }
             true
         } catch (t: OutOfMemoryError) {
-            Logger.w("saf", "exif-strip OOM for $uri; sending raw")
-            
-            
+            Logger.w("saf", "heic-normalize OOM for $uri; sending raw")
             dest.delete()
             false
         } catch (t: Throwable) {
-            Logger.w("saf", "exif-strip failed for $uri; sending raw: ${t.message ?: "?"}")
+            Logger.w("saf", "heic-normalize failed for $uri; sending raw: ${t.message ?: "?"}")
             dest.delete()
             false
         } finally {
@@ -128,6 +120,17 @@ object SafBridge {
     fun fileProviderUri(context: Context, path: String): Uri {
         val authority = context.packageName + PROVIDER_AUTHORITY_SUFFIX
         return FileProvider.getUriForFile(context, authority, File(path))
+    }
+
+    
+    fun shareIntent(context: Context, path: String, mime: String): Intent {
+        val uri = fileProviderUri(context, path)
+        return Intent(Intent.ACTION_SEND).apply {
+            type = mime.ifEmpty { "*/*" }
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
 
     fun deleteCacheCopy(path: String) {
@@ -185,27 +188,37 @@ object SafBridge {
     }
 
     
-    private fun stripFormatFor(mime: String): Bitmap.CompressFormat? {
-        if (mime.isEmpty()) return null
-        val m = mime.lowercase(Locale.US)
-        if (!m.startsWith("image/")) return null
-        return when (m) {
-            "image/jpeg", "image/jpg", "image/heic", "image/heif", "image/webp", "image/avif" ->
-                Bitmap.CompressFormat.JPEG
-            "image/png" -> Bitmap.CompressFormat.PNG
-            else -> null
+    private fun needsFrameworkNormalize(mime: String): Boolean {
+        if (mime.isEmpty()) return false
+        return when (mime.lowercase(Locale.US)) {
+            "image/heic", "image/heif", "image/avif" -> true
+            else -> false
         }
     }
 
     
-    private fun renameForFormat(originalName: String, format: Bitmap.CompressFormat): String {
-        val ext = when (format) {
-            Bitmap.CompressFormat.PNG -> "png"
-            else -> "jpg"
-        }
+    private fun renameToJpeg(originalName: String): String {
         val dot = originalName.lastIndexOf('.')
         val stem = if (dot > 0) originalName.substring(0, dot) else originalName
-        return "$stem.$ext"
+        return "$stem.jpg"
+    }
+
+    
+    fun peekImageDims(context: Context, uri: Uri): ImageDims? {
+        val resolver = context.contentResolver
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        return try {
+            resolver.openInputStream(uri).use { input ->
+                if (input == null) return null
+                BitmapFactory.decodeStream(input, null, opts)
+            }
+            val w = opts.outWidth
+            val h = opts.outHeight
+            if (w <= 0 || h <= 0) null else ImageDims(width = w, height = h)
+        } catch (t: Throwable) {
+            Logger.w("saf", "peekImageDims failed for $uri: ${t.message ?: "?"}")
+            null
+        }
     }
 
     private const val JPEG_QUALITY = 90
@@ -215,3 +228,6 @@ data class CopyInResult(val path: String, val displayName: String)
 
 
 data class UriMetadata(val displayName: String, val mime: String, val sizeBytes: Long)
+
+
+data class ImageDims(val width: Int, val height: Int)

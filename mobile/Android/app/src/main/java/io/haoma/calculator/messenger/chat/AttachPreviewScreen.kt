@@ -1,8 +1,8 @@
 package io.haoma.calculator.messenger.chat
 
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,11 +40,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import io.haoma.calculator.saf.ImageDims
 import io.haoma.calculator.saf.SafBridge
 import io.haoma.calculator.saf.UriMetadata
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.math.max
 
 
 @Composable
@@ -52,20 +54,30 @@ internal fun AttachPreviewScreen(
     uri: Uri,
     peerLabel: String,
     onPickAgain: () -> Unit,
-    onSend: () -> Unit,
+    onSend: (compressed: Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     var meta by remember(uri) { mutableStateOf<UriMetadata?>(null) }
+    var dims by remember(uri) { mutableStateOf<ImageDims?>(null) }
+    
+    var compressed by remember(uri) { mutableStateOf(true) }
+
     LaunchedEffect(uri) {
         meta = withContext(Dispatchers.IO) { SafBridge.peekMetadata(context, uri) }
+        dims = withContext(Dispatchers.IO) { SafBridge.peekImageDims(context, uri) }
     }
 
+    val sizeBytes = meta?.sizeBytes ?: 0L
+    val toggleEnabled = isCompressibleImage(meta) && sizeBytes >= MIN_TOGGLE_BYTES
     
-    BackHandler { onPickAgain() }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ChatPalette.Surface),
+    
+    val effectiveCompressed = if (toggleEnabled) compressed else true
+    val estimatedBytes = if (effectiveCompressed && isCompressibleImage(meta))
+        estimateCompressedBytes(sizeBytes, dims) else null
+
+    FullScreenOverlay(
+        onDismiss = onPickAgain,
+        background = ChatPalette.Surface,
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             HeaderRow(peerLabel = peerLabel, onPickAgain = onPickAgain)
@@ -77,8 +89,14 @@ internal fun AttachPreviewScreen(
             ) {
                 PreviewBody(uri = uri, meta = meta)
             }
-            MetaFooter(meta = meta)
-            SendRow(onSend = onSend)
+            MetaFooter(
+                meta = meta,
+                compressed = effectiveCompressed,
+                estimatedBytes = estimatedBytes,
+                toggleEnabled = toggleEnabled,
+                onToggle = { compressed = !compressed },
+            )
+            SendRow(onSend = { onSend(effectiveCompressed) })
         }
     }
 }
@@ -164,7 +182,13 @@ private fun NonImagePlaceholder(label: String, accent: Color) {
 }
 
 @Composable
-private fun MetaFooter(meta: UriMetadata?) {
+private fun MetaFooter(
+    meta: UriMetadata?,
+    compressed: Boolean,
+    estimatedBytes: Long?,
+    toggleEnabled: Boolean,
+    onToggle: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -178,11 +202,32 @@ private fun MetaFooter(meta: UriMetadata?) {
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = subtitleFor(meta),
+            text = subtitleFor(meta, compressed, estimatedBytes),
             color = ChatPalette.TextDim,
-            fontSize = 12.sp,
+            
+            
+            fontSize = 14.sp,
         )
+        if (toggleEnabled) {
+            Spacer(modifier = Modifier.height(6.dp))
+            SizeToggleRow(compressed = compressed, onToggle = onToggle)
+        }
     }
+}
+
+@Composable
+private fun SizeToggleRow(compressed: Boolean, onToggle: () -> Unit) {
+    val label = if (compressed) "size: compressed (tap for original)" else "size: original (tap for compressed)"
+    Text(
+        text = label,
+        color = ChatPalette.Accent,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(vertical = 4.dp),
+    )
 }
 
 @Composable
@@ -211,14 +256,17 @@ private fun SendRow(onSend: () -> Unit) {
     }
 }
 
-private fun subtitleFor(meta: UriMetadata?): String {
+internal fun subtitleFor(meta: UriMetadata?, compressed: Boolean, estimatedBytes: Long?): String {
     if (meta == null) return ""
-    val sizeStr = humanBytesShort(meta.sizeBytes)
     val mimeStr = meta.mime.ifEmpty { "unknown" }
+    val sizeStr = when {
+        compressed && estimatedBytes != null && estimatedBytes > 0L -> "~${humanBytesShort(estimatedBytes)}"
+        else -> humanBytesShort(meta.sizeBytes)
+    }
     return if (sizeStr.isEmpty()) mimeStr else "$sizeStr · $mimeStr"
 }
 
-private fun humanBytesShort(bytes: Long): String {
+internal fun humanBytesShort(bytes: Long): String {
     if (bytes <= 0L) return ""
     if (bytes < 1024L) return "${bytes} B"
     val units = arrayOf("KB", "MB", "GB", "TB")
@@ -229,6 +277,36 @@ private fun humanBytesShort(bytes: Long): String {
         i++
     }
     return String.format(Locale.US, "%.1f %s", v, units[i])
+}
+
+
+private const val MIN_TOGGLE_BYTES = 500_000L
+
+
+private const val DAEMON_LONG_EDGE = 1920
+
+
+internal fun isCompressibleImage(meta: UriMetadata?): Boolean {
+    val mime = meta?.mime?.lowercase(Locale.US) ?: return false
+    return when (mime) {
+        "image/jpeg", "image/jpg", "image/png", "image/webp",
+        "image/heic", "image/heif", "image/avif" -> true
+        else -> false
+    }
+}
+
+
+internal fun estimateCompressedBytes(sourceBytes: Long, dims: ImageDims?): Long? {
+    if (sourceBytes <= 0L) return null
+    if (dims == null) return null
+    val longEdge = max(dims.width, dims.height)
+    if (longEdge <= 0) return null
+    return if (longEdge <= DAEMON_LONG_EDGE) {
+        (sourceBytes * 0.95).toLong()
+    } else {
+        val ratio = DAEMON_LONG_EDGE.toDouble() / longEdge
+        (sourceBytes * ratio * ratio).toLong()
+    }
 }
 
 private fun extensionFor(meta: UriMetadata?): String {

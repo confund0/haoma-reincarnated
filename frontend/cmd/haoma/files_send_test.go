@@ -6,11 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -165,7 +169,7 @@ func TestRunSendFile_HappyPath(t *testing.T) {
 	plaintext := []byte("the cake is most assuredly a lie\n")
 	path := writeTempFile(t, plaintext)
 
-	res, code, err := runSendFile(context.Background(), d, dc, peerID, path)
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
 	if err != nil {
 		t.Fatalf("runSendFile: code=%q err=%v", code, err)
 	}
@@ -302,7 +306,7 @@ func TestRunSendFile_OversizedRefuses(t *testing.T) {
 	huge := make([]byte, files.MaxPlaintextBytes+1)
 	path := writeTempFile(t, huge)
 
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, path)
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
 	if err == nil {
 		t.Fatal("expected too_large error, got nil")
 	}
@@ -326,7 +330,7 @@ func TestRunSendFile_MissingPath(t *testing.T) {
 	preEstablishSession(t, d, peerID)
 	dc, _ := d.chats.GetByDirectPeer(peerID)
 
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, filepath.Join(t.TempDir(), "no-such-file"))
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, filepath.Join(t.TempDir(), "no-such-file"), "")
 	if err == nil {
 		t.Fatal("expected file_open error, got nil")
 	}
@@ -348,7 +352,7 @@ func TestRunSendFile_DirectoryRefuses(t *testing.T) {
 	dc, _ := d.chats.GetByDirectPeer(peerID)
 
 	dir := t.TempDir()
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, dir)
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, dir, "")
 	if err == nil {
 		t.Fatal("expected directory rejection, got nil")
 	}
@@ -370,7 +374,7 @@ func TestRunSendFile_NoSession_EncryptFailedDropsBlob(t *testing.T) {
 	plaintext := []byte("never goes anywhere")
 	path := writeTempFile(t, plaintext)
 
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, path)
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
 	if err == nil {
 		t.Fatal("expected encrypt_failed error, got nil")
 	}
@@ -414,7 +418,7 @@ func TestRunSendFile_OfferShapeMatchesStaging(t *testing.T) {
 	plaintext := []byte("shape check")
 	path := writeTempFile(t, plaintext)
 
-	res, code, err := runSendFile(context.Background(), d, dc, peerID, path)
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
 	if err != nil {
 		t.Fatalf("runSendFile: code=%q err=%v", code, err)
 	}
@@ -454,5 +458,109 @@ func TestRunSendFile_OfferShapeMatchesStaging(t *testing.T) {
 
 	if msg.KindFileOffer == "" {
 		t.Fatal("msg.KindFileOffer constant missing — wire schema regression")
+	}
+}
+
+func makeJPEGForTest(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: uint8(x ^ y), A: 0xff})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatalf("encode test jpeg: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestRunSendFile_ImageModeCompressedDownsizes(t *testing.T) {
+	stub := startSendFileStub(t)
+	d := newSendFileTestDaemon(t, stub)
+	const peerID = "0000000000000000000000000000abcd"
+	preEstablishSession(t, d, peerID)
+	dc, _ := d.chats.GetByDirectPeer(peerID)
+
+	plaintext := makeJPEGForTest(t, 4000, 3000)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "photo.heic")
+	if err := os.WriteFile(path, plaintext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "compressed")
+	if err != nil {
+		t.Fatalf("runSendFile: code=%q err=%v", code, err)
+	}
+
+	if !strings.HasSuffix(res.Name, ".jpg") {
+		t.Errorf("name = %q; want .jpg suffix after imgstrip rename", res.Name)
+	}
+	if res.Mime != "image/jpeg" {
+		t.Errorf("mime = %q; want image/jpeg (re-sniffed post-strip)", res.Mime)
+	}
+
+	out, err := d.files.UnsealAtRest(dc.ID, res.MsgID)
+	if err != nil {
+		t.Fatalf("UnsealAtRest: %v", err)
+	}
+	if len(out) >= len(plaintext) {
+		t.Errorf("unsealed plaintext (%d) not smaller than input (%d) — imgstrip didn't downsize",
+			len(out), len(plaintext))
+	}
+	if http.DetectContentType(out) != "image/jpeg" {
+		t.Errorf("unsealed bytes mime = %q; want image/jpeg", http.DetectContentType(out))
+	}
+}
+
+func TestRunSendFile_ImageModeOriginalPassesThrough(t *testing.T) {
+	stub := startSendFileStub(t)
+	d := newSendFileTestDaemon(t, stub)
+	const peerID = "0000000000000000000000000000ef00"
+	preEstablishSession(t, d, peerID)
+	dc, _ := d.chats.GetByDirectPeer(peerID)
+
+	plaintext := makeJPEGForTest(t, 4000, 3000)
+	path := writeTempFile(t, plaintext)
+
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "original")
+	if err != nil {
+		t.Fatalf("runSendFile: code=%q err=%v", code, err)
+	}
+	out, err := d.files.UnsealAtRest(dc.ID, res.MsgID)
+	if err != nil {
+		t.Fatalf("UnsealAtRest: %v", err)
+	}
+	if !bytes.Equal(out, plaintext) {
+		t.Errorf("original-mode plaintext modified: got %d bytes, want %d (bit-exact)",
+			len(out), len(plaintext))
+	}
+}
+
+func TestRunSendFile_ImageModeCompressedNonImageBypass(t *testing.T) {
+	stub := startSendFileStub(t)
+	d := newSendFileTestDaemon(t, stub)
+	const peerID = "0000000000000000000000000000f100"
+	preEstablishSession(t, d, peerID)
+	dc, _ := d.chats.GetByDirectPeer(peerID)
+
+	plaintext := []byte("not an image; should pass through compressed mode untouched\n")
+	path := writeTempFile(t, plaintext)
+
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "compressed")
+	if err != nil {
+		t.Fatalf("runSendFile: code=%q err=%v", code, err)
+	}
+	if !strings.HasSuffix(res.Name, ".bin") && !strings.Contains(res.Name, "payload") {
+		t.Logf("res.Name = %q (no assertion — non-image keeps original name)", res.Name)
+	}
+	out, err := d.files.UnsealAtRest(dc.ID, res.MsgID)
+	if err != nil {
+		t.Fatalf("UnsealAtRest: %v", err)
+	}
+	if !bytes.Equal(out, plaintext) {
+		t.Errorf("non-image bytes were modified by imgstrip — should bypass on ErrUnsupportedMIME")
 	}
 }
