@@ -95,7 +95,7 @@ android-bins:
 
 android: android-bins
 	mkdir -p $(BINS)
-	$(MAKE) -C $(ANDROID) build
+	$(MAKE) -C $(ANDROID) VERSION=$(VERSION) build
 	cp $(APK_DEBUG) $(BINS)/haoma-debug.apk
 	@ls -la $(BINS)/haoma-debug.apk
 
@@ -106,7 +106,7 @@ android: android-bins
 android-release: android-bins
 	@test -n "$$HAOMA_RELEASE_KEYSTORE" || (echo "FATAL: HAOMA_RELEASE_KEYSTORE not set"; exit 1)
 	mkdir -p $(BINS)
-	$(MAKE) -C $(ANDROID) release
+	$(MAKE) -C $(ANDROID) VERSION=$(VERSION) release
 	cp $(APK_RELEASE) $(BINS)/haoma-release.apk
 	@ls -la $(BINS)/haoma-release.apk
 

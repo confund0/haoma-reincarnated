@@ -11,8 +11,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import io.haoma.calculator.messenger.EventKind
+import io.haoma.calculator.messenger.LocalHaomaTypography
 import io.haoma.calculator.messenger.TimelineEvent
 
 
@@ -37,7 +37,7 @@ internal fun SystemBreadcrumb(event: TimelineEvent, modifier: Modifier = Modifie
             color = breadcrumbColor(event),
             fontFamily = FontFamily.Monospace,
             fontStyle = FontStyle.Italic,
-            fontSize = 13.sp,
+            fontSize = LocalHaomaTypography.current.breadcrumb,
         )
     }
 }

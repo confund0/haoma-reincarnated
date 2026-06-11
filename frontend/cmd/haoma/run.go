@@ -63,6 +63,8 @@ type daemon struct {
 
 	selfNickCache atomic.Pointer[string]
 
+	chatFontScaleCache atomic.Pointer[float64]
+
 	presenceCache *presence.Cache
 
 	settingsSnapshot atomic.Pointer[ipc.Settings]
@@ -207,6 +209,9 @@ func run(ctx context.Context, cfg config) error {
 	if err := d.loadSelfNickInto(); err != nil {
 		return fmt.Errorf("load self-nick: %w", err)
 	}
+	if err := d.loadChatFontScaleInto(); err != nil {
+		return fmt.Errorf("load chat-font-scale: %w", err)
+	}
 
 	tlsCfg, err := ipc.LoadOrCreateTLS(dataDir)
 	if err != nil {
@@ -225,6 +230,7 @@ func run(ctx context.Context, cfg config) error {
 	srv.WelcomeAugment = func(wp ipc.WelcomePayload) ipc.WelcomePayload {
 		wp.SelfNick = d.selfNick()
 		wp.SelfNickIsDefault = d.selfNickIsDefault()
+		wp.ChatFontScale = d.chatFontScale()
 		return wp
 	}
 

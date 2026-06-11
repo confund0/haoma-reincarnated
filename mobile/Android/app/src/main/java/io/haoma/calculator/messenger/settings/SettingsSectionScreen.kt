@@ -29,6 +29,7 @@ fun SettingsSectionScreen(
 ) {
     when (domain) {
         SettingsDomains.Profile -> ProfileSection(store, onBack)
+        SettingsDomains.Appearance -> AppearanceSection(store, onBack)
         SettingsDomains.Defaults -> ChatDefaultsSection(store, onBack)
         SettingsDomains.Files -> FilesSection(store, onBack)
         SettingsDomains.Notifications -> NotificationsSection(store, onBack)

@@ -120,6 +120,9 @@ const (
 	FrameSetNick FrameType = "set_nick"
 	FrameNick    FrameType = "system.self-nick-changed"
 
+	FrameSetChatFontScale FrameType = "set_chat_font_scale"
+	FrameChatFontScale    FrameType = "system.chat-font-scale-changed"
+
 	FramePeerPaired FrameType = "pair.completed"
 
 	FrameSubscribe  FrameType = "subscribe"
@@ -240,13 +243,14 @@ type HelloPayload struct {
 }
 
 type WelcomePayload struct {
-	DaemonVersion     string `json:"daemon_version"`
-	ProtocolVersion   int    `json:"protocol_version"`
-	SelfNick          string `json:"self_nick,omitempty"`
-	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
+	DaemonVersion     string  `json:"daemon_version"`
+	ProtocolVersion   int     `json:"protocol_version"`
+	SelfNick          string  `json:"self_nick,omitempty"`
+	SelfNickIsDefault bool    `json:"self_nick_is_default,omitempty"`
+	ChatFontScale     float64 `json:"chat_font_scale,omitempty"`
 }
 
-const ProtocolVersion = 43
+const ProtocolVersion = 44
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -719,6 +723,14 @@ type PeerLastSeenChangedPayload struct {
 
 type SetNickRequest struct {
 	Nick string `json:"nick"`
+}
+
+type SetChatFontScaleRequest struct {
+	Scale float64 `json:"scale"`
+}
+
+type ChatFontScalePayload struct {
+	Scale float64 `json:"scale"`
 }
 
 type FileProgressPayload struct {

@@ -17,6 +17,7 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                     selfNickIsDefault = w.selfNickIsDefault,
                     daemonVersion = w.daemonVersion,
                     protocolVersion = w.protocolVersion,
+                    chatFontScale = w.chatFontScale,
                 )
             }
             appendStatus("welcome — daemon ${w.daemonVersion} (protocol v${w.protocolVersion})")
@@ -31,6 +32,11 @@ internal fun MessengerStore.dispatch(frame: Frame) {
             val n = NickPayload.fromJson(payload)
             _health.update { it.copy(selfNick = n.nick, selfNickIsDefault = n.isDefault) }
             appendStatus("self-nick → ${n.nick}")
+        }
+
+        FrameType.ChatFontScale -> if (payload != null) {
+            val p = ChatFontScalePayload.fromJson(payload)
+            _health.update { it.copy(chatFontScale = p.scale) }
         }
 
         FrameType.BackendStatus -> if (payload != null) {

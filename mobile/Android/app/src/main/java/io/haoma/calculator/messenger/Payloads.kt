@@ -25,6 +25,7 @@ data class WelcomePayload(
     val protocolVersion: Int,
     val selfNick: String,
     val selfNickIsDefault: Boolean,
+    val chatFontScale: Float,
 ) {
     companion object {
         fun fromJson(o: JSONObject): WelcomePayload = WelcomePayload(
@@ -32,6 +33,9 @@ data class WelcomePayload(
             protocolVersion = o.optInt("protocol_version", 0),
             selfNick = o.optStringOrEmpty("self_nick"),
             selfNickIsDefault = o.optBoolean("self_nick_is_default", false),
+            
+            
+            chatFontScale = o.optDouble("chat_font_scale", 1.0).toFloat(),
         )
     }
 }
@@ -399,6 +403,19 @@ data class SetNickRequest(val nick: String) {
 
 data class SetTorPasswordRequest(val password: String) {
     fun toJson(): JSONObject = JSONObject().apply { put("password", password) }
+}
+
+
+data class SetChatFontScaleRequest(val scale: Float) {
+    fun toJson(): JSONObject = JSONObject().apply { put("scale", scale.toDouble()) }
+}
+
+data class ChatFontScalePayload(val scale: Float) {
+    companion object {
+        fun fromJson(o: JSONObject): ChatFontScalePayload = ChatFontScalePayload(
+            scale = o.optDouble("scale", 1.0).toFloat(),
+        )
+    }
 }
 
 

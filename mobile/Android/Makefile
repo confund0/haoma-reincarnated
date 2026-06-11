@@ -6,6 +6,16 @@ ANDROID_HOME := $(SDK_ROOT)/android
 BUILD_TOOLS  := $(ANDROID_HOME)/build-tools/35.0.0
 APK          := app/build/outputs/apk/debug/app-debug.apk
 
+# tools/release.sh passes VERSION=$TAG so the APK's versionName matches
+# the git tag stamped into the Go binaries' ldflags. Bare dev builds
+# omit it; build.gradle.kts falls back to "dev". Empty + non-blank
+# guard so `-PversionName=` (with nothing after the =) never lands.
+ifneq ($(strip $(VERSION)),)
+    GRADLE_PROPS := -PversionName=$(VERSION)
+else
+    GRADLE_PROPS :=
+endif
+
 # Telemetry kill-switches. See docs/MOBILE-PRIVACY.md.
 # Proxy: project scope ignores host HTTP_PROXY/HTTPS_PROXY — we talk to
 # dl.google.com / maven repos directly (host proxy is corp/cache-flavoured
@@ -49,11 +59,11 @@ bootstrap:
 	./bootstrap.sh
 
 build:
-	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon assembleDebug'
+	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon $(GRADLE_PROPS) assembleDebug'
 	@ls -la $(APK)
 
 release:
-	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon assembleRelease'
+	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon $(GRADLE_PROPS) assembleRelease'
 
 clean:
 	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew clean'

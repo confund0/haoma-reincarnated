@@ -66,8 +66,8 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     val snapshot = initial
     if (snapshot == null) {
         Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
-            SectionHeader(title = "Lock", store = store, onBack = onBack)
-            VaultUnavailableBanner(message = "Vault session unavailable — re-unlock the app to edit Lock settings.")
+            SectionHeader(title = "Security", store = store, onBack = onBack)
+            VaultUnavailableBanner(message = "Vault session unavailable — re-unlock the app to edit Security settings.")
         }
         return
     }
@@ -115,7 +115,7 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     }
 
     Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
-        SectionHeader(title = "Lock", store = store, onBack = onBack)
+        SectionHeader(title = "Security", store = store, onBack = onBack)
         DirtyBar(
             visible = dirty && !saving,
             onTap = { coroutineScope.launch { scrollState.animateScrollTo(scrollState.maxValue) } },

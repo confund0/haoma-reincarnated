@@ -106,6 +106,34 @@ fun MessengerStore.setSelfNick(nick: String) {
 }
 
 
+fun MessengerStore.setChatFontScale(scale: Float) {
+    scope.launch {
+        val c = ipc ?: run {
+            appendStatus("font-scale: ipc not connected", level = StatusLevel.WARN)
+            return@launch
+        }
+        try {
+            val reply = c.request(
+                type = FrameType.SetChatFontScale,
+                payload = SetChatFontScaleRequest(scale).toJson(),
+            )
+            if (reply.type == FrameType.Error) {
+                val err = reply.payload?.let(ErrorPayload::fromJson)
+                appendStatus(
+                    "font-scale error: ${err?.message ?: "?"}",
+                    level = StatusLevel.WARN,
+                )
+            }
+        } catch (t: Throwable) {
+            appendStatus(
+                "font-scale failed: ${t.message ?: "?"}",
+                level = StatusLevel.WARN,
+            )
+        }
+    }
+}
+
+
 fun MessengerStore.setTorPassword(password: String) {
     scope.launch {
         appendStatus("set-tor-password: re-sealing vault…")

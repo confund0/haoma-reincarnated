@@ -3,6 +3,7 @@ package io.haoma.calculator.messenger.settings
 
 internal object SettingsDomains {
     const val Profile = "profile"
+    const val Appearance = "appearance"
     const val Defaults = "defaults"
     const val Files = "files"
     const val Lock = "lock"
@@ -13,18 +14,21 @@ internal object SettingsDomains {
     val Order: List<String> = listOf(
         Profile,
         Defaults,
-        Files,
-        Lock,
-        Tor,
         Notifications,
+        Lock,
+        Appearance,
+        Files,
+        Tor,
         Advanced,
     )
 
+    
     val Labels: Map<String, String> = mapOf(
         Profile to "Profile",
+        Appearance to "Appearance",
         Defaults to "Chat defaults",
         Files to "Files",
-        Lock to "Lock",
+        Lock to "Security",
         Tor to "Tor",
         Notifications to "Notifications",
         Advanced to "Advanced",
@@ -33,6 +37,7 @@ internal object SettingsDomains {
     
     val Hints: Map<String, String> = mapOf(
         Profile to "Self nick",
+        Appearance to "Chat font size",
         Defaults to "Disappearing messages, read receipts",
         Files to "Handled by the system file picker",
         Lock to "Idle action, panic action, PIN, passphrase",

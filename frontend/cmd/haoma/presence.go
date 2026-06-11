@@ -31,6 +31,24 @@ func (sd *sessionDispatcher) handleSetNick(_ context.Context, sess *ipc.Session,
 	slog.Info("self-nick updated", slog.String("nick", clean))
 }
 
+func (sd *sessionDispatcher) handleSetChatFontScale(_ context.Context, sess *ipc.Session, f ipc.Frame) {
+	slog.Debug("handle set_chat_font_scale")
+	var req ipc.SetChatFontScaleRequest
+	if err := json.Unmarshal(f.Payload, &req); err != nil {
+		sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
+		return
+	}
+	clean, err := sd.d.setChatFontScale(req.Scale)
+	if err != nil {
+		sendError(sess, f.ID, "persist_failed", err.Error())
+		return
+	}
+	push(sd.d.ipcSrv, ipc.FrameChatFontScale, "", ipc.ChatFontScalePayload{
+		Scale: clean,
+	})
+	slog.Debug("chat font-scale updated", slog.Float64("scale", clean))
+}
+
 func (sd *sessionDispatcher) handleSetPresenceOverride(_ context.Context, sess *ipc.Session, f ipc.Frame) {
 	slog.Debug("handle set_presence_override")
 	var req ipc.SetPresenceOverrideRequest

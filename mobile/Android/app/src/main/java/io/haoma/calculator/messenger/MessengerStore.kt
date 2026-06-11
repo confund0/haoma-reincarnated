@@ -687,6 +687,9 @@ data class SystemHealth(
     
 
     val backendStatusAt: Long = 0L,
+    
+
+    val chatFontScale: Float = 1.0f,
 ) {
     companion object {
         val INITIAL = SystemHealth(

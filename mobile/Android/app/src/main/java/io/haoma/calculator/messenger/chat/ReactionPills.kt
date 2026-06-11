@@ -1,7 +1,6 @@
 package io.haoma.calculator.messenger.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,9 +19,9 @@ import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import io.haoma.calculator.messenger.LocalHaomaTypography
 import io.haoma.calculator.messenger.Reaction
 
 
@@ -48,45 +47,46 @@ internal fun ReactionPills(
 
 @Composable
 private fun ReactionPill(emoji: String, count: Int, mine: Boolean, onTap: () -> Unit) {
-    val borderColor = if (mine) ChatPalette.Accent else ChatPalette.TextFaint
+    val type = LocalHaomaTypography.current
+    val pillSize = type.pillSize
     
     
     val multi = count > 1
     val shape = if (multi) PillShape else CircleShape
     val sizing = if (multi) {
-        Modifier.height(PillSize).widthIn(min = PillSize)
+        Modifier.height(pillSize).widthIn(min = pillSize)
     } else {
-        Modifier.size(PillSize)
+        Modifier.size(pillSize)
     }
+    val bg = if (mine) ChatPalette.OutboundBubble else ChatPalette.InboundBubble
     val text = if (multi) "$emoji $count" else emoji
+    
+    
+    val style = TextStyle(
+        color = ChatPalette.Text,
+        fontSize = type.pillText,
+        lineHeight = type.pillText,
+        platformStyle = PlatformTextStyle(includeFontPadding = false),
+        lineHeightStyle = LineHeightStyle(
+            alignment = LineHeightStyle.Alignment.Center,
+            trim = LineHeightStyle.Trim.Both,
+        ),
+    )
     Box(
         modifier = Modifier
             .then(sizing)
             .clip(shape)
-            .background(ChatPalette.InboundBubble)
-            .border(width = 0.5.dp, color = borderColor, shape = shape)
+            .background(bg)
             .clickable(onClick = onTap)
-            .padding(horizontal = if (multi) 6.dp else 0.dp),
+            .padding(horizontal = if (multi) 8.dp else 0.dp),
         contentAlignment = Alignment.Center,
     ) {
         BasicText(
             text = text,
-            style = PillTextStyle,
+            style = style,
         )
     }
 }
-
-
-private val PillTextStyle = TextStyle(
-    color = ChatPalette.Text,
-    fontSize = 11.sp,
-    lineHeight = 11.sp,
-    platformStyle = PlatformTextStyle(includeFontPadding = false),
-    lineHeightStyle = LineHeightStyle(
-        alignment = LineHeightStyle.Alignment.Center,
-        trim = LineHeightStyle.Trim.Both,
-    ),
-)
 
 private data class PillRow(val emoji: String, val count: Int, val mine: Boolean)
 
@@ -101,4 +101,3 @@ private fun groupByEmoji(values: Collection<Reaction>): List<PillRow> {
 }
 
 private val PillShape = RoundedCornerShape(50)
-private val PillSize = 20.dp

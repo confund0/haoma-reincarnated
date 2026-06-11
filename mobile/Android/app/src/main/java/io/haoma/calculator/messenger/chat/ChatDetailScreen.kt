@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -68,6 +69,8 @@ fun ChatDetailScreen(
     chatId: String,
     onBack: () -> Unit,
 ) {
+    val health by store.health.collectAsStateWithLifecycle()
+    val typography = remember(health.chatFontScale) { HaomaTypography(health.chatFontScale) }
     val cache by store.timelineFor(chatId).collectAsStateWithLifecycle()
     val chats by store.chats.collectAsStateWithLifecycle()
     val presenceMap by store.presence.collectAsStateWithLifecycle()
@@ -172,6 +175,7 @@ fun ChatDetailScreen(
     val viewerTarget by store.viewerTarget.collectAsStateWithLifecycle()
     val videoViewerTarget by store.videoViewerTarget.collectAsStateWithLifecycle()
 
+    CompositionLocalProvider(LocalHaomaTypography provides typography) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -443,6 +447,7 @@ fun ChatDetailScreen(
     }
     fullReplyTarget?.let { snapshot ->
         FullReplyOverlay(snapshot = snapshot, onDismiss = { fullReplyTarget = null })
+    }
     }
 }
 

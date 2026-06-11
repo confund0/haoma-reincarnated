@@ -245,6 +245,8 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleSetPresenceOverride(ctx, sess, f)
 	case ipc.FrameSetNick:
 		sd.handleSetNick(ctx, sess, f)
+	case ipc.FrameSetChatFontScale:
+		sd.handleSetChatFontScale(ctx, sess, f)
 	case ipc.FramePushPresence:
 		sd.handlePushPresence(ctx, sess, f)
 	case ipc.FrameInviteDHT:

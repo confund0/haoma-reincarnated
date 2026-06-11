@@ -172,6 +172,7 @@ internal fun MessageBubble(
 
 @Composable
 private fun ReplyQuoteChip(snapshot: ReplyToSnapshot, onTap: () -> Unit) {
+    val type = LocalHaomaTypography.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -190,7 +191,7 @@ private fun ReplyQuoteChip(snapshot: ReplyToSnapshot, onTap: () -> Unit) {
         Text(
             text = snapshot.text.ifEmpty { "(empty)" },
             color = ChatPalette.TextDim,
-            fontSize = 12.sp,
+            fontSize = type.replyQuote,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
@@ -202,13 +203,14 @@ private fun ReplyQuoteChip(snapshot: ReplyToSnapshot, onTap: () -> Unit) {
 
 @Composable
 private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.graphics.Color) {
+    val type = LocalHaomaTypography.current
     when {
         event.isTombstoned -> {
             Text(
                 text = if (event.kind == EventKind.FILE) "[file deleted]" else "[message deleted]",
                 color = ChatPalette.TextDim,
                 fontStyle = FontStyle.Italic,
-                fontSize = 14.sp,
+                fontSize = type.bubbleBody,
             )
         }
         event.decryptStatus == "failed" -> {
@@ -216,14 +218,14 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
                 Text(
                     text = "peer too old, please upgrade",
                     color = ChatPalette.TextDim,
-                    fontSize = 14.sp,
+                    fontSize = type.bubbleBody,
                 )
             } else {
                 Text(
                     text = "[decrypt failed]",
                     color = ChatPalette.Bad,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
+                    fontSize = type.bubbleBody,
                 )
             }
         }
@@ -264,7 +266,7 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
             Text(
                 text = rendered,
                 color = textColor,
-                fontSize = 14.sp,
+                fontSize = type.bubbleBody,
             )
         }
     }
@@ -414,7 +416,7 @@ private fun VideoBody(event: TimelineEvent, body: FileEventBody) {
                     Text(
                         text = "video",
                         color = ChatPalette.TextDim,
-                        fontSize = 12.sp,
+                        fontSize = LocalHaomaTypography.current.replyQuote,
                     )
                 }
             }
@@ -455,6 +457,7 @@ private fun VideoBody(event: TimelineEvent, body: FileEventBody) {
 
 @Composable
 private fun FileCaption(body: FileEventBody, textColor: androidx.compose.ui.graphics.Color) {
+    val type = LocalHaomaTypography.current
     val displayName = body.name.ifEmpty { "(unnamed)" }
     val parts = mutableListOf<String>()
     if (body.size > 0L) parts += humanBytes(body.size)
@@ -466,14 +469,14 @@ private fun FileCaption(body: FileEventBody, textColor: androidx.compose.ui.grap
         Text(
             text = "📎 $displayName",
             color = textColor,
-            fontSize = 14.sp,
+            fontSize = type.bubbleBody,
             fontWeight = FontWeight.SemiBold,
         )
         if (parts.isNotEmpty()) {
             Text(
                 text = parts.joinToString(" · "),
                 color = stateColor,
-                fontSize = 11.sp,
+                fontSize = type.bubbleSmall,
             )
         }
     }
@@ -507,6 +510,7 @@ private fun stateColorFor(state: String): androidx.compose.ui.graphics.Color = w
 
 @Composable
 private fun MessageFooter(event: TimelineEvent) {
+    val type = LocalHaomaTypography.current
     Row(
         modifier = Modifier.padding(top = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -515,14 +519,14 @@ private fun MessageFooter(event: TimelineEvent) {
         Text(
             text = formatHm(event.displayTs),
             color = ChatPalette.TextDim,
-            fontSize = 11.sp,
+            fontSize = type.bubbleSmall,
         )
         if (event.isEdited && !event.isTombstoned) {
             Text(
                 text = "(edited)",
                 color = ChatPalette.TextDim,
                 fontStyle = FontStyle.Italic,
-                fontSize = 11.sp,
+                fontSize = type.bubbleSmall,
             )
         }
         if (event.isOutbound) {
