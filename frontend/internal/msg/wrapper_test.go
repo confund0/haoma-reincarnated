@@ -819,7 +819,7 @@ const testCallID = "call-fedcba9876543210fedcba9876543210"
 func TestBuildCallOffer_RoundTrip(t *testing.T) {
 	tokens := map[string]string{msg.ModalityAudio: "tok-audio-caller"}
 	key := bytes.Repeat([]byte{0xAB}, msg.CallOutboundKeyBytes)
-	w, err := msg.BuildCallOffer(3, 1742643890, testMsgID, testCallID, []string{msg.ModalityAudio}, tokens, key, 0)
+	w, err := msg.BuildCallOffer(3, 1742643890, testMsgID, testCallID, []string{msg.ModalityAudio}, tokens, key, "Alice-from-chat", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,24 +847,39 @@ func TestBuildCallOffer_RoundTrip(t *testing.T) {
 	if !bytes.Equal(body.OutboundKey, key) {
 		t.Errorf("outbound_key not round-tripped")
 	}
+	if body.SenderNick != "Alice-from-chat" {
+		t.Errorf("sender_nick = %q, want %q", body.SenderNick, "Alice-from-chat")
+	}
+}
+
+func TestBuildCallOffer_EmptySenderNickOmitted(t *testing.T) {
+	w, err := msg.BuildCallOffer(1, 1, testMsgID, testCallID, []string{msg.ModalityAudio}, nil, nil, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+
+	if bytes.Contains(raw, []byte("sender_nick")) {
+		t.Errorf("empty SenderNick leaked onto wire: %s", raw)
+	}
 }
 
 func TestBuildCallOffer_RejectsEmptyCallID(t *testing.T) {
-	_, err := msg.BuildCallOffer(1, 1, testMsgID, "", []string{msg.ModalityAudio}, nil, nil, 0)
+	_, err := msg.BuildCallOffer(1, 1, testMsgID, "", []string{msg.ModalityAudio}, nil, nil, "", 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Errorf("empty call_id err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildCallOffer_RejectsEmptyModalities(t *testing.T) {
-	_, err := msg.BuildCallOffer(1, 1, testMsgID, testCallID, nil, nil, nil, 0)
+	_, err := msg.BuildCallOffer(1, 1, testMsgID, testCallID, nil, nil, nil, "", 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Errorf("empty modalities err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildCallOffer_RejectsBadKeyLength(t *testing.T) {
-	_, err := msg.BuildCallOffer(1, 1, testMsgID, testCallID, []string{msg.ModalityAudio}, nil, []byte{1, 2, 3}, 0)
+	_, err := msg.BuildCallOffer(1, 1, testMsgID, testCallID, []string{msg.ModalityAudio}, nil, []byte{1, 2, 3}, "", 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Errorf("short key err = %v, want ErrMissingField", err)
 	}
@@ -885,7 +900,7 @@ func TestCallOffer_RejectsBadKeyOnDecode(t *testing.T) {
 func TestBuildCallAccept_RoundTrip(t *testing.T) {
 	tokens := map[string]string{msg.ModalityAudio: "tok-audio-callee"}
 	key := bytes.Repeat([]byte{0xCD}, msg.CallOutboundKeyBytes)
-	w, err := msg.BuildCallAccept(2, 1, testMsgID, testCallID, []string{msg.ModalityAudio}, tokens, key, 0)
+	w, err := msg.BuildCallAccept(2, 1, testMsgID, testCallID, []string{msg.ModalityAudio}, tokens, key, "Callee-nick", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -903,6 +918,9 @@ func TestBuildCallAccept_RoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(body.OutboundKey, key) {
 		t.Errorf("outbound_key not round-tripped")
+	}
+	if body.SenderNick != "Callee-nick" {
+		t.Errorf("sender_nick = %q, want %q", body.SenderNick, "Callee-nick")
 	}
 }
 

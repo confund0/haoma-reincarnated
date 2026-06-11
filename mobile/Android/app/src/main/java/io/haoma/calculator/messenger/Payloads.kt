@@ -227,6 +227,7 @@ data class ChatEntry(
     val retentionTtl: Long,
     val disableReadReceipts: Boolean,
     val notificationsMuted: Boolean,
+    val nickOverride: String,
     val members: List<String>,
     val createdAt: Long,
     val lastActivityAt: Long,
@@ -246,6 +247,7 @@ data class ChatEntry(
             retentionTtl = o.optLong("retention_ttl", 0L),
             disableReadReceipts = o.optBoolean("disable_read_receipts", false),
             notificationsMuted = o.optBoolean("notifications_muted", false),
+            nickOverride = o.optStringOrEmpty("nick_override"),
             members = o.optStringList("members"),
             createdAt = o.optLong("created_at", 0L),
             lastActivityAt = o.optLong("last_activity_at", 0L),
@@ -948,6 +950,7 @@ data class ChatSettingsPayload(
     val retentionTtl: Int,
     val disableReadReceipts: Boolean,
     val notificationsMuted: Boolean,
+    val nickOverride: String,
 ) {
     companion object {
         fun fromJson(o: JSONObject): ChatSettingsPayload = ChatSettingsPayload(
@@ -955,6 +958,7 @@ data class ChatSettingsPayload(
             retentionTtl = o.optInt("retention_ttl", 0),
             disableReadReceipts = o.optBoolean("disable_read_receipts", false),
             notificationsMuted = o.optBoolean("notifications_muted", false),
+            nickOverride = o.optStringOrEmpty("nick_override"),
         )
     }
 }
@@ -965,12 +969,14 @@ data class SetChatSettingsRequest(
     val retentionTtl: Int,
     val disableReadReceipts: Boolean,
     val notificationsMuted: Boolean,
+    val nickOverride: String,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("chat_id", chatId)
         put("retention_ttl", retentionTtl)
         put("disable_read_receipts", disableReadReceipts)
         put("notifications_muted", notificationsMuted)
+        put("nick_override", nickOverride)
     }
 }
 

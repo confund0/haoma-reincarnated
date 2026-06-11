@@ -542,6 +542,9 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 	presenceState := sd.d.effectivePresenceState()
 
 	senderNick := sd.d.selfNick()
+	if dc.NickOverride != "" {
+		senderNick = dc.NickOverride
+	}
 	wrapper, err := msg.BuildText(seq, time.Now().Unix(), msgID, req.Text, expireSeconds, presenceState, senderNick, replyToWire)
 	if err != nil {
 		sendError(sess, f.ID, "build_failed", err.Error())

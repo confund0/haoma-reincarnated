@@ -125,6 +125,8 @@ func runVaultBootflow(cfgDirFlag string, opts spawnOpts) {
 
 	opts = resolveDaemonBins(opts)
 	vc := newVaultController(vaultPath, unlocked.passphrase, unlocked.payload, unlocked.params, opts.haomaVaultBin)
+
+	defer vc.Wipe()
 	if err := spawnAndRun(root, vc, opts); err != nil {
 		fatal("supervisor", slog.Any("err", err))
 	}
@@ -132,7 +134,7 @@ func runVaultBootflow(cfgDirFlag string, opts spawnOpts) {
 
 type vaultUnlock struct {
 	payload    vault.Payload
-	passphrase string
+	passphrase []byte
 	params     vault.KDFParams
 }
 
@@ -152,6 +154,8 @@ func unlockExisting(path string) (vaultUnlock, error) {
 	}
 	payload, params, err := vault.Open(path, pass)
 	if err != nil {
+
+		clear(pass)
 		return vaultUnlock{}, fmt.Errorf("open %s: %w", path, err)
 	}
 	if vault.IsInsecureDefaultPassphrase(pass) {
@@ -170,12 +174,13 @@ func createFresh(path string) (vaultUnlock, error) {
 	if err != nil {
 		return vaultUnlock{}, fmt.Errorf("mint fresh secrets: %w", err)
 	}
-	if pass == "" {
-		pass = vault.InsecureDefaultPassphrase
+	if len(pass) == 0 {
+		pass = []byte(vault.InsecureDefaultPassphrase)
 		slog.Warn("vault created with the insecure default passphrase — run /change-pass before sharing anything sensitive",
 			slog.String("path", path))
 	}
 	if err := vault.Create(path, pass, payload, vault.DefaultKDFParams); err != nil {
+		clear(pass)
 		return vaultUnlock{}, fmt.Errorf("create %s: %w", path, err)
 	}
 	slog.Info("vault minted", slog.String("path", path))

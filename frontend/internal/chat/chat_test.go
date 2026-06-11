@@ -304,6 +304,44 @@ func TestSetNotificationsMuted_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestSetNickOverride_RoundTrips(t *testing.T) {
+	st := newStore(t)
+	s := chat.NewStore(st)
+
+	c, err := s.CreateDirect("peer-nick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(c.ID)
+	if dc := got.(*chat.DirectChat); dc.NickOverride != "" {
+		t.Errorf("fresh chat: NickOverride=%q want empty", dc.NickOverride)
+	}
+
+	if err := s.SetNickOverride(c.ID, "ZX42"); err != nil {
+		t.Fatalf("SetNickOverride: %v", err)
+	}
+	got, _ = s.Get(c.ID)
+	if dc := got.(*chat.DirectChat); dc.NickOverride != "ZX42" {
+		t.Errorf("after set: NickOverride=%q want %q", dc.NickOverride, "ZX42")
+	}
+
+	if err := s.SetNickOverride(c.ID, ""); err != nil {
+		t.Fatalf("SetNickOverride clear: %v", err)
+	}
+	got, _ = s.Get(c.ID)
+	if dc := got.(*chat.DirectChat); dc.NickOverride != "" {
+		t.Errorf("after clear: NickOverride=%q want empty", dc.NickOverride)
+	}
+}
+
+func TestSetNickOverride_UnknownChat(t *testing.T) {
+	st := newStore(t)
+	s := chat.NewStore(st)
+	if err := s.SetNickOverride("nope", "X"); err == nil {
+		t.Errorf("expected ErrNotFound on unknown chat")
+	}
+}
+
 func TestSetGroupName_RoundTrips(t *testing.T) {
 	st := newStore(t)
 	s := chat.NewStore(st)

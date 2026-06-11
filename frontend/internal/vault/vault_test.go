@@ -32,7 +32,7 @@ func TestCreate_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "vault.enc")
 	want := mintFresh(t)
 
-	if err := Create(path, "correct horse battery staple", want, fastParams); err != nil {
+	if err := Create(path, []byte("correct horse battery staple"), want, fastParams); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -44,7 +44,7 @@ func TestCreate_RoundTrip(t *testing.T) {
 		t.Errorf("vault perms = %o, want %o", perm, fileMode)
 	}
 
-	got, gotParams, err := Open(path, "correct horse battery staple")
+	got, gotParams, err := Open(path, []byte("correct horse battery staple"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -59,10 +59,10 @@ func TestCreate_RoundTrip(t *testing.T) {
 func TestOpen_WrongPassphraseFails(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
-	if err := Create(path, "right", mintFresh(t), fastParams); err != nil {
+	if err := Create(path, []byte("right"), mintFresh(t), fastParams); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	_, _, err := Open(path, "wrong")
+	_, _, err := Open(path, []byte("wrong"))
 	if !errors.Is(err, ErrUnseal) {
 		t.Fatalf("expected ErrUnseal, got %v", err)
 	}
@@ -71,7 +71,7 @@ func TestOpen_WrongPassphraseFails(t *testing.T) {
 func TestOpen_TamperedCiphertextFails(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
-	if err := Create(path, "pw", mintFresh(t), fastParams); err != nil {
+	if err := Create(path, []byte("pw"), mintFresh(t), fastParams); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -83,7 +83,7 @@ func TestOpen_TamperedCiphertextFails(t *testing.T) {
 	if err := os.WriteFile(path, raw, fileMode); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = Open(path, "pw")
+	_, _, err = Open(path, []byte("pw"))
 	if !errors.Is(err, ErrUnseal) {
 		t.Fatalf("expected ErrUnseal on tampered ciphertext, got %v", err)
 	}
@@ -92,7 +92,7 @@ func TestOpen_TamperedCiphertextFails(t *testing.T) {
 func TestOpen_TamperedAADFails(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
-	if err := Create(path, "pw", mintFresh(t), fastParams); err != nil {
+	if err := Create(path, []byte("pw"), mintFresh(t), fastParams); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	raw, err := os.ReadFile(path)
@@ -104,7 +104,7 @@ func TestOpen_TamperedAADFails(t *testing.T) {
 	if err := os.WriteFile(path, raw, fileMode); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = Open(path, "pw")
+	_, _, err = Open(path, []byte("pw"))
 
 	if err == nil {
 		t.Fatal("expected error on AAD/version tamper")
@@ -119,7 +119,7 @@ func TestOpen_BadMagic(t *testing.T) {
 	if err := os.WriteFile(path, bad, fileMode); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := Open(path, "x")
+	_, _, err := Open(path, []byte("x"))
 	if err == nil || !strings.Contains(err.Error(), "magic") {
 		t.Fatalf("expected magic error, got %v", err)
 	}
@@ -131,7 +131,7 @@ func TestOpen_Truncated(t *testing.T) {
 	if err := os.WriteFile(path, []byte("HAOMAVLT\x01"), fileMode); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := Open(path, "x")
+	_, _, err := Open(path, []byte("x"))
 	if !errors.Is(err, ErrTruncated) {
 		t.Fatalf("expected ErrTruncated, got %v", err)
 	}
@@ -143,7 +143,7 @@ func TestOpen_EmptyFile(t *testing.T) {
 	if err := os.WriteFile(path, nil, fileMode); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := Open(path, "x")
+	_, _, err := Open(path, []byte("x"))
 	if !errors.Is(err, ErrEmpty) {
 		t.Fatalf("expected ErrEmpty, got %v", err)
 	}
@@ -152,10 +152,10 @@ func TestOpen_EmptyFile(t *testing.T) {
 func TestCreate_RefusesOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
-	if err := Create(path, "a", mintFresh(t), fastParams); err != nil {
+	if err := Create(path, []byte("a"), mintFresh(t), fastParams); err != nil {
 		t.Fatal(err)
 	}
-	err := Create(path, "b", mintFresh(t), fastParams)
+	err := Create(path, []byte("b"), mintFresh(t), fastParams)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("expected refuse-overwrite, got %v", err)
 	}
@@ -165,16 +165,16 @@ func TestChangePassphrase_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
 	want := mintFresh(t)
-	if err := Create(path, "old", want, fastParams); err != nil {
+	if err := Create(path, []byte("old"), want, fastParams); err != nil {
 		t.Fatal(err)
 	}
-	if err := ChangePassphrase(path, "old", "new"); err != nil {
+	if err := ChangePassphrase(path, []byte("old"), []byte("new")); err != nil {
 		t.Fatalf("change: %v", err)
 	}
-	if _, _, err := Open(path, "old"); !errors.Is(err, ErrUnseal) {
+	if _, _, err := Open(path, []byte("old")); !errors.Is(err, ErrUnseal) {
 		t.Errorf("old passphrase should fail post-change, got %v", err)
 	}
-	got, _, err := Open(path, "new")
+	got, _, err := Open(path, []byte("new"))
 	if err != nil {
 		t.Fatalf("open with new: %v", err)
 	}
@@ -186,12 +186,111 @@ func TestChangePassphrase_RoundTrip(t *testing.T) {
 func TestChangePassphrase_WrongOldFails(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
-	if err := Create(path, "right", mintFresh(t), fastParams); err != nil {
+	if err := Create(path, []byte("right"), mintFresh(t), fastParams); err != nil {
 		t.Fatal(err)
 	}
-	err := ChangePassphrase(path, "wrong", "new")
+	err := ChangePassphrase(path, []byte("wrong"), []byte("new"))
 	if !errors.Is(err, ErrUnseal) {
 		t.Fatalf("expected ErrUnseal, got %v", err)
+	}
+}
+
+func TestOpen_RefusesEmptyPassphrase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+	if err := Create(path, []byte("real"), mintFresh(t), fastParams); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, _, err := Open(path, []byte(""))
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
+	}
+}
+
+func TestSave_RefusesEmptyPassphrase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+	if err := Create(path, []byte("real"), mintFresh(t), fastParams); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	err := Save(path, []byte(""), mintFresh(t), fastParams)
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
+	}
+}
+
+func TestCreate_RefusesEmptyPassphrase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+	err := Create(path, []byte(""), mintFresh(t), fastParams)
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
+	}
+}
+
+func TestChangePassphrase_RefusesEmptyOld(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+	if err := Create(path, []byte("real"), mintFresh(t), fastParams); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	err := ChangePassphrase(path, []byte(""), []byte("newpass"))
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
+	}
+}
+
+func TestChangePassphrase_RefusesEmptyNew(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+	if err := Create(path, []byte("real"), mintFresh(t), fastParams); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	err := ChangePassphrase(path, []byte("real"), []byte(""))
+	if !errors.Is(err, ErrEmptyPassphrase) {
+		t.Fatalf("expected ErrEmptyPassphrase, got %v", err)
+	}
+}
+
+func TestWriteSealedVault_RefusesNonMagic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+
+	if err := Create(path, []byte("real"), mintFresh(t), fastParams); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read pre: %v", err)
+	}
+
+	if err := writeSealedVault(path, []byte("this is plaintext JSON, not a sealed vault")); err == nil {
+		t.Fatal("expected refusal, got nil")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read post: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("vault.enc was overwritten despite guard")
+	}
+}
+
+func TestWriteSealedVault_RefusesShorterThanMagic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+	if err := writeSealedVault(path, []byte("short")); err == nil {
+		t.Fatal("expected refusal for sub-magic-length bytes")
+	}
+}
+
+func TestWriteSealedVault_AcceptsValidHeader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.enc")
+
+	bogus := append(magic[:], make([]byte, 64)...)
+	if err := writeSealedVault(path, bogus); err != nil {
+		t.Fatalf("magic-prefixed bytes should pass guard, got %v", err)
 	}
 }
 
@@ -202,7 +301,7 @@ func TestCreateInsecure_OpensWithDefault(t *testing.T) {
 	if err := CreateInsecure(path, want, fastParams); err != nil {
 		t.Fatalf("create insecure: %v", err)
 	}
-	got, _, err := Open(path, InsecureDefaultPassphrase)
+	got, _, err := Open(path, []byte(InsecureDefaultPassphrase))
 	if err != nil {
 		t.Fatalf("open with default: %v", err)
 	}
@@ -212,13 +311,13 @@ func TestCreateInsecure_OpensWithDefault(t *testing.T) {
 }
 
 func TestIsInsecureDefaultPassphrase(t *testing.T) {
-	if !IsInsecureDefaultPassphrase(InsecureDefaultPassphrase) {
+	if !IsInsecureDefaultPassphrase([]byte(InsecureDefaultPassphrase)) {
 		t.Error("constant should match itself")
 	}
-	if IsInsecureDefaultPassphrase("anything-else") {
+	if IsInsecureDefaultPassphrase([]byte("anything-else")) {
 		t.Error("non-default flagged as insecure")
 	}
-	if IsInsecureDefaultPassphrase("") {
+	if IsInsecureDefaultPassphrase([]byte("")) {
 		t.Error("empty flagged as insecure default")
 	}
 }
@@ -237,7 +336,7 @@ func TestIsInsecureDefaultPIN(t *testing.T) {
 
 func TestInsecureDefaults_AreDistinct(t *testing.T) {
 
-	if IsInsecureDefaultPassphrase(InsecureDefaultPIN) {
+	if IsInsecureDefaultPassphrase([]byte(InsecureDefaultPIN)) {
 		t.Error("PIN constant flagged as default passphrase")
 	}
 	if IsInsecureDefaultPIN(InsecureDefaultPassphrase) {
@@ -440,10 +539,10 @@ func TestPayload_RoundTripsAllFields(t *testing.T) {
 		"passphrase_is_default": {Until: 1733600000000, Step: 2},
 	}
 
-	if err := Create(path, "pw", want, fastParams); err != nil {
+	if err := Create(path, []byte("pw"), want, fastParams); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	got, _, err := Open(path, "pw")
+	got, _, err := Open(path, []byte("pw"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,15 +555,15 @@ func TestSave_OverwritesAtomically(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
 	first := mintFresh(t)
-	if err := Create(path, "pw", first, fastParams); err != nil {
+	if err := Create(path, []byte("pw"), first, fastParams); err != nil {
 		t.Fatal(err)
 	}
 	second := mintFresh(t)
 	second.HaomadURL = "http://127.0.0.1:9999"
-	if err := Save(path, "pw", second, fastParams); err != nil {
+	if err := Save(path, []byte("pw"), second, fastParams); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	got, _, err := Open(path, "pw")
+	got, _, err := Open(path, []byte("pw"))
 	if err != nil {
 		t.Fatal(err)
 	}

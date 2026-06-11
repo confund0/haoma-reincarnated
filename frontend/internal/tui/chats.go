@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -194,6 +195,12 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 		top.AddInputField("Group alias", c.GroupAlias, 30, nil, nil)
 	}
 
+	nickField := tview.NewInputField().
+		SetLabel("Your nick here").
+		SetText(c.NickOverride).
+		SetFieldWidth(30)
+	top.AddFormItem(nickField)
+
 	retentionDropdown := tview.NewDropDown().
 		SetLabel("Disappearing messages").
 		SetOptions(retentionLabels(), func(string, int) {})
@@ -211,6 +218,7 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 	initialRetention := c.RetentionTTL
 	initialReceiptsDisabled := c.DisableReadReceipts
 	initialMuted := c.NotificationsMuted
+	initialNickOverride := c.NickOverride
 	save := func() {
 		idx, _ := retentionDropdown.GetCurrentOption()
 		if idx < 0 || idx >= len(retentionLevels) {
@@ -219,7 +227,11 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 		wantTTL := retentionLevels[idx].seconds
 		wantReceiptsDisabled := !sendReceipts
 		wantMuted := muted
-		if wantTTL == initialRetention && wantReceiptsDisabled == initialReceiptsDisabled && wantMuted == initialMuted {
+		wantNickOverride := strings.TrimSpace(nickField.GetText())
+		if wantTTL == initialRetention &&
+			wantReceiptsDisabled == initialReceiptsDisabled &&
+			wantMuted == initialMuted &&
+			wantNickOverride == initialNickOverride {
 			return
 		}
 		a.sendRequest(ipc.FrameSetChatSettings, ipc.SetChatSettingsRequest{
@@ -227,6 +239,7 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 			RetentionTTL:        wantTTL,
 			DisableReadReceipts: wantReceiptsDisabled,
 			NotificationsMuted:  wantMuted,
+			NickOverride:        wantNickOverride,
 		}, func(f ipc.Frame) {
 			if f.Type == ipc.FrameError {
 				a.renderError(f)
@@ -249,6 +262,13 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 					state = "on"
 				}
 				a.log("[green]mute[white] %s → %s", label, state)
+			}
+			if wantNickOverride != initialNickOverride {
+				if wantNickOverride == "" {
+					a.log("[green]nick[white] %s → global", label)
+				} else {
+					a.log("[green]nick[white] %s set", label)
+				}
 			}
 		})
 	}
@@ -310,9 +330,9 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 
 	title := "edit conversation — " + renderChatLabel(c, a.peerLabelForChat)
 
-	topRows := 7
+	topRows := 11
 	if c.Kind == ipc.ChatKindGroup {
-		topRows = 11
+		topRows = 15
 	}
 	bottomRows := 5
 	modal := a.twoSectionModal(title, top, bottom, topRows, bottomRows, dismiss)

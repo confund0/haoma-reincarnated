@@ -612,6 +612,8 @@ type CallOfferBody struct {
 	Modalities  []string          `json:"modalities"`
 	Tokens      map[string]string `json:"tokens,omitempty"`
 	OutboundKey []byte            `json:"outbound_key,omitempty"`
+
+	SenderNick string `json:"sender_nick,omitempty"`
 }
 
 type CallAcceptBody struct {
@@ -619,6 +621,8 @@ type CallAcceptBody struct {
 	Modalities  []string          `json:"modalities"`
 	Tokens      map[string]string `json:"tokens,omitempty"`
 	OutboundKey []byte            `json:"outbound_key,omitempty"`
+
+	SenderNick string `json:"sender_nick,omitempty"`
 }
 
 type CallRejectBody struct {
@@ -642,7 +646,7 @@ type CallControlBody struct {
 
 const CallOutboundKeyBytes = 32
 
-func BuildCallOffer(seq uint64, ts int64, msgID, callID string, modalities []string, tokens map[string]string, outboundKey []byte, expireSeconds uint32) (*Wrapper, error) {
+func BuildCallOffer(seq uint64, ts int64, msgID, callID string, modalities []string, tokens map[string]string, outboundKey []byte, senderNick string, expireSeconds uint32) (*Wrapper, error) {
 	if seq == 0 {
 		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
 	}
@@ -666,6 +670,7 @@ func BuildCallOffer(seq uint64, ts int64, msgID, callID string, modalities []str
 		Modalities:  modalities,
 		Tokens:      tokens,
 		OutboundKey: outboundKey,
+		SenderNick:  senderNick,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("msg: marshal call_offer body: %w", err)
@@ -681,7 +686,7 @@ func BuildCallOffer(seq uint64, ts int64, msgID, callID string, modalities []str
 	}, nil
 }
 
-func BuildCallAccept(seq uint64, ts int64, msgID, callID string, modalities []string, tokens map[string]string, outboundKey []byte, expireSeconds uint32) (*Wrapper, error) {
+func BuildCallAccept(seq uint64, ts int64, msgID, callID string, modalities []string, tokens map[string]string, outboundKey []byte, senderNick string, expireSeconds uint32) (*Wrapper, error) {
 	if seq == 0 {
 		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
 	}
@@ -705,6 +710,7 @@ func BuildCallAccept(seq uint64, ts int64, msgID, callID string, modalities []st
 		Modalities:  modalities,
 		Tokens:      tokens,
 		OutboundKey: outboundKey,
+		SenderNick:  senderNick,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("msg: marshal call_accept body: %w", err)

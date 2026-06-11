@@ -246,7 +246,7 @@ type WelcomePayload struct {
 	SelfNickIsDefault bool   `json:"self_nick_is_default,omitempty"`
 }
 
-const ProtocolVersion = 42
+const ProtocolVersion = 43
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -600,6 +600,7 @@ type ChatEntry struct {
 	RetentionTTL        uint32   `json:"retention_ttl"`
 	DisableReadReceipts bool     `json:"disable_read_receipts,omitempty"`
 	NotificationsMuted  bool     `json:"notifications_muted,omitempty"`
+	NickOverride        string   `json:"nick_override,omitempty"`
 	Members             []string `json:"members,omitempty"`
 	CreatedAt           int64    `json:"created_at"`
 	LastActivityAt      int64    `json:"last_activity_at,omitempty"`
@@ -652,6 +653,8 @@ type ChatSettingsPayload struct {
 	DisableReadReceipts bool   `json:"disable_read_receipts,omitempty"`
 
 	NotificationsMuted bool `json:"notifications_muted,omitempty"`
+
+	NickOverride string `json:"nick_override,omitempty"`
 }
 
 type SetChatSettingsRequest struct {
@@ -659,6 +662,8 @@ type SetChatSettingsRequest struct {
 	RetentionTTL        uint32 `json:"retention_ttl"`
 	DisableReadReceipts bool   `json:"disable_read_receipts,omitempty"`
 	NotificationsMuted  bool   `json:"notifications_muted,omitempty"`
+
+	NickOverride string `json:"nick_override,omitempty"`
 }
 
 type ClientFocusRequest struct {

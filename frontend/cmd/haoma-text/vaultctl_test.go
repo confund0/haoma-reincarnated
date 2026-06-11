@@ -63,10 +63,10 @@ func newTestController(t *testing.T) *vaultController {
 		t.Fatalf("mint: %v", err)
 	}
 	const pw = "test-pass"
-	if err := vault.Create(path, pw, payload, fastParams); err != nil {
+	if err := vault.Create(path, []byte(pw), payload, fastParams); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	return newVaultController(path, pw, payload, fastParams, bin)
+	return newVaultController(path, []byte(pw), payload, fastParams, bin)
 }
 
 func TestApplyThreatPreset_Domestic(t *testing.T) {
@@ -169,16 +169,16 @@ func TestApplyThreatPreset_Invalid(t *testing.T) {
 
 func TestChangePassphrase_RotatesAndPersists(t *testing.T) {
 	vc := newTestController(t)
-	const newPass = "new-strong-pass"
-	if err := vc.ChangePassphrase("test-pass", newPass); err != nil {
+	newPass := []byte("new-strong-pass")
+	if err := vc.ChangePassphrase([]byte("test-pass"), newPass); err != nil {
 		t.Fatalf("change: %v", err)
 	}
 
-	if vc.passphrase != newPass {
+	if !bytes.Equal(vc.passphrase, newPass) {
 		t.Errorf("vc.passphrase = %q, want %q", vc.passphrase, newPass)
 	}
 
-	if _, _, err := vault.Open(vc.path, "test-pass"); err == nil {
+	if _, _, err := vault.Open(vc.path, []byte("test-pass")); err == nil {
 		t.Error("vault should NOT open under old passphrase")
 	}
 	if _, _, err := vault.Open(vc.path, newPass); err != nil {
@@ -188,14 +188,31 @@ func TestChangePassphrase_RotatesAndPersists(t *testing.T) {
 
 func TestChangePassphrase_RejectsWrongOld(t *testing.T) {
 	vc := newTestController(t)
-	err := vc.ChangePassphrase("not-the-current-pass", "anything")
+	err := vc.ChangePassphrase([]byte("not-the-current-pass"), []byte("anything"))
 	if err == nil {
 		t.Fatal("expected error for wrong old passphrase")
 	}
 
-	if vc.passphrase != "test-pass" {
+	if !bytes.Equal(vc.passphrase, []byte("test-pass")) {
 		t.Errorf("vc.passphrase = %q, want unchanged", vc.passphrase)
 	}
+}
+
+func TestVaultController_Wipe_ZerosPassphraseAndIsIdempotent(t *testing.T) {
+	vc := newTestController(t)
+
+	backing := vc.passphrase
+	vc.Wipe()
+	if vc.passphrase != nil {
+		t.Errorf("Wipe should nil the slice header; got %v", vc.passphrase)
+	}
+	for i, b := range backing {
+		if b != 0 {
+			t.Errorf("backing[%d]=%d, want 0 after Wipe", i, b)
+		}
+	}
+
+	vc.Wipe()
 }
 
 func TestSetTorPassword_PersistsToDisk(t *testing.T) {

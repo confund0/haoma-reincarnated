@@ -834,8 +834,11 @@ func (a *App) showSettingsChangePassModal(sp *settingsPage) {
 	form.AddPasswordField("New passphrase", "", 32, '*', nil)
 	dismiss := func() { a.pages.RemovePage(pageName); a.app.SetFocus(sp.list) }
 	form.AddButton("Save", func() {
-		oldP := form.GetFormItemByLabel("Current passphrase").(*tview.InputField).GetText()
-		newP := form.GetFormItemByLabel("New passphrase").(*tview.InputField).GetText()
+		oldP := []byte(form.GetFormItemByLabel("Current passphrase").(*tview.InputField).GetText())
+		newP := []byte(form.GetFormItemByLabel("New passphrase").(*tview.InputField).GetText())
+
+		defer clear(oldP)
+		defer clear(newP)
 		if err := a.VaultCtl.ChangePassphrase(oldP, newP); err != nil {
 			a.log("[red]change passphrase[white] %v", err)
 			return

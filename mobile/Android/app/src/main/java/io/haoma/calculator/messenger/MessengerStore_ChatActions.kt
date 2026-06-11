@@ -24,6 +24,9 @@ fun MessengerStore.setChatMute(chatId: String, muted: Boolean) {
                     retentionTtl = chat.retentionTtl.toInt(),
                     disableReadReceipts = chat.disableReadReceipts,
                     notificationsMuted = muted,
+                    
+                    
+                    nickOverride = chat.nickOverride,
                 ).toJson(),
             )
             if (reply.type == FrameType.Error) {
@@ -46,6 +49,7 @@ fun MessengerStore.setChatSettings(
     retentionTtl: Int,
     disableReadReceipts: Boolean,
     notificationsMuted: Boolean,
+    nickOverride: String,
 ) {
     if (chatId.isEmpty()) return
     scope.launch {
@@ -61,6 +65,7 @@ fun MessengerStore.setChatSettings(
                     retentionTtl = retentionTtl,
                     disableReadReceipts = disableReadReceipts,
                     notificationsMuted = notificationsMuted,
+                    nickOverride = nickOverride,
                 ).toJson(),
             )
             if (reply.type == FrameType.Error) {

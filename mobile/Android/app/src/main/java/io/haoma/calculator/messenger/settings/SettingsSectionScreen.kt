@@ -14,10 +14,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.haoma.calculator.messenger.HaomaPalette
 import io.haoma.calculator.messenger.MessengerStore
 
 
@@ -42,7 +42,7 @@ fun SettingsSectionScreen(
 @Composable
 private fun PendingSection(store: MessengerStore, domain: String, onBack: () -> Unit) {
     val title = SettingsDomains.Labels[domain] ?: domain
-    Column(modifier = Modifier.fillMaxSize().background(BG_BASE_LOCAL)) {
+    Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
         SectionHeader(title = title, store = store, onBack = onBack)
         Box(
             modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -50,7 +50,7 @@ private fun PendingSection(store: MessengerStore, domain: String, onBack: () -> 
         ) {
             Text(
                 text = "Lands in a follow-up M-8g slice.",
-                color = FG_DIM_LOCAL,
+                color = HaomaPalette.FG_DIM,
                 fontSize = 14.sp,
             )
         }
@@ -63,13 +63,13 @@ internal fun SectionHeader(title: String, store: MessengerStore, onBack: () -> U
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(BG_BAR_LOCAL)
+            .background(HaomaPalette.BG_BAR)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = "‹",
-            color = FG_LINK_LOCAL,
+            color = HaomaPalette.FG_LINK,
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
@@ -79,7 +79,7 @@ internal fun SectionHeader(title: String, store: MessengerStore, onBack: () -> U
         Spacer(modifier = Modifier.width(20.dp))
         Text(
             text = title,
-            color = FG_PRIMARY_LOCAL,
+            color = HaomaPalette.FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
@@ -87,9 +87,3 @@ internal fun SectionHeader(title: String, store: MessengerStore, onBack: () -> U
         io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
 }
-
-private val BG_BASE_LOCAL = Color(0xFF1D2021)
-private val BG_BAR_LOCAL = Color(0xFF282828)
-private val FG_PRIMARY_LOCAL = Color(0xFFEBDBB2)
-private val FG_DIM_LOCAL = Color(0xFF7C6F64)
-private val FG_LINK_LOCAL = Color(0xFF83A598)

@@ -6,8 +6,8 @@ import (
 )
 
 type VaultController interface {
-	ChangePassphrase(old, new string) error
-	ChangePIN(old, new string) error
+	ChangePassphrase(old, newPass []byte) error
+	ChangePIN(old, newPIN string) error
 
 	SetIdleAction(s string) error
 	SetIdleTimeoutSeconds(n int) error

@@ -7,17 +7,21 @@ import org.json.JSONObject
 
 class VaultSession(
     private val context: Context,
-    initialPassphrase: String,
+    initialPassphrase: ByteArray,
     initialPayload: ByteArray,
 ) {
     private val mutex = Object()
 
     
     @Volatile
-    private var passphrase: String = initialPassphrase
+    private var passphrase: ByteArray = initialPassphrase.copyOf()
 
     @Volatile
     private var payload: JSONObject = JSONObject(initialPayload.toString(Charsets.UTF_8))
+
+    init {
+        Logger.d("vault", "session created pass_len=${passphrase.size}")
+    }
 
     
     fun snapshot(): JSONObject {
@@ -76,18 +80,24 @@ class VaultSession(
     }
 
     
-    fun changePassphrase(oldPass: String, newPass: String) {
+    fun changePassphrase(oldPass: ByteArray, newPass: ByteArray) {
         require(newPass.isNotEmpty()) { "new passphrase must not be empty" }
         synchronized(mutex) {
             if (!constantTimeEquals(oldPass, passphrase)) {
                 throw IllegalArgumentException("current passphrase does not match")
             }
             val prev = passphrase
-            passphrase = newPass
+            
+            
+            passphrase = newPass.copyOf()
             try {
                 resealLocked()
+                java.util.Arrays.fill(prev, 0)
                 Logger.i("vault", "passphrase rotated")
             } catch (t: Throwable) {
+                
+                
+                java.util.Arrays.fill(passphrase, 0)
                 passphrase = prev
                 throw t
             }
@@ -95,14 +105,21 @@ class VaultSession(
     }
 
     
-    private fun constantTimeEquals(a: String, b: String): Boolean {
-        val la = a.length
-        val lb = b.length
+    fun isPassphraseDefault(): Boolean {
+        synchronized(mutex) {
+            return constantTimeEquals(passphrase, VaultHelper.DefaultPassphraseBytes)
+        }
+    }
+
+    
+    private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
+        val la = a.size
+        val lb = b.size
         var diff = la xor lb
         val n = maxOf(la, lb)
         for (i in 0 until n) {
-            val ca = if (i < la) a[i].code else 0
-            val cb = if (i < lb) b[i].code else 0
+            val ca = if (i < la) a[i].toInt() and 0xFF else 0
+            val cb = if (i < lb) b[i].toInt() and 0xFF else 0
             diff = diff or (ca xor cb)
         }
         return diff == 0
@@ -112,6 +129,18 @@ class VaultSession(
     fun secretsForRestart(context: Context): ByteArray {
         synchronized(mutex) {
             return VaultHelper.unseal(context, passphrase).secrets
+        }
+    }
+
+    
+    fun wipe() {
+        synchronized(mutex) {
+            if (passphrase.isEmpty()) return
+            val started = System.nanoTime()
+            java.util.Arrays.fill(passphrase, 0)
+            passphrase = ByteArray(0)
+            val durUs = (System.nanoTime() - started) / 1_000L
+            Logger.d("vault", "session wipe fired dur_us=$durUs")
         }
     }
 

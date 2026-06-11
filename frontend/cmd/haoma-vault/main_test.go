@@ -50,7 +50,7 @@ func TestWriteModeRoundTrip(t *testing.T) {
 	mintVault(t, bin, cfgDir, pass)
 	vaultPath := filepath.Join(cfgDir, "vault.enc")
 
-	payload, _, err := vault.Open(vaultPath, pass)
+	payload, _, err := vault.Open(vaultPath, []byte(pass))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestWriteModeRoundTrip(t *testing.T) {
 		t.Fatalf("-w: %v\n%s", err, stderr.String())
 	}
 
-	got, _, err := vault.Open(vaultPath, pass)
+	got, _, err := vault.Open(vaultPath, []byte(pass))
 	if err != nil {
 		t.Fatalf("re-open: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestWriteModeRoundTrip(t *testing.T) {
 	if info.Size() == 0 {
 		t.Errorf("backup is empty")
 	}
-	prev, _, err := vault.Open(backupPath, pass)
+	prev, _, err := vault.Open(backupPath, []byte(pass))
 	if err != nil {
 		t.Fatalf("open backup: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestWriteModeRejectsInvalidEnum(t *testing.T) {
 	pass := vault.InsecureDefaultPassphrase
 	mintVault(t, bin, cfgDir, pass)
 
-	payload, _, err := vault.Open(filepath.Join(cfgDir, "vault.enc"), pass)
+	payload, _, err := vault.Open(filepath.Join(cfgDir, "vault.enc"), []byte(pass))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestListAndRestoreBackups(t *testing.T) {
 	mintVault(t, bin, cfgDir, pass)
 	vaultPath := filepath.Join(cfgDir, "vault.enc")
 
-	payload, _, err := vault.Open(vaultPath, pass)
+	payload, _, err := vault.Open(vaultPath, []byte(pass))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestListAndRestoreBackups(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("--restore=1: %v\n%s", err, stderr.String())
 	}
-	got, _, err := vault.Open(vaultPath, pass)
+	got, _, err := vault.Open(vaultPath, []byte(pass))
 	if err != nil {
 		t.Fatalf("open after restore: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestWriteModeFlockSerializesConcurrentWrites(t *testing.T) {
 	mintVault(t, bin, cfgDir, pass)
 	vaultPath := filepath.Join(cfgDir, "vault.enc")
 
-	payload, _, err := vault.Open(vaultPath, pass)
+	payload, _, err := vault.Open(vaultPath, []byte(pass))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestWriteModeFlockSerializesConcurrentWrites(t *testing.T) {
 		}
 	}
 
-	got, _, err := vault.Open(vaultPath, pass)
+	got, _, err := vault.Open(vaultPath, []byte(pass))
 	if err != nil {
 		t.Fatalf("post-race open: %v", err)
 	}

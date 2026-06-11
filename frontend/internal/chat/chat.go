@@ -48,6 +48,8 @@ type BaseChat struct {
 	DisableReadReceipts bool `json:"disable_read_receipts,omitempty"`
 
 	NotificationsMuted bool `json:"notifications_muted,omitempty"`
+
+	NickOverride string `json:"nick_override,omitempty"`
 }
 
 type DirectChat struct {
@@ -328,6 +330,23 @@ func (s *Store) SetNotificationsMuted(id ChatID, muted bool) error {
 			v.NotificationsMuted = muted
 		default:
 			return fmt.Errorf("chat: SetNotificationsMuted: unknown chat type %T", c)
+		}
+		return nil
+	})
+}
+
+func (s *Store) SetNickOverride(id ChatID, value string) error {
+	if id == "" {
+		return errors.New("chat: SetNickOverride: empty id")
+	}
+	return s.mutate(id, func(c Chat) error {
+		switch v := c.(type) {
+		case *DirectChat:
+			v.NickOverride = value
+		case *GroupChat:
+			v.NickOverride = value
+		default:
+			return fmt.Errorf("chat: SetNickOverride: unknown chat type %T", c)
 		}
 		return nil
 	})

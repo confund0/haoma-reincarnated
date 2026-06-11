@@ -51,6 +51,9 @@ internal fun ChatInput(
     replyTarget: TimelineEvent? = null,
     onCancelReply: () -> Unit = {},
     onAttach: () -> Unit = {},
+    
+    
+    fromNick: String = "",
 ) {
     
     
@@ -134,8 +137,13 @@ internal fun ChatInput(
                         
                         Box(modifier = Modifier.fillMaxWidth()) {
                             if (visible.isEmpty()) {
+                                val placeholder = when {
+                                    editing -> "Edit message…"
+                                    fromNick.isNotEmpty() -> "From: $fromNick"
+                                    else -> "Type a message"
+                                }
                                 BasicText(
-                                    text = if (editing) "Edit message…" else "Type a message",
+                                    text = placeholder,
                                     style = TextStyle(
                                         color = ChatPalette.TextDim,
                                         fontSize = 14.sp,

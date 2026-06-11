@@ -12,12 +12,12 @@ internal object ChatPalette {
     val TextFaint = Color(0xFF504945)          
     val Accent = Color(0xFFFABD2F)             
     val Ok = Color(0xFF5FCC1A)                 
-    val Bad = Color(0xFFCC241D)                
+    val Bad = Color(0xFFFF6B6B)                
     val DecryptFailedBg = Color(0xFF3F1F1F)    
     
     
     val CallSummaryOk = Color(0xFF98971A)
-    val CallSummaryBad = Color(0xFFCC241D)
+    val CallSummaryBad = Color(0xFFFF6B6B)     
     
     
     val AnchorPulse = Color(0x66D79921)

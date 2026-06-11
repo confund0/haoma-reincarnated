@@ -14,17 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
@@ -36,169 +31,123 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
-import io.haoma.calculator.messenger.*
 import io.haoma.calculator.messenger.ChatDefaultsSettings
+import io.haoma.calculator.messenger.CtaButton
+import io.haoma.calculator.messenger.DirtyBar
+import io.haoma.calculator.messenger.HaomaDropdownItem
+import io.haoma.calculator.messenger.HaomaPalette
 import io.haoma.calculator.messenger.MessengerStore
+import io.haoma.calculator.messenger.Section
 import io.haoma.calculator.messenger.chat.retentionLevels
 import io.haoma.calculator.messenger.chat.retentionOptionIndex
+import io.haoma.calculator.messenger.saveChatDefaults
+import io.haoma.calculator.messenger.loadChatDefaults
 import kotlinx.coroutines.launch
 
 
 @Composable
 internal fun ChatDefaultsSection(store: MessengerStore, onBack: () -> Unit) {
-    val initial = remember { store.loadChatDefaults() }
+    var initial by remember { mutableStateOf(store.loadChatDefaults()) }
     val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(BG_BASE)
-            .verticalScroll(rememberScrollState()),
-    ) {
-        SectionHeader(title = "Chat defaults", store = store, onBack = onBack)
-
-        if (initial == null) {
-            VaultUnavailableBanner()
-            return@Column
+    val snapshot = initial
+    if (snapshot == null) {
+        Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
+            SectionHeader(title = "Chat defaults", store = store, onBack = onBack)
+            VaultUnavailableBanner(message = "Vault session unavailable — re-unlock the app to edit chat defaults.")
         }
+        return
+    }
 
-        val initialRetentionIndex = retentionOptionIndex(initial.retentionSeconds)
-        var retentionIndex by remember { mutableIntStateOf(initialRetentionIndex) }
-        var sendReceipts by remember { mutableStateOf(initial.sendReceipts) }
-        var saving by remember { mutableStateOf(false) }
-        var error by remember { mutableStateOf<String?>(null) }
+    val initialRetentionIndex = retentionOptionIndex(snapshot.retentionSeconds)
+    var retentionIndex by remember(snapshot) { mutableIntStateOf(initialRetentionIndex) }
+    var sendReceipts by remember(snapshot) { mutableStateOf(snapshot.sendReceipts) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
-        val current by remember(retentionIndex, sendReceipts) {
-            derivedStateOf {
-                ChatDefaultsSettings(
-                    retentionSeconds = retentionLevels[retentionIndex].seconds.toLong(),
-                    sendReceipts = sendReceipts,
+    val current by remember(retentionIndex, sendReceipts) {
+        derivedStateOf {
+            ChatDefaultsSettings(
+                retentionSeconds = retentionLevels[retentionIndex].seconds.toLong(),
+                sendReceipts = sendReceipts,
+            )
+        }
+    }
+    val dirty by remember(current, snapshot) { derivedStateOf { current != snapshot } }
+
+    Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
+        SectionHeader(title = "Chat defaults", store = store, onBack = onBack)
+        DirtyBar(
+            visible = dirty && !saving,
+            onTap = { coroutineScope.launch { scrollState.animateScrollTo(scrollState.maxValue) } },
+        )
+
+        Column(modifier = Modifier.weight(1f).verticalScroll(scrollState)) {
+            Section(label = "Disappearing messages") {
+                RetentionDropdown(
+                    currentIndex = retentionIndex,
+                    onPick = { retentionIndex = it; if (error != null) error = null },
                 )
             }
-        }
-        val dirty by remember(current, initial) { derivedStateOf { current != initial } }
 
-        Section(label = "Disappearing messages") {
-            RetentionDropdown(
-                currentIndex = retentionIndex,
-                onPick = { retentionIndex = it; if (error != null) error = null },
-            )
-        }
+            Section(label = "Read receipts") {
+                ToggleRow(
+                    label = "Send read receipts by default",
+                    hint = "Tells the other side when you read their messages.",
+                    checked = sendReceipts,
+                    onCheckedChange = { sendReceipts = it; if (error != null) error = null },
+                )
+            }
 
-        Section(label = "Read receipts") {
-            ToggleRow(
-                label = "Send read receipts by default",
-                hint = "Tells the other side when you read their messages.",
-                checked = sendReceipts,
-                onCheckedChange = { sendReceipts = it; if (error != null) error = null },
-            )
-        }
+            Section(
+                label = "Apply scope",
+                description = "Applies to chats created after saving. Existing chats keep their per-chat retention + receipts settings.",
+            ) {}
 
-        Section(label = "Apply scope") {
-            Text(
-                text = "Applies to chats created after saving. Existing chats keep their " +
-                    "per-chat retention + receipts settings.",
-                color = FG_DIM,
-                fontSize = 12.sp,
-            )
-        }
+            Spacer(modifier = Modifier.height(8.dp))
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(
-                enabled = dirty && !saving,
-                onClick = {
-                    val snapshot = current
+            SaveResetRow(
+                dirty = dirty,
+                saving = saving,
+                onSave = {
+                    val saveSnapshot = current
                     saving = true
                     error = null
                     coroutineScope.launch {
-                        val result = store.saveChatDefaults(snapshot)
+                        val result = store.saveChatDefaults(saveSnapshot)
                         saving = false
-                        result.onSuccess { onBack() }
+                        
+                        
+                        result.onSuccess { initial = store.loadChatDefaults() }
                         result.onFailure { t -> error = t.message ?: "save failed" }
                     }
                 },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = BTN_PRIMARY,
-                    contentColor = BG_BASE,
-                    disabledContainerColor = BTN_DIM,
-                    disabledContentColor = FG_DIM,
-                ),
-            ) {
-                Text(if (saving) "Saving…" else "Save")
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            TextButton(
-                enabled = dirty && !saving,
-                onClick = {
+                onReset = {
                     retentionIndex = initialRetentionIndex
-                    sendReceipts = initial.sendReceipts
+                    sendReceipts = snapshot.sendReceipts
                     error = null
                 },
-            ) {
-                Text("Reset", color = if (dirty && !saving) FG_LINK else FG_DIM)
-            }
-            if (saving) {
-                Spacer(modifier = Modifier.width(12.dp))
-                CircularProgressIndicator(
-                    color = BTN_PRIMARY,
-                    strokeWidth = 2.dp,
-                    modifier = Modifier
-                        .height(20.dp)
-                        .width(20.dp),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "re-sealing vault (1–3s)…",
-                    color = FG_DIM,
-                    fontSize = 12.sp,
-                )
-            }
-        }
-
-        error?.let { message ->
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = message,
-                color = C_DANGER,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(horizontal = 16.dp),
             )
+
+            error?.let { message ->
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = message,
+                    color = HaomaPalette.C_DANGER,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
         }
-
-        Spacer(modifier = Modifier.height(24.dp))
     }
-}
-
-@Composable
-private fun Section(label: String, content: @Composable () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            text = label.uppercase(),
-            color = FG_DIM,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        content()
-    }
-    HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
 }
 
 @Composable
@@ -214,20 +163,18 @@ private fun RetentionDropdown(currentIndex: Int, onPick: (Int) -> Unit) {
         ) {
             Text(
                 text = retentionLevels[currentIndex].label,
-                color = FG_PRIMARY,
+                color = HaomaPalette.BTN_GIVE,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
-            Text(text = "▾", color = FG_LINK, fontSize = 14.sp)
+            Text(text = "▾", color = HaomaPalette.FG_LINK, fontSize = 14.sp)
         }
-        
-        
         MaterialTheme(
             colorScheme = darkColorScheme(
-                surface = BG_BAR,
-                onSurface = FG_PRIMARY,
+                surface = HaomaPalette.BG_BAR,
+                onSurface = HaomaPalette.FG_PRIMARY,
             ),
         ) {
             DropdownMenu(
@@ -236,18 +183,10 @@ private fun RetentionDropdown(currentIndex: Int, onPick: (Int) -> Unit) {
                 properties = PopupProperties(focusable = false),
             ) {
                 retentionLevels.forEachIndexed { idx, lvl ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = lvl.label,
-                                color = if (idx == currentIndex) FG_LINK else FG_PRIMARY,
-                                fontFamily = FontFamily.Monospace,
-                            )
-                        },
-                        onClick = {
-                            onPick(idx)
-                            expanded = false
-                        },
+                    HaomaDropdownItem(
+                        label = lvl.label,
+                        selected = idx == currentIndex,
+                        onClick = { onPick(idx); expanded = false },
                     )
                 }
             }
@@ -256,7 +195,7 @@ private fun RetentionDropdown(currentIndex: Int, onPick: (Int) -> Unit) {
 }
 
 @Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     label: String,
     hint: String,
     checked: Boolean,
@@ -273,23 +212,77 @@ private fun ToggleRow(
             checked = checked,
             onCheckedChange = onCheckedChange,
             colors = CheckboxDefaults.colors(
-                checkedColor = BTN_PRIMARY,
-                uncheckedColor = FG_DIM,
-                checkmarkColor = BG_BASE,
+                checkedColor = HaomaPalette.BTN_GIVE,
+                uncheckedColor = HaomaPalette.FG_DIM,
+                checkmarkColor = HaomaPalette.BG_BASE,
             ),
         )
         Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = label, color = FG_PRIMARY, fontSize = 14.sp)
+            Text(
+                text = label,
+                color = HaomaPalette.FG_LINK,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
             if (hint.isNotEmpty()) {
-                Text(text = hint, color = FG_DIM, fontSize = 12.sp)
+                Text(
+                    text = hint,
+                    color = HaomaPalette.FG_SECONDARY,
+                    fontSize = 12.sp,
+                )
             }
         }
     }
 }
 
+
 @Composable
-private fun VaultUnavailableBanner() {
+internal fun SaveResetRow(
+    dirty: Boolean,
+    saving: Boolean,
+    onSave: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CtaButton(
+            label = if (saving) "Saving…" else "Save",
+            accent = HaomaPalette.BTN_PRIMARY,
+            enabled = dirty && !saving,
+            onClick = onSave,
+        )
+        Text(
+            text = "Reset",
+            color = if (dirty && !saving) HaomaPalette.FG_LINK else HaomaPalette.FG_DIM,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .clickable(enabled = dirty && !saving, onClick = onReset)
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+        )
+        if (saving) {
+            CircularProgressIndicator(
+                color = HaomaPalette.BTN_PRIMARY,
+                strokeWidth = 2.dp,
+                modifier = Modifier.height(20.dp).width(20.dp),
+            )
+            Text(
+                text = "re-sealing vault (1–3s)…",
+                color = HaomaPalette.FG_SECONDARY,
+                fontSize = 12.sp,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun VaultUnavailableBanner(message: String) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -297,19 +290,9 @@ private fun VaultUnavailableBanner() {
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = "Vault session unavailable — re-unlock the app to edit chat defaults.",
-            color = FG_DIM,
+            text = message,
+            color = HaomaPalette.FG_SECONDARY,
             fontSize = 13.sp,
         )
     }
 }
-
-private val BG_BASE = Color(0xFF1D2021)
-private val BG_BAR = Color(0xFF282828)
-private val DIVIDER = Color(0xFF3C3836)
-private val FG_PRIMARY = Color(0xFFEBDBB2)
-private val FG_DIM = Color(0xFF7C6F64)
-private val FG_LINK = Color(0xFF83A598)
-private val BTN_PRIMARY = Color(0xFF5FCC1A)
-private val BTN_DIM = Color(0xFF504945)
-private val C_DANGER = Color(0xFFCC241D)

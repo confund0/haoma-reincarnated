@@ -18,7 +18,12 @@ func (a *App) cmdChangePass(rest string) {
 		a.log("  [gray]passphrases must not contain spaces in v0[white]")
 		return
 	}
-	if err := a.VaultCtl.ChangePassphrase(parts[0], parts[1]); err != nil {
+
+	oldPass := []byte(parts[0])
+	newPass := []byte(parts[1])
+	defer clear(oldPass)
+	defer clear(newPass)
+	if err := a.VaultCtl.ChangePassphrase(oldPass, newPass); err != nil {
 		a.log("[red]/change-pass failed:[white] %v", err)
 		return
 	}

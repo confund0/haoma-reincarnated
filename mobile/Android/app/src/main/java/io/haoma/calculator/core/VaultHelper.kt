@@ -11,6 +11,9 @@ object VaultHelper {
     
     const val DefaultPassphrase = "good-girls-go-to-heaven"
 
+    
+    val DefaultPassphraseBytes: ByteArray = DefaultPassphrase.toByteArray(Charsets.UTF_8)
+
     private const val ExecTimeoutSec = 30L
     private const val LibName = "libhaoma-vault.so"
 
@@ -25,20 +28,27 @@ object VaultHelper {
     fun cfgDir(context: Context): File = File(context.filesDir, "haoma")
 
     
-    fun unseal(context: Context, passphrase: String = DefaultPassphrase): Unsealed {
-        val stdout = execHelper(context, args = emptyArray(), stdin = passphrase.toByteArray(Charsets.UTF_8))
+    fun unseal(context: Context, passphrase: ByteArray = DefaultPassphraseBytes): Unsealed {
+        Logger.d("vault", "unseal enter pass_len=${passphrase.size}")
+        val stdout = execHelper(context, args = emptyArray(), stdin = passphrase)
         return splitOutput(stdout)
     }
 
     
-    fun reseal(context: Context, payloadJson: ByteArray, passphrase: String) {
-        val stdin = ByteArray(passphrase.length + 1 + payloadJson.size)
-        val passBytes = passphrase.toByteArray(Charsets.UTF_8)
-        System.arraycopy(passBytes, 0, stdin, 0, passBytes.size)
-        stdin[passBytes.size] = '\n'.code.toByte()
-        System.arraycopy(payloadJson, 0, stdin, passBytes.size + 1, payloadJson.size)
-        execHelper(context, args = arrayOf("-w"), stdin = stdin)
-        Logger.i("vault", "reseal ok payload_bytes=${payloadJson.size}")
+    fun reseal(context: Context, payloadJson: ByteArray, passphrase: ByteArray) {
+        Logger.d("vault", "reseal enter pass_len=${passphrase.size} payload_bytes=${payloadJson.size}")
+        val stdin = ByteArray(passphrase.size + 1 + payloadJson.size)
+        try {
+            System.arraycopy(passphrase, 0, stdin, 0, passphrase.size)
+            stdin[passphrase.size] = '\n'.code.toByte()
+            System.arraycopy(payloadJson, 0, stdin, passphrase.size + 1, payloadJson.size)
+            execHelper(context, args = arrayOf("-w"), stdin = stdin)
+        } finally {
+            
+            
+            java.util.Arrays.fill(stdin, 0)
+        }
+        Logger.i("vault", "reseal ok pass_len=${passphrase.size} payload_bytes=${payloadJson.size}")
     }
 
     

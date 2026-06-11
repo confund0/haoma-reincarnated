@@ -3,6 +3,7 @@ package io.haoma.calculator.messenger
 import android.content.Context
 import io.haoma.calculator.core.BinaryFingerprints
 import io.haoma.calculator.core.DisguiseStore
+import io.haoma.calculator.core.IdlePolicy
 import io.haoma.calculator.core.VaultSession
 import io.haoma.calculator.core.computeFingerprints
 import io.haoma.calculator.core.ipc.IpcClient
@@ -43,6 +44,9 @@ class MessengerStore(
     internal val disguise: DisguiseStore? = null,
     internal val notificationPoster: io.haoma.calculator.notifications.NotificationPoster? = null,
     internal val appContext: Context? = null,
+    
+    
+    internal val policyUpdater: (IdlePolicy) -> Unit = {},
 ) {
     internal val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Default + Logger.coroutineExceptionHandler,

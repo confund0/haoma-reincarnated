@@ -1,5 +1,6 @@
 package io.haoma.calculator.messenger
 
+import io.haoma.calculator.core.IdlePolicy
 import io.haoma.calculator.core.ipc.Frame
 import io.haoma.calculator.core.ipc.FrameType
 import io.haoma.calculator.log.Logger
@@ -45,6 +46,12 @@ fun MessengerStore.pushSettingsSync() {
 }
 
 
+internal fun MessengerStore.refreshVaultDerivedState(session: io.haoma.calculator.core.VaultSession) {
+    policyUpdater(IdlePolicy.fromJson(session.snapshot()))
+    setPassphraseIsDefault(session.isPassphraseDefault())
+}
+
+
 internal suspend fun MessengerStore.resealVault(
     auditLabel: String,
     successMsg: String,
@@ -57,6 +64,7 @@ internal suspend fun MessengerStore.resealVault(
     return try {
         withContext(Dispatchers.IO) { session.mutateAndReseal(auditLabel, mutate) }
         if (pushSync) pushSettingsSync()
+        refreshVaultDerivedState(session)
         appendStatus(successMsg)
         Result.success(Unit)
     } catch (t: Throwable) {
@@ -287,10 +295,15 @@ suspend fun MessengerStore.changeUnlockPattern(oldPattern: String, newPattern: S
 suspend fun MessengerStore.changePassphrase(oldPass: String, newPass: String): Result<Unit> {
     val session = vaultSessionProvider()
         ?: return Result.failure(IllegalStateException("vault session unavailable (re-unlock first)"))
+    
+    
+    val oldBytes = oldPass.toByteArray(Charsets.UTF_8)
+    val newBytes = newPass.toByteArray(Charsets.UTF_8)
     return try {
         withContext(Dispatchers.IO) {
-            session.changePassphrase(oldPass, newPass)
+            session.changePassphrase(oldBytes, newBytes)
         }
+        refreshVaultDerivedState(session)
         appendStatus("passphrase rotated")
         Result.success(Unit)
     } catch (t: Throwable) {
@@ -299,6 +312,9 @@ suspend fun MessengerStore.changePassphrase(oldPass: String, newPass: String): R
             level = StatusLevel.WARN,
         )
         Result.failure(t)
+    } finally {
+        java.util.Arrays.fill(oldBytes, 0)
+        java.util.Arrays.fill(newBytes, 0)
     }
 }
 

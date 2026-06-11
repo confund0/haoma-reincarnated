@@ -278,6 +278,12 @@ fun ChatDetailScreen(
                 )
             }
         }
+        val health by store.health.collectAsStateWithLifecycle()
+        
+        
+        val effectiveNick = chat?.nickOverride?.takeIf { it.isNotEmpty() }
+            ?: health.selfNick.takeIf { it.isNotEmpty() }
+            ?: "mynick"
         ChatInput(
             composeDraft = composeDraft,
             onComposeChange = { text -> store.setDraft(chatId, text) },
@@ -293,6 +299,7 @@ fun ChatDetailScreen(
             
             
             onAttach = { attachLauncher.launch(arrayOf("*/*")) },
+            fromNick = effectiveNick,
         )
     }
 

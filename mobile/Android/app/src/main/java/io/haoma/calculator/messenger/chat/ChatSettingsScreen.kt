@@ -15,12 +15,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,21 +29,31 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.haoma.calculator.messenger.*
 import io.haoma.calculator.messenger.ChatEntry
 import io.haoma.calculator.messenger.ChatKind
+import io.haoma.calculator.messenger.CtaButton
+import io.haoma.calculator.messenger.DangerButton
+import io.haoma.calculator.messenger.DirtyBar
+import io.haoma.calculator.messenger.HaomaDropdownItem
+import io.haoma.calculator.messenger.HaomaPalette
+import io.haoma.calculator.messenger.HaomaTextField
 import io.haoma.calculator.messenger.MessengerStore
+import io.haoma.calculator.messenger.Section
+import io.haoma.calculator.messenger.clearChat
 import io.haoma.calculator.messenger.contacts.shortPeerId
+import io.haoma.calculator.messenger.deleteChat
+import io.haoma.calculator.messenger.setChatSettings
+import kotlinx.coroutines.launch
 
 
 @Composable
@@ -59,8 +66,6 @@ fun ChatSettingsScreen(
     val chat = chats.firstOrNull { it.chatId == chatId }
 
     if (chat == null) {
-        
-        
         LaunchedEffect(Unit) { onBack() }
         return
     }
@@ -74,70 +79,107 @@ fun ChatSettingsScreen(
     var muted by remember(chat.notificationsMuted) {
         mutableStateOf(chat.notificationsMuted)
     }
+    var nickOverride by remember(chat.nickOverride) {
+        mutableStateOf(chat.nickOverride)
+    }
     var risksAcked by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<ChatConfirm?>(null) }
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
 
     val initialIndex = retentionOptionIndex(chat.retentionTtl)
     val initialSendReceipts = !chat.disableReadReceipts
     val initialMuted = chat.notificationsMuted
-    val dirty by remember(chat, retentionIndex, sendReceipts, muted) {
+    val initialNickOverride = chat.nickOverride
+    val dirty by remember(chat, retentionIndex, sendReceipts, muted, nickOverride) {
         derivedStateOf {
             retentionIndex != initialIndex ||
                 sendReceipts != initialSendReceipts ||
-                muted != initialMuted
+                muted != initialMuted ||
+                nickOverride.trim() != initialNickOverride
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(BG_BASE)
-            .verticalScroll(rememberScrollState()),
-    ) {
+    Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
         Header(title = chatTitle(chat), store = store, onBack = onBack)
-
-        RetentionSection(
-            currentIndex = retentionIndex,
-            onPick = { retentionIndex = it },
+        DirtyBar(
+            visible = dirty,
+            onTap = { scope.launch { scrollState.animateScrollTo(scrollState.maxValue) } },
         )
 
-        ToggleSection(
-            label = "Send read receipts",
-            checked = sendReceipts,
-            onCheckedChange = { sendReceipts = it },
-            description = "Tells the other side when you read their messages.",
-        )
-
-        ToggleSection(
-            label = "Mute notifications",
-            checked = muted,
-            onCheckedChange = { muted = it },
-            description = "This chat won't pop a notification while muted.",
-        )
-
-        SaveRow(
-            dirty = dirty,
-            onSave = {
-                val ttl = retentionLevels[retentionIndex].seconds
-                store.setChatSettings(
-                    chatId = chatId,
-                    retentionTtl = ttl,
-                    disableReadReceipts = !sendReceipts,
-                    notificationsMuted = muted,
+        Column(modifier = Modifier.weight(1f).verticalScroll(scrollState)) {
+            Section(
+                label = "Your nick in this chat",
+                description = "Empty = use your global nick. Set to present a different name to this conversation.",
+            ) {
+                val placeholder = "Use global nick (${store.health.value.selfNick.ifEmpty { "mynick" }})"
+                HaomaTextField(
+                    value = nickOverride,
+                    onValueChange = { incoming ->
+                        
+                        
+                        val cleaned = incoming.filter { it.code >= 0x20 && it.code != 0x7f }
+                        if (cleaned.length <= NICK_OVERRIDE_MAX_LEN) {
+                            nickOverride = cleaned
+                        }
+                    },
+                    placeholder = placeholder,
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                onBack()
-            },
-            onCancel = onBack,
-        )
+            }
 
-        DangerSection(
-            risksAcked = risksAcked,
-            onRiskCheck = { risksAcked = it },
-            onClear = { confirm = ChatConfirm.Clear },
-            onDelete = { confirm = ChatConfirm.Delete },
-        )
+            Section(label = "Disappearing messages") {
+                RetentionDropdown(
+                    currentIndex = retentionIndex,
+                    onPick = { retentionIndex = it },
+                )
+            }
 
-        Spacer(modifier = Modifier.height(24.dp))
+            ToggleSection(
+                label = "Send read receipts",
+                checked = sendReceipts,
+                onCheckedChange = { sendReceipts = it },
+                description = "Tells the other side when you read their messages.",
+            )
+
+            ToggleSection(
+                label = "Mute notifications",
+                checked = muted,
+                onCheckedChange = { muted = it },
+                description = "This chat won't pop a notification while muted.",
+            )
+
+            SaveRow(
+                dirty = dirty,
+                onSave = {
+                    val ttl = retentionLevels[retentionIndex].seconds
+                    store.setChatSettings(
+                        chatId = chatId,
+                        retentionTtl = ttl,
+                        disableReadReceipts = !sendReceipts,
+                        notificationsMuted = muted,
+                        nickOverride = nickOverride.trim(),
+                    )
+                    
+                    
+                },
+                onReset = {
+                    retentionIndex = initialIndex
+                    sendReceipts = initialSendReceipts
+                    muted = initialMuted
+                    nickOverride = initialNickOverride
+                },
+            )
+
+            DangerSection(
+                risksAcked = risksAcked,
+                onRiskCheck = { risksAcked = it },
+                onClear = { confirm = ChatConfirm.Clear },
+                onDelete = { confirm = ChatConfirm.Delete },
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+        }
     }
 
     confirm?.let { which ->
@@ -163,13 +205,13 @@ private fun Header(title: String, store: MessengerStore, onBack: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(BG_BAR)
+            .background(HaomaPalette.BG_BAR)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = "‹",
-            color = FG_LINK,
+            color = HaomaPalette.FG_LINK,
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
@@ -179,7 +221,7 @@ private fun Header(title: String, store: MessengerStore, onBack: () -> Unit) {
         Spacer(modifier = Modifier.width(20.dp))
         Text(
             text = title,
-            color = FG_PRIMARY,
+            color = HaomaPalette.FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
@@ -189,82 +231,47 @@ private fun Header(title: String, store: MessengerStore, onBack: () -> Unit) {
 }
 
 @Composable
-private fun Section(
-    label: String,
-    labelColor: Color = FG_DIM,
-    content: @Composable () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-    ) {
-        Text(
-            text = label.uppercase(),
-            color = labelColor,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        content()
-    }
-    HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
-}
-
-@Composable
-private fun RetentionSection(currentIndex: Int, onPick: (Int) -> Unit) {
+private fun RetentionDropdown(currentIndex: Int, onPick: (Int) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    Section(label = "Disappearing messages") {
-        Box {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = true }
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = true }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = retentionLevels[currentIndex].label,
+                color = HaomaPalette.BTN_GIVE,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "▾",
+                color = HaomaPalette.FG_LINK,
+                fontSize = 14.sp,
+            )
+        }
+        MaterialTheme(
+            colorScheme = darkColorScheme(
+                surface = HaomaPalette.BG_BAR,
+                onSurface = HaomaPalette.FG_PRIMARY,
+            ),
+        ) {
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                properties = PopupProperties(focusable = false),
             ) {
-                Text(
-                    text = retentionLevels[currentIndex].label,
-                    color = FG_PRIMARY,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "▾",
-                    color = FG_LINK,
-                    fontSize = 14.sp,
-                )
-            }
-            
-            
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    surface = BG_BAR,
-                    onSurface = FG_PRIMARY,
-                ),
-            ) {
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false },
-                    properties = PopupProperties(focusable = false),
-                ) {
-                    retentionLevels.forEachIndexed { idx, lvl ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = lvl.label,
-                                    color = if (idx == currentIndex) FG_LINK else FG_PRIMARY,
-                                    fontFamily = FontFamily.Monospace,
-                                )
-                            },
-                            onClick = {
-                                onPick(idx)
-                                expanded = false
-                            },
-                        )
-                    }
+                retentionLevels.forEachIndexed { idx, lvl ->
+                    HaomaDropdownItem(
+                        label = lvl.label,
+                        selected = idx == currentIndex,
+                        onClick = { onPick(idx); expanded = false },
+                    )
                 }
             }
         }
@@ -288,53 +295,56 @@ private fun ToggleSection(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
                 colors = CheckboxDefaults.colors(
-                    checkedColor = FG_LINK,
-                    uncheckedColor = FG_DIM,
-                    checkmarkColor = BG_BASE,
+                    checkedColor = HaomaPalette.BTN_GIVE,
+                    uncheckedColor = HaomaPalette.FG_DIM,
+                    checkmarkColor = HaomaPalette.BG_BASE,
                 ),
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = label,
-                color = FG_PRIMARY,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
+                color = HaomaPalette.FG_LINK,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
             )
         }
         Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = description,
-            color = FG_DIM,
+            color = HaomaPalette.FG_SECONDARY,
             fontSize = 12.sp,
             modifier = Modifier.padding(start = 48.dp),
         )
     }
-    HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
+    HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
 }
 
 @Composable
-private fun SaveRow(dirty: Boolean, onSave: () -> Unit, onCancel: () -> Unit) {
+private fun SaveRow(dirty: Boolean, onSave: () -> Unit, onReset: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Button(
+        CtaButton(
+            label = "Save",
+            accent = HaomaPalette.BTN_PRIMARY,
             enabled = dirty,
             onClick = onSave,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = BTN_PRIMARY,
-                contentColor = BG_BASE,
-                disabledContainerColor = BTN_DIM,
-                disabledContentColor = FG_DIM,
-            ),
-        ) { Text("Save") }
-        TextButton(onClick = onCancel) {
-            Text("Cancel", color = FG_LINK)
-        }
+        )
+        Text(
+            text = "Reset",
+            color = if (dirty) HaomaPalette.FG_LINK else HaomaPalette.FG_DIM,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .clickable(enabled = dirty, onClick = onReset)
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+        )
     }
-    HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
+    HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
 }
 
 @Composable
@@ -347,29 +357,29 @@ private fun DangerSection(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 16.dp),
     ) {
         Text(
             text = "DANGER",
-            color = C_DANGER,
-            fontSize = 11.sp,
+            color = HaomaPalette.C_DANGER,
+            fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(
                 checked = risksAcked,
                 onCheckedChange = onRiskCheck,
                 colors = CheckboxDefaults.colors(
-                    checkedColor = C_DANGER,
-                    uncheckedColor = FG_DIM,
-                    checkmarkColor = BG_BASE,
+                    checkedColor = HaomaPalette.C_DANGER,
+                    uncheckedColor = HaomaPalette.FG_DIM,
+                    checkmarkColor = HaomaPalette.BG_BASE,
                 ),
             )
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "I understand risks",
-                color = FG_PRIMARY,
+                color = HaomaPalette.FG_PRIMARY,
                 fontSize = 14.sp,
             )
         }
@@ -377,32 +387,18 @@ private fun DangerSection(
         DangerButton(
             label = "Clear chat",
             enabled = risksAcked,
+            modifier = Modifier.fillMaxWidth(),
             onClick = onClear,
         )
         Spacer(modifier = Modifier.height(8.dp))
         DangerButton(
             label = "Delete chat",
             enabled = risksAcked,
+            modifier = Modifier.fillMaxWidth(),
             onClick = onDelete,
         )
     }
-}
-
-@Composable
-private fun DangerButton(label: String, enabled: Boolean, onClick: () -> Unit) {
-    Button(
-        enabled = enabled,
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = C_DANGER,
-            contentColor = BG_BASE,
-            disabledContainerColor = BTN_DIM,
-            disabledContentColor = FG_DIM,
-        ),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text(label)
-    }
+    HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
 }
 
 @Composable
@@ -425,30 +421,36 @@ private fun ConfirmDialog(
     }
     MaterialTheme(
         colorScheme = darkColorScheme(
-            surface = BG_BAR,
-            onSurface = FG_PRIMARY,
-            background = BG_BAR,
-            onBackground = FG_PRIMARY,
+            surface = HaomaPalette.BG_BAR,
+            onSurface = HaomaPalette.FG_PRIMARY,
+            background = HaomaPalette.BG_BAR,
+            onBackground = HaomaPalette.FG_PRIMARY,
         ),
     ) {
         AlertDialog(
             onDismissRequest = onDismiss,
-            title = { Text(title, color = FG_PRIMARY) },
-            text = { Text(body, color = FG_DIM, fontSize = 14.sp) },
+            title = { Text(title, color = HaomaPalette.FG_PRIMARY) },
+            text = { Text(body, color = HaomaPalette.FG_SECONDARY, fontSize = 14.sp) },
             confirmButton = {
                 TextButton(onClick = onConfirm) {
-                    Text(confirmLabel, color = C_DANGER, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = confirmLabel,
+                        color = HaomaPalette.C_DANGER,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             },
             dismissButton = {
                 TextButton(onClick = onDismiss) {
-                    Text("Cancel", color = FG_LINK)
+                    Text("Cancel", color = HaomaPalette.FG_LINK)
                 }
             },
-            containerColor = BG_BAR,
+            containerColor = HaomaPalette.BG_BAR,
         )
     }
 }
+
+private const val NICK_OVERRIDE_MAX_LEN = 32
 
 private fun chatTitle(chat: ChatEntry): String = when {
     chat.label.isNotEmpty() -> chat.label
@@ -479,14 +481,3 @@ internal fun retentionOptionIndex(seconds: Long): Int {
     val idx = retentionLevels.indexOfFirst { it.seconds == target }
     return if (idx >= 0) idx else 0
 }
-
-
-private val BG_BASE = Color(0xFF1D2021)
-private val BG_BAR = Color(0xFF282828)
-private val DIVIDER = Color(0xFF3C3836)
-private val FG_PRIMARY = Color(0xFFEBDBB2)
-private val FG_DIM = Color(0xFF7C6F64)
-private val FG_LINK = Color(0xFF83A598)
-private val BTN_PRIMARY = Color(0xFF5FCC1A)
-private val BTN_DIM = Color(0xFF504945)
-private val C_DANGER = Color(0xFFCC241D) 

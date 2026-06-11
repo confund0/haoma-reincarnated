@@ -2,23 +2,18 @@ package io.haoma.calculator.messenger.settings
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -33,62 +28,59 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.haoma.calculator.messenger.*
+import io.haoma.calculator.messenger.CtaButton
+import io.haoma.calculator.messenger.HaomaPalette
 import io.haoma.calculator.messenger.MessengerStore
+import io.haoma.calculator.messenger.Section
+import io.haoma.calculator.messenger.loadTorSettings
+import io.haoma.calculator.messenger.saveTorPassword
 import kotlinx.coroutines.launch
 
 
 @Composable
 internal fun TorSection(store: MessengerStore, onBack: () -> Unit) {
-    val initial = remember { store.loadTorSettings() }
+    var initial by remember { mutableStateOf(store.loadTorSettings()) }
     val coroutineScope = rememberCoroutineScope()
-
     var dialogOpen by remember { mutableStateOf(false) }
+
+    val snapshot = initial
+    if (snapshot == null) {
+        Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
+            SectionHeader(title = "Tor", store = store, onBack = onBack)
+            VaultUnavailableBanner(message = "Vault session unavailable — re-unlock the app to edit Tor settings.")
+        }
+        return
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(BG_BASE)
+            .background(HaomaPalette.BG_BASE)
             .verticalScroll(rememberScrollState()),
     ) {
         SectionHeader(title = "Tor", store = store, onBack = onBack)
 
-        if (initial == null) {
-            VaultUnavailableBanner()
-            return@Column
-        }
-
         Section(label = "Tor authentication") {
-            EmbeddedStatusRow(hasPassword = initial.hasPassword)
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(
-                onClick = { dialogOpen = true },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = BTN_PRIMARY,
-                    contentColor = BG_BASE,
-                ),
+            EmbeddedStatusRow(hasPassword = snapshot.hasPassword)
+            Spacer(modifier = Modifier.height(12.dp))
+            CtaButton(
+                label = "Change password override…",
+                accent = HaomaPalette.FG_LINK,
             ) {
-                Text("Change password override…")
+                dialogOpen = true
             }
         }
 
-        Section(label = "Privacy posture") {
-            Text(
-                text = "On Android, haomad spawns its own tor child with cookie " +
-                    "auth — the password override is only used if you point haomad " +
-                    "at an external tor (rare). Stored in the vault, re-sealed on " +
-                    "save; live haomad picks changes up immediately, no restart.",
-                color = FG_DIM,
-                fontSize = 12.sp,
-            )
-        }
+        Section(
+            label = "Privacy posture",
+            description = "On Android, haomad spawns its own tor child with cookie auth — the password override is only used if you point haomad at an external tor (rare). Stored in the vault, re-sealed on save; live haomad picks changes up immediately, no restart.",
+        ) {}
 
         Spacer(modifier = Modifier.height(24.dp))
     }
@@ -102,7 +94,7 @@ internal fun TorSection(store: MessengerStore, onBack: () -> Unit) {
                     onResult(result)
                     if (result.isSuccess) {
                         dialogOpen = false
-                        onBack()
+                        initial = store.loadTorSettings()
                     }
                 }
             },
@@ -116,14 +108,14 @@ private fun EmbeddedStatusRow(hasPassword: Boolean) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = "Embedded tor — cookie auth",
-            color = C_SUCCESS,
+            color = HaomaPalette.C_OK,
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
             text = "Password override: $overrideLabel.",
-            color = FG_DIM,
-            fontSize = 12.sp,
+            color = HaomaPalette.FG_SECONDARY,
+            fontSize = 13.sp,
         )
     }
 }
@@ -139,33 +131,33 @@ private fun TorPasswordDialog(
 
     MaterialTheme(
         colorScheme = darkColorScheme(
-            surface = BG_BAR,
-            onSurface = FG_PRIMARY,
-            background = BG_BAR,
-            onBackground = FG_PRIMARY,
+            surface = HaomaPalette.BG_BAR,
+            onSurface = HaomaPalette.FG_PRIMARY,
+            background = HaomaPalette.BG_BAR,
+            onBackground = HaomaPalette.FG_PRIMARY,
         ),
     ) {
         AlertDialog(
             onDismissRequest = { if (!saving) onDismiss() },
-            title = { Text("Change Tor password", color = FG_PRIMARY) },
+            title = { Text("Change Tor password", color = HaomaPalette.FG_PRIMARY) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "New control-port password (leave blank to clear).",
-                        color = FG_DIM,
+                        color = HaomaPalette.FG_SECONDARY,
                         fontSize = 13.sp,
                     )
                     if (saving) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(
-                                color = BTN_PRIMARY,
+                                color = HaomaPalette.BTN_PRIMARY,
                                 strokeWidth = 2.dp,
                                 modifier = Modifier.height(20.dp).width(20.dp),
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = "re-sealing vault (1–3s)…",
-                                color = FG_DIM,
+                                color = HaomaPalette.FG_SECONDARY,
                                 fontSize = 12.sp,
                             )
                         }
@@ -182,16 +174,16 @@ private fun TorPasswordDialog(
                             placeholder = {
                                 Text(
                                     text = "(blank to clear)",
-                                    color = FG_DIM,
+                                    color = HaomaPalette.FG_DIM,
                                     fontSize = 13.sp,
                                 )
                             },
-                            colors = textFieldColors(),
+                            colors = dialogFieldColors(),
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
                     error?.let {
-                        Text(text = it, color = C_DANGER, fontSize = 13.sp)
+                        Text(text = it, color = HaomaPalette.C_DANGER, fontSize = 13.sp)
                     }
                 }
             },
@@ -210,7 +202,7 @@ private fun TorPasswordDialog(
                 ) {
                     Text(
                         text = "Save",
-                        color = if (saving) FG_DIM else FG_LINK,
+                        color = if (saving) HaomaPalette.FG_DIM else HaomaPalette.FG_LINK,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -220,64 +212,22 @@ private fun TorPasswordDialog(
                     enabled = !saving,
                     onClick = onDismiss,
                 ) {
-                    Text(text = "Cancel", color = if (saving) FG_DIM else FG_LINK)
+                    Text(
+                        text = "Cancel",
+                        color = if (saving) HaomaPalette.FG_DIM else HaomaPalette.FG_LINK,
+                    )
                 }
             },
-            containerColor = BG_BAR,
+            containerColor = HaomaPalette.BG_BAR,
         )
     }
 }
 
 @Composable
-private fun Section(label: String, content: @Composable () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            text = label.uppercase(),
-            color = FG_DIM,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        content()
-    }
-    HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
-}
-
-@Composable
-private fun VaultUnavailableBanner() {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = "Vault session unavailable — re-unlock the app to edit Tor settings.",
-            color = FG_DIM,
-            fontSize = 13.sp,
-        )
-    }
-}
-
-@Composable
-private fun textFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = FG_PRIMARY,
-    unfocusedTextColor = FG_PRIMARY,
-    cursorColor = FG_LINK,
-    focusedBorderColor = FG_LINK,
-    unfocusedBorderColor = DIVIDER,
+internal fun dialogFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = HaomaPalette.FG_PRIMARY,
+    unfocusedTextColor = HaomaPalette.FG_PRIMARY,
+    cursorColor = HaomaPalette.FG_LINK,
+    focusedBorderColor = HaomaPalette.FG_LINK,
+    unfocusedBorderColor = HaomaPalette.DIVIDER,
 )
-
-private val BG_BASE = Color(0xFF1D2021)
-private val BG_BAR = Color(0xFF282828)
-private val DIVIDER = Color(0xFF3C3836)
-private val FG_PRIMARY = Color(0xFFEBDBB2)
-private val FG_DIM = Color(0xFF7C6F64)
-private val FG_LINK = Color(0xFF83A598)
-private val BTN_PRIMARY = Color(0xFF5FCC1A)
-private val C_DANGER = Color(0xFFCC241D)
-private val C_SUCCESS = Color(0xFF8EC07C)

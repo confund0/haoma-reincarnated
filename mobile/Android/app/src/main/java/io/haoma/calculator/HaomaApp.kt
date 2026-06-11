@@ -156,14 +156,22 @@ class HaomaApp : Application(), ImageLoaderFactory {
             stopFgs = {
                 HaomaCoreService.stop(applicationContext)
                 idlePolicy = null
+                
+                
+                val expiring = vaultSession
                 vaultSession = null
+                expiring?.wipe()
             },
             
             
             stopHaomaOnly = {
                 HaomaCoreService.stopHaomaOnly(applicationContext)
                 idlePolicy = null
+                
+                
+                val expiring = vaultSession
                 vaultSession = null
+                expiring?.wipe()
             },
             
             
@@ -197,6 +205,10 @@ class HaomaApp : Application(), ImageLoaderFactory {
             disguise = disguiseStore,
             notificationPoster = notificationPoster,
             appContext = applicationContext,
+            policyUpdater = { policy ->
+                idlePolicy = policy
+                Logger.i("app", "idle policy refreshed action=${policy.action} t=${policy.timeoutSeconds}s")
+            },
         )
         
         

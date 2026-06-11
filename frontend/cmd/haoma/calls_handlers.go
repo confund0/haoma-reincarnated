@@ -132,7 +132,11 @@ func (sd *sessionDispatcher) handleStartCall(ctx context.Context, sess *ipc.Sess
 
 	broadcastCallStateChanged(sd.d, state)
 
-	if err := shipCallEnvelope(ctx, sd.d, peerID, callID, msg.KindCallOffer, modalities, "", tokens, outboundKey); err != nil {
+	offerSenderNick := sd.d.selfNick()
+	if dc.NickOverride != "" {
+		offerSenderNick = dc.NickOverride
+	}
+	if err := shipCallEnvelope(ctx, sd.d, peerID, callID, msg.KindCallOffer, modalities, "", tokens, outboundKey, offerSenderNick); err != nil {
 		slog.Warn("call_offer ship failed",
 			slog.String("call_id", callID),
 			slog.String("peer_id", peerID),
@@ -288,7 +292,11 @@ func (sd *sessionDispatcher) handleRespondCall(ctx context.Context, sess *ipc.Se
 	}
 	broadcastCallStateChanged(sd.d, updated)
 
-	if err := shipCallEnvelope(ctx, sd.d, state.PeerID, state.CallID, wireKind, state.Modalities, reason, ownTokens, ownKey); err != nil {
+	respondSenderNick := ""
+	if wireKind == msg.KindCallAccept {
+		respondSenderNick = callSenderNickForChat(sd.d, chat.ChatID(state.ChatID))
+	}
+	if err := shipCallEnvelope(ctx, sd.d, state.PeerID, state.CallID, wireKind, state.Modalities, reason, ownTokens, ownKey, respondSenderNick); err != nil {
 
 		slog.Warn("call response ship failed",
 			slog.String("call_id", state.CallID),
@@ -332,7 +340,23 @@ func (sd *sessionDispatcher) handleRespondCall(ctx context.Context, sess *ipc.Se
 	}
 }
 
-func shipCallEnvelope(ctx context.Context, d *daemon, peerID, callID string, kind msg.Kind, modalities []string, reason string, tokens map[string]string, outboundKey []byte) error {
+func callSenderNickForChat(d *daemon, chatID chat.ChatID) string {
+	global := d.selfNick()
+	if d.chats == nil || chatID == "" {
+		return global
+	}
+	c, err := d.chats.Get(chatID)
+	if err != nil {
+		return global
+	}
+	override := chatNickOverrideOf(c)
+	if override == "" {
+		return global
+	}
+	return override
+}
+
+func shipCallEnvelope(ctx context.Context, d *daemon, peerID, callID string, kind msg.Kind, modalities []string, reason string, tokens map[string]string, outboundKey []byte, senderNick string) error {
 	seq, err := d.peerSeq.NextSendSeq(peerID)
 	if err != nil {
 		return fmt.Errorf("seq: %w", err)
@@ -345,9 +369,9 @@ func shipCallEnvelope(ctx context.Context, d *daemon, peerID, callID string, kin
 	var wrapper *msg.Wrapper
 	switch kind {
 	case msg.KindCallOffer:
-		wrapper, err = msg.BuildCallOffer(seq, now, msgID, callID, modalities, tokens, outboundKey, 0)
+		wrapper, err = msg.BuildCallOffer(seq, now, msgID, callID, modalities, tokens, outboundKey, senderNick, 0)
 	case msg.KindCallAccept:
-		wrapper, err = msg.BuildCallAccept(seq, now, msgID, callID, modalities, tokens, outboundKey, 0)
+		wrapper, err = msg.BuildCallAccept(seq, now, msgID, callID, modalities, tokens, outboundKey, senderNick, 0)
 	case msg.KindCallReject:
 		wrapper, err = msg.BuildCallReject(seq, now, msgID, callID, reason, 0)
 	case msg.KindCallEnd:
@@ -565,7 +589,7 @@ func scheduleCallOfferTimeout(d *daemon, callID, peerID string) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), callTimeoutShipBudget)
 		defer cancel()
-		if err := shipCallEnvelope(ctx, d, peerID, callID, msg.KindCallEnd, nil, "", nil, nil); err != nil {
+		if err := shipCallEnvelope(ctx, d, peerID, callID, msg.KindCallEnd, nil, "", nil, nil, ""); err != nil {
 			slog.Warn("call timeout: KindCallEnd ship failed",
 				slog.String("call_id", callID),
 				slog.String("peer_id", peerID),

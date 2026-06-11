@@ -136,9 +136,9 @@ func runRead(vaultPath string) error {
 	if err != nil {
 		return err
 	}
-	if pass == "" {
+	if len(pass) == 0 {
 		fmt.Fprintln(os.Stderr, "haoma-vault: empty stdin; using InsecureDefaultPassphrase")
-		pass = vault.InsecureDefaultPassphrase
+		pass = []byte(vault.InsecureDefaultPassphrase)
 	}
 	payload, err := openOrMint(vaultPath, pass)
 	if err != nil {
@@ -174,9 +174,13 @@ func runWrite(vaultPath, lockPath string) error {
 	if err != nil {
 		return err
 	}
-	if pass == "" {
+	if len(pass) == 0 {
 		return errors.New("write mode requires a non-empty passphrase on stdin line 1")
 	}
+	fmt.Fprintf(os.Stderr,
+		"haoma-vault: -w enter pass_len=%d payload_bytes=%d\n",
+		len(pass), len(payloadJSON),
+	)
 
 	dec := json.NewDecoder(bytes.NewReader(payloadJSON))
 	dec.DisallowUnknownFields()
@@ -339,33 +343,33 @@ func readRekeyStdin(r io.Reader) (oldPat, newPat string, err error) {
 	return oldPat, newPat, nil
 }
 
-func readPassphrase(r io.Reader) (string, error) {
+func readPassphrase(r io.Reader) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(r, maxPassphraseSize+1))
 	if err != nil {
-		return "", fmt.Errorf("read stdin: %w", err)
+		return nil, fmt.Errorf("read stdin: %w", err)
 	}
 	if len(raw) > maxPassphraseSize {
-		return "", fmt.Errorf("stdin exceeds %d bytes", maxPassphraseSize)
+		return nil, fmt.Errorf("stdin exceeds %d bytes", maxPassphraseSize)
 	}
-	return strings.TrimRight(string(raw), "\r\n\t "), nil
+	return bytes.TrimRight(raw, "\r\n\t "), nil
 }
 
-func readWriteStdin(r io.Reader) (passphrase string, payload []byte, err error) {
+func readWriteStdin(r io.Reader) (passphrase []byte, payload []byte, err error) {
 	br := bufio.NewReader(io.LimitReader(r, maxPassphraseSize+maxPayloadSize+2))
-	passLine, err := br.ReadString('\n')
+	passLine, err := br.ReadBytes('\n')
 	if err != nil && err != io.EOF {
-		return "", nil, fmt.Errorf("read passphrase: %w", err)
+		return nil, nil, fmt.Errorf("read passphrase: %w", err)
 	}
 	if len(passLine) > maxPassphraseSize {
-		return "", nil, fmt.Errorf("passphrase line exceeds %d bytes", maxPassphraseSize)
+		return nil, nil, fmt.Errorf("passphrase line exceeds %d bytes", maxPassphraseSize)
 	}
-	passphrase = strings.TrimRight(passLine, "\r\n")
+	passphrase = bytes.TrimRight(passLine, "\r\n")
 	rest, err := io.ReadAll(io.LimitReader(br, maxPayloadSize+1))
 	if err != nil {
-		return "", nil, fmt.Errorf("read payload: %w", err)
+		return nil, nil, fmt.Errorf("read payload: %w", err)
 	}
 	if len(rest) > maxPayloadSize {
-		return "", nil, fmt.Errorf("payload exceeds %d bytes", maxPayloadSize)
+		return nil, nil, fmt.Errorf("payload exceeds %d bytes", maxPayloadSize)
 	}
 	return passphrase, rest, nil
 }
@@ -404,7 +408,7 @@ func releaseFlock(lockFd int) {
 	}
 }
 
-func openOrMint(vaultPath, passphrase string) (vault.Payload, error) {
+func openOrMint(vaultPath string, passphrase []byte) (vault.Payload, error) {
 	_, statErr := os.Stat(vaultPath)
 	switch {
 	case statErr == nil:

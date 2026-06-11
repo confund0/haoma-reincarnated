@@ -220,6 +220,7 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                         retentionTtl = s.retentionTtl.toLong(),
                         disableReadReceipts = s.disableReadReceipts,
                         notificationsMuted = s.notificationsMuted,
+                        nickOverride = s.nickOverride,
                     )
                 }
             }

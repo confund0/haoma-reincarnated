@@ -32,13 +32,13 @@ func validateDirPath(p string) error {
 type vaultController struct {
 	mu            sync.Mutex
 	payload       vault.Payload
-	passphrase    string
+	passphrase    []byte
 	params        vault.KDFParams
 	path          string
 	haomaVaultBin string
 }
 
-func newVaultController(path, passphrase string, payload vault.Payload, params vault.KDFParams, haomaVaultBin string) *vaultController {
+func newVaultController(path string, passphrase []byte, payload vault.Payload, params vault.KDFParams, haomaVaultBin string) *vaultController {
 	return &vaultController{
 		path:          path,
 		passphrase:    passphrase,
@@ -46,6 +46,17 @@ func newVaultController(path, passphrase string, payload vault.Payload, params v
 		params:        params,
 		haomaVaultBin: haomaVaultBin,
 	}
+}
+
+func (vc *vaultController) Wipe() {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	if len(vc.passphrase) == 0 {
+		return
+	}
+	slog.Debug("vault: wipe master passphrase", slog.Int("pass_len", len(vc.passphrase)))
+	clear(vc.passphrase)
+	vc.passphrase = nil
 }
 
 func (vc *vaultController) snapshot() vault.Payload {
@@ -58,7 +69,7 @@ func (vc *vaultController) resealLocked() error {
 	return vc.resealWithLocked(vc.passphrase)
 }
 
-func (vc *vaultController) resealWithLocked(passphrase string) error {
+func (vc *vaultController) resealWithLocked(passphrase []byte) error {
 	if err := vc.payload.Validate(); err != nil {
 		return fmt.Errorf("validate: %w", err)
 	}
@@ -66,17 +77,29 @@ func (vc *vaultController) resealWithLocked(passphrase string) error {
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
+
+	stdin := make([]byte, 0, len(passphrase)+1+len(jsonPayload))
+	stdin = append(stdin, passphrase...)
+	stdin = append(stdin, '\n')
+	stdin = append(stdin, jsonPayload...)
+	defer clear(stdin)
+	defer clear(jsonPayload)
+
 	cfgDir := filepath.Dir(vc.path)
 	bin := vc.haomaVaultBin
 	if bin == "" {
 		bin = "haoma-vault"
 	}
 	cmd := exec.Command(bin, "--cfg-dir", cfgDir, "-w")
-	cmd.Stdin = strings.NewReader(passphrase + "\n" + string(jsonPayload))
+	cmd.Stdin = bytes.NewReader(stdin)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	slog.Debug("vault: reseal initiated", slog.String("bin", bin), slog.Int("payload_bytes", len(jsonPayload)))
+	slog.Debug("vault: reseal initiated",
+		slog.String("bin", bin),
+		slog.Int("pass_len", len(passphrase)),
+		slog.Int("payload_bytes", len(jsonPayload)),
+	)
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("haoma-vault -w: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
@@ -105,19 +128,21 @@ func (vc *vaultController) Mutate(label string, transform func(*vault.Payload) e
 	return nil
 }
 
-func (vc *vaultController) ChangePassphrase(old, newPass string) error {
-	if newPass == "" {
+func (vc *vaultController) ChangePassphrase(old, newPass []byte) error {
+	if len(newPass) == 0 {
 		return errors.New("new passphrase cannot be empty (would brick the vault)")
 	}
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
-	if subtle.ConstantTimeCompare([]byte(old), []byte(vc.passphrase)) != 1 {
+	if subtle.ConstantTimeCompare(old, vc.passphrase) != 1 {
 		return errors.New("current passphrase incorrect")
 	}
 	if err := vc.resealWithLocked(newPass); err != nil {
 		return fmt.Errorf("re-seal: %w", err)
 	}
-	vc.passphrase = newPass
+	clear(vc.passphrase)
+
+	vc.passphrase = append([]byte(nil), newPass...)
 	slog.Info("vault: master passphrase changed")
 	return nil
 }

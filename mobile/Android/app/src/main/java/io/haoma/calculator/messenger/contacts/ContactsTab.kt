@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.haoma.calculator.messenger.*
+import io.haoma.calculator.messenger.HaomaPalette
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.PeerEntry
 
@@ -49,7 +50,7 @@ fun ContactsTab(store: MessengerStore) {
             .toHashSet()
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(BG_BASE)) {
+    Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
         TabHeader(title = "Contacts", store = store)
         if (peers.isEmpty()) {
             EmptyContactsSurface()
@@ -72,7 +73,7 @@ fun ContactsTab(store: MessengerStore) {
                         store.openContactDetail(peer.id)
                     },
                 )
-                HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
+                HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
             }
         }
     }
@@ -83,13 +84,13 @@ private fun TabHeader(title: String, store: MessengerStore) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(BG_BAR)
+            .background(HaomaPalette.BG_BAR)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
-            color = FG_PRIMARY,
+            color = HaomaPalette.FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
@@ -112,10 +113,10 @@ private fun ContactRow(
     val displayLabel = displayLabelFor(peer, retired)
     val labelColor = when {
         inCall -> FG_IN_CALL
-        retired -> FG_DIM
+        retired -> HaomaPalette.FG_DIM
         isFresh -> FG_FRESH
-        peer.alias.isEmpty() && peer.nick.isEmpty() -> FG_DIM
-        else -> FG_PRIMARY
+        peer.alias.isEmpty() && peer.nick.isEmpty() -> HaomaPalette.FG_DIM
+        else -> HaomaPalette.FG_PRIMARY
     }
     val labelStyle = if (peer.alias.isEmpty() && peer.nick.isEmpty()) FontStyle.Italic else FontStyle.Normal
 
@@ -160,7 +161,7 @@ private fun ContactRow(
         Spacer(modifier = Modifier.width(10.dp))
         Text(
             text = "Edit",
-            color = if (retired) FG_DIM else FG_LINK,
+            color = if (retired) HaomaPalette.FG_DIM else HaomaPalette.FG_LINK,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier
@@ -173,7 +174,7 @@ private fun ContactRow(
 @Composable
 private fun PresenceDot(label: String, retired: Boolean) {
     val color = when {
-        retired -> FG_DIM
+        retired -> HaomaPalette.FG_DIM
         else -> presenceColor(label)
     }
     Box(
@@ -189,7 +190,7 @@ private fun LastSeenLine(active: Long, passive: Long, nowSeconds: Long, retired:
     if (retired) {
         Text(
             text = "retired",
-            color = FG_DIM,
+            color = HaomaPalette.FG_DIM,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
         )
@@ -202,7 +203,7 @@ private fun LastSeenLine(active: Long, passive: Long, nowSeconds: Long, retired:
     if (active == 0L && passive == 0L) return
     Text(
         text = "act:$activeText · psv:$passiveText",
-        color = FG_DIM,
+        color = HaomaPalette.FG_DIM,
         fontSize = 12.sp,
         fontFamily = FontFamily.Monospace,
     )
@@ -213,7 +214,7 @@ private fun EmptyContactsSurface() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(BG_BASE)
+            .background(HaomaPalette.BG_BASE)
             .padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -223,13 +224,13 @@ private fun EmptyContactsSurface() {
         ) {
             Text(
                 text = "No contacts yet",
-                color = FG_PRIMARY,
+                color = HaomaPalette.FG_PRIMARY,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 18.sp,
             )
             Text(
                 text = "Pair a peer in the Invites tab — paired contacts appear here.",
-                color = FG_DIM,
+                color = HaomaPalette.FG_DIM,
                 fontSize = 14.sp,
             )
         }
@@ -260,12 +261,6 @@ private fun presenceColor(label: String): Color = when (label) {
 }
 
 
-private val BG_BASE = Color(0xFF1D2021)
-private val BG_BAR = Color(0xFF282828)
-private val DIVIDER = Color(0xFF3C3836)
-private val FG_PRIMARY = Color(0xFFEBDBB2)
-private val FG_DIM = Color(0xFF7C6F64)
-private val FG_LINK = Color(0xFF83A598)
 private val FG_IN_CALL = Color(0xFFCC241D)
 
 

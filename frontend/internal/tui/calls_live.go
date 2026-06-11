@@ -18,6 +18,8 @@ type liveCallPage struct {
 	peerID    string
 	startedAt time.Time
 
+	app *App
+
 	body *tview.TextView
 	form *tview.Form
 
@@ -97,6 +99,7 @@ func (a *App) newLiveCallPage(call ipc.CallEntry) *liveCallPage {
 		chatID:    call.ChatID,
 		peerID:    call.PeerID,
 		startedAt: time.Unix(call.StartedAt, 0),
+		app:       a,
 		body:      body,
 		stop:      make(chan struct{}),
 	}
@@ -156,6 +159,11 @@ func (lp *liveCallPage) refresh() {
 	header := fmt.Sprintf("%s   [green]connected[white]", formatCallDuration(dur))
 	if muted {
 		header = fmt.Sprintf("%s   [green]connected[white]   [yellow]muted[white]", formatCallDuration(dur))
+	}
+
+	if lp.app != nil {
+		nickText := lp.app.effectiveSelfNickForChat(lp.chatID)
+		header = fmt.Sprintf("%s   [yellow][me: %s][white]", header, nickText)
 	}
 
 	micLine := formatStreamLine("↑ mic", mic, true)

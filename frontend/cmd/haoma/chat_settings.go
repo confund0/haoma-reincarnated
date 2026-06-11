@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"haoma-frontend/internal/backendapi"
@@ -14,6 +15,33 @@ import (
 	"haoma-frontend/internal/ipc"
 	"haoma-frontend/internal/msg"
 )
+
+func chatNickOverrideOf(c chat.Chat) string {
+	switch v := c.(type) {
+	case *chat.DirectChat:
+		return v.NickOverride
+	case *chat.GroupChat:
+		return v.NickOverride
+	default:
+		return ""
+	}
+}
+
+func validateChatNickOverride(s string) (string, error) {
+	clean := strings.TrimSpace(s)
+	if clean == "" {
+		return "", nil
+	}
+	if len(clean) > selfNickMaxLen {
+		return "", fmt.Errorf("nick override too long (max %d chars)", selfNickMaxLen)
+	}
+	for _, r := range clean {
+		if r < 0x20 || r == 0x7f {
+			return "", errors.New("nick override must not contain control characters")
+		}
+	}
+	return clean, nil
+}
 
 func (sd *sessionDispatcher) handleGetChatSettings(_ context.Context, sess *ipc.Session, f ipc.Frame) {
 	slog.Debug("handle get_chat_settings")
@@ -44,6 +72,7 @@ func (sd *sessionDispatcher) handleGetChatSettings(_ context.Context, sess *ipc.
 		RetentionTTL:        c.Retention(),
 		DisableReadReceipts: c.ReadReceiptsDisabled(),
 		NotificationsMuted:  c.IsNotificationsMuted(),
+		NickOverride:        chatNickOverrideOf(c),
 	})
 	if err != nil {
 		sendError(sess, f.ID, "encode_frame", err.Error())
@@ -70,6 +99,12 @@ func (sd *sessionDispatcher) handleSetChatSettings(ctx context.Context, sess *ip
 		return
 	}
 
+	cleanOverride, err := validateChatNickOverride(req.NickOverride)
+	if err != nil {
+		sendError(sess, f.ID, "bad_request", err.Error())
+		return
+	}
+
 	chatID := chat.ChatID(req.ChatID)
 	c, err := sd.d.chats.Get(chatID)
 	if err != nil {
@@ -93,6 +128,10 @@ func (sd *sessionDispatcher) handleSetChatSettings(ctx context.Context, sess *ip
 		return
 	}
 	if err := sd.d.chats.SetNotificationsMuted(chatID, req.NotificationsMuted); err != nil {
+		sendError(sess, f.ID, "internal", err.Error())
+		return
+	}
+	if err := sd.d.chats.SetNickOverride(chatID, cleanOverride); err != nil {
 		sendError(sess, f.ID, "internal", err.Error())
 		return
 	}
@@ -137,9 +176,15 @@ func (sd *sessionDispatcher) handleSetChatSettings(ctx context.Context, sess *ip
 		slog.String("chat_id", req.ChatID),
 		slog.Int("retention_ttl_sec", int(req.RetentionTTL)),
 		slog.Bool("disable_read_receipts", req.DisableReadReceipts),
+		slog.Bool("nick_override_set", cleanOverride != ""),
+	)
+	slog.Debug("chat settings nick override applied",
+		slog.String("chat_id", req.ChatID),
+		slog.String("nick_override", cleanOverride),
 	)
 
 	payload := ipc.ChatSettingsPayload(req)
+	payload.NickOverride = cleanOverride
 	if sd.d.ipcSrv != nil {
 		push(sd.d.ipcSrv, ipc.FrameChatSettings, "", payload)
 	}

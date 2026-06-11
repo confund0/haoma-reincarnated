@@ -275,10 +275,14 @@ private fun attemptSubmit(
     if (passphrase.isEmpty()) return
     setSubmitting(true)
     log("submit (len=${passphrase.length})")
+    
+    
+    val passBytes = passphrase.toByteArray(Charsets.UTF_8)
     scope.launch {
         try {
-            handleOutcome(unlock.submitPassphrase(passphrase), log = log, onWrong = onWrong, onSpawnFail = onSpawnFail)
+            handleOutcome(unlock.submitPassphrase(passBytes), log = log, onWrong = onWrong, onSpawnFail = onSpawnFail)
         } finally {
+            java.util.Arrays.fill(passBytes, 0)
             setSubmitting(false)
         }
     }

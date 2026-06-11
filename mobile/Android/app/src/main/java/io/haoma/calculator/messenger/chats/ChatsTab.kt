@@ -34,6 +34,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.haoma.calculator.messenger.*
 import io.haoma.calculator.messenger.ChatEntry
 import io.haoma.calculator.messenger.ChatKind
+import io.haoma.calculator.messenger.HaomaPalette
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.contacts.RelativeTime
 import io.haoma.calculator.messenger.contacts.shortPeerId
@@ -55,7 +56,7 @@ fun ChatsTab(store: MessengerStore) {
             .toHashSet()
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(BG_BASE)) {
+    Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
         TabHeader(title = "Conversations", store = store)
         if (chats.isEmpty()) {
             EmptyChatsSurface()
@@ -73,7 +74,7 @@ fun ChatsTab(store: MessengerStore) {
                     onOpen = { store.openChatDetail(chat.chatId) },
                     onEdit = { store.openChatSettings(chat.chatId) },
                 )
-                HorizontalDivider(color = DIVIDER, thickness = 0.5.dp)
+                HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
             }
         }
     }
@@ -84,13 +85,13 @@ private fun TabHeader(title: String, store: MessengerStore) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(BG_BAR)
+            .background(HaomaPalette.BG_BAR)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
-            color = FG_PRIMARY,
+            color = HaomaPalette.FG_PRIMARY,
             fontWeight = FontWeight.SemiBold,
             fontSize = 17.sp,
             modifier = Modifier.weight(1f),
@@ -117,7 +118,7 @@ private fun ChatRow(
     val labelColor = when {
         inCall -> FG_IN_CALL
         hasUnread -> FG_UNREAD
-        else -> FG_PRIMARY
+        else -> HaomaPalette.FG_PRIMARY
     }
     val labelStyle = if (chat.label.isEmpty() && chat.groupAlias.isEmpty() && chat.groupName.isEmpty()) {
         FontStyle.Italic
@@ -175,7 +176,7 @@ private fun ChatRow(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "🔕",
-                        color = FG_DIM,
+                        color = HaomaPalette.FG_DIM,
                         fontSize = 12.sp,
                     )
                 }
@@ -193,7 +194,7 @@ private fun ChatRow(
         }
         Text(
             text = "Edit",
-            color = FG_LINK,
+            color = HaomaPalette.FG_LINK,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier
@@ -219,7 +220,7 @@ private fun LastActivityLine(ts: Long, nowSeconds: Long, hasUnread: Boolean) {
     val text = if (ts == 0L) "—" else RelativeTime.format(nowSeconds, ts)
     Text(
         text = text,
-        color = if (hasUnread) FG_UNREAD else FG_DIM,
+        color = if (hasUnread) FG_UNREAD else HaomaPalette.FG_DIM,
         fontSize = 12.sp,
         fontFamily = FontFamily.Monospace,
     )
@@ -235,7 +236,7 @@ private fun UnreadBadge(count: Long) {
     ) {
         Text(
             text = "$count *",
-            color = BG_BASE,
+            color = HaomaPalette.BG_BASE,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
@@ -248,7 +249,7 @@ private fun EmptyChatsSurface() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(BG_BASE)
+            .background(HaomaPalette.BG_BASE)
             .padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -258,13 +259,13 @@ private fun EmptyChatsSurface() {
         ) {
             Text(
                 text = "No chats yet",
-                color = FG_PRIMARY,
+                color = HaomaPalette.FG_PRIMARY,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 18.sp,
             )
             Text(
                 text = "Pair a peer in the Invites tab, then start a chat from Contacts.",
-                color = FG_DIM,
+                color = HaomaPalette.FG_DIM,
                 fontSize = 14.sp,
             )
         }
@@ -299,12 +300,6 @@ private fun presenceColor(label: String): Color = when (label) {
 }
 
 
-private val BG_BASE = Color(0xFF1D2021)
-private val BG_BAR = Color(0xFF282828)
-private val DIVIDER = Color(0xFF3C3836)
-private val FG_PRIMARY = Color(0xFFEBDBB2)
-private val FG_DIM = Color(0xFF7C6F64)
-private val FG_LINK = Color(0xFF83A598)
 private val FG_UNREAD = Color(0xFFB16286) 
 private val FG_IN_CALL = Color(0xFFCC241D) 
 

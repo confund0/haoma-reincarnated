@@ -96,7 +96,7 @@ func resolvePassphrase(vaultPath string) (string, error) {
 		if master == "" {
 			return "", fmt.Errorf("HAOMA_VAULT_PASSPHRASE empty (required when --vault is set)")
 		}
-		payload, _, err := vault.Open(vaultPath, master)
+		payload, _, err := vault.Open(vaultPath, []byte(master))
 		if err != nil {
 			return "", fmt.Errorf("vault open: %w", err)
 		}

@@ -42,14 +42,14 @@ class UnlockManager(
     }
 
     
-    suspend fun submitPassphrase(passphrase: String): Outcome =
+    suspend fun submitPassphrase(passphrase: ByteArray): Outcome =
         runUnseal(passphrase)
 
     
     suspend fun submitDefaultPassphrase(): Outcome =
-        runUnseal(VaultHelper.DefaultPassphrase)
+        runUnseal(VaultHelper.DefaultPassphraseBytes)
 
-    private suspend fun runUnseal(passphrase: String): Outcome {
+    private suspend fun runUnseal(passphrase: ByteArray): Outcome {
         if (!inFlight.compareAndSet(false, true)) {
             Logger.w("unlock", "unseal attempt dropped: another in flight")
             return Outcome.WrongPassphrase
@@ -73,7 +73,7 @@ class UnlockManager(
         state.update(AppState.Locked.Hard)
     }
 
-    private suspend fun tryUnsealAndSpawn(passphrase: String, isDefault: Boolean): Outcome {
+    private suspend fun tryUnsealAndSpawn(passphrase: ByteArray, isDefault: Boolean): Outcome {
         val unsealed = try {
             VaultHelper.unseal(app, passphrase)
         } catch (e: CancellationException) {
@@ -98,7 +98,7 @@ class UnlockManager(
             Logger.w("unlock", "haoma-vault returned empty payload — VaultSession not installed; vault writes disabled this session")
             sessionSink(null)
         }
-        passphraseDefaultSink(passphrase == VaultHelper.DefaultPassphrase)
+        passphraseDefaultSink(constantTimeEquals(passphrase, VaultHelper.DefaultPassphraseBytes))
         
         
         val ack = BootstrapPayload.deposit(unsealed.secrets)
@@ -117,4 +117,18 @@ class UnlockManager(
     companion object {
         private const val SPAWN_TIMEOUT_MS = 35_000L
     }
+}
+
+
+private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
+    val la = a.size
+    val lb = b.size
+    var diff = la xor lb
+    val n = maxOf(la, lb)
+    for (i in 0 until n) {
+        val ca = if (i < la) a[i].toInt() and 0xFF else 0
+        val cb = if (i < lb) b[i].toInt() and 0xFF else 0
+        diff = diff or (ca xor cb)
+    }
+    return diff == 0
 }

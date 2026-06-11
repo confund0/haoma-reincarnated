@@ -1,7 +1,9 @@
 package vault
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -9,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -36,7 +40,9 @@ const (
 	InsecureDefaultPIN        = "0000"
 )
 
-func IsInsecureDefaultPassphrase(p string) bool { return p == InsecureDefaultPassphrase }
+func IsInsecureDefaultPassphrase(p []byte) bool {
+	return subtle.ConstantTimeCompare(p, []byte(InsecureDefaultPassphrase)) == 1
+}
 
 func IsInsecureDefaultPIN(p string) bool { return p == InsecureDefaultPIN }
 
@@ -178,6 +184,8 @@ var (
 	ErrTruncated          = errors.New("vault: file truncated")
 	ErrUnseal             = errors.New("vault: AEAD unseal failed (wrong passphrase or tampered ciphertext)")
 	ErrEmpty              = errors.New("vault: file exists but is empty")
+
+	ErrEmptyPassphrase = errors.New("vault: passphrase must not be empty")
 )
 
 func PeekParams(path string) (KDFParams, error) {
@@ -202,18 +210,27 @@ func PeekParams(path string) (KDFParams, error) {
 	}, nil
 }
 
-func Open(path, passphrase string) (Payload, KDFParams, error) {
+func Open(path string, passphrase []byte) (Payload, KDFParams, error) {
+	if len(passphrase) == 0 {
+		return Payload{}, KDFParams{}, ErrEmptyPassphrase
+	}
+	start := time.Now()
+	slog.Debug("vault: open enter", slog.Int("pass_len", len(passphrase)), slog.String("path", path))
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		slog.Debug("vault: open exit", slog.Bool("ok", false), slog.String("stage", "read"), slog.Duration("dur", time.Since(start)))
 		return Payload{}, KDFParams{}, fmt.Errorf("vault: read: %w", err)
 	}
 	if len(raw) == 0 {
+		slog.Debug("vault: open exit", slog.Bool("ok", false), slog.String("stage", "empty"), slog.Duration("dur", time.Since(start)))
 		return Payload{}, KDFParams{}, ErrEmpty
 	}
-	return openBytes(raw, passphrase)
+	p, params, err := openBytes(raw, passphrase)
+	slog.Debug("vault: open exit", slog.Bool("ok", err == nil), slog.Duration("dur", time.Since(start)))
+	return p, params, err
 }
 
-func openBytes(raw []byte, passphrase string) (Payload, KDFParams, error) {
+func openBytes(raw []byte, passphrase []byte) (Payload, KDFParams, error) {
 	if len(raw) < headerLen+chacha20poly1305.Overhead {
 		return Payload{}, KDFParams{}, ErrTruncated
 	}
@@ -239,7 +256,7 @@ func openBytes(raw []byte, passphrase string) (Payload, KDFParams, error) {
 	salt := header[19 : 19+saltLen]
 	nonce := header[19+saltLen : 19+saltLen+nonceLen]
 
-	key := argon2.IDKey([]byte(passphrase), salt, params.Time, params.Memory, params.Threads, uint32(params.KeyLen))
+	key := argon2.IDKey(passphrase, salt, params.Time, params.Memory, params.Threads, uint32(params.KeyLen))
 	defer zero(key)
 
 	aead, err := chacha20poly1305.NewX(key)
@@ -268,7 +285,12 @@ func defaultSeededPayload() Payload {
 	}
 }
 
-func Create(path, passphrase string, payload Payload, params KDFParams) error {
+func Create(path string, passphrase []byte, payload Payload, params KDFParams) error {
+	if len(passphrase) == 0 {
+		return ErrEmptyPassphrase
+	}
+	start := time.Now()
+	slog.Debug("vault: create enter", slog.Int("pass_len", len(passphrase)), slog.String("path", path))
 	if err := payload.Validate(); err != nil {
 		return fmt.Errorf("vault: payload: %w", err)
 	}
@@ -277,21 +299,33 @@ func Create(path, passphrase string, payload Payload, params KDFParams) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("vault: stat %s: %w", path, err)
 	}
-	return saveTo(path, passphrase, payload, params)
+	err := saveTo(path, passphrase, payload, params)
+	slog.Debug("vault: create exit", slog.Bool("ok", err == nil), slog.Duration("dur", time.Since(start)))
+	return err
 }
 
 func CreateInsecure(path string, payload Payload, params KDFParams) error {
-	return Create(path, InsecureDefaultPassphrase, payload, params)
+	return Create(path, []byte(InsecureDefaultPassphrase), payload, params)
 }
 
-func Save(path, passphrase string, payload Payload, params KDFParams) error {
+func Save(path string, passphrase []byte, payload Payload, params KDFParams) error {
+	if len(passphrase) == 0 {
+		return ErrEmptyPassphrase
+	}
+	start := time.Now()
+	slog.Debug("vault: save enter", slog.Int("pass_len", len(passphrase)), slog.String("path", path))
 	if err := payload.Validate(); err != nil {
 		return fmt.Errorf("vault: payload: %w", err)
 	}
-	return saveTo(path, passphrase, payload, params)
+	err := saveTo(path, passphrase, payload, params)
+	slog.Debug("vault: save exit", slog.Bool("ok", err == nil), slog.Duration("dur", time.Since(start)))
+	return err
 }
 
-func ChangePassphrase(path, oldPass, newPass string) error {
+func ChangePassphrase(path string, oldPass, newPass []byte) error {
+	if len(oldPass) == 0 || len(newPass) == 0 {
+		return ErrEmptyPassphrase
+	}
 	payload, params, err := Open(path, oldPass)
 	if err != nil {
 		return err
@@ -299,7 +333,7 @@ func ChangePassphrase(path, oldPass, newPass string) error {
 	return Save(path, newPass, payload, params)
 }
 
-func saveTo(path, passphrase string, payload Payload, params KDFParams) error {
+func saveTo(path string, passphrase []byte, payload Payload, params KDFParams) error {
 	if params.KeyLen != keyLen {
 		return fmt.Errorf("vault: KeyLen must be %d, got %d", keyLen, params.KeyLen)
 	}
@@ -328,7 +362,7 @@ func saveTo(path, passphrase string, payload Payload, params KDFParams) error {
 	}
 	defer zero(plaintext)
 
-	key := argon2.IDKey([]byte(passphrase), salt, params.Time, params.Memory, params.Threads, uint32(params.KeyLen))
+	key := argon2.IDKey(passphrase, salt, params.Time, params.Memory, params.Threads, uint32(params.KeyLen))
 	defer zero(key)
 
 	aead, err := chacha20poly1305.NewX(key)
@@ -338,7 +372,18 @@ func saveTo(path, passphrase string, payload Payload, params KDFParams) error {
 	ciphertext := aead.Seal(nil, nonce, plaintext, header)
 
 	full := append(header, ciphertext...)
-	return writeAtomic(path, full)
+	return writeSealedVault(path, full)
+}
+
+func writeSealedVault(path string, sealed []byte) error {
+	if len(sealed) < len(magic) || !bytes.Equal(sealed[:len(magic)], magic[:]) {
+		slog.Warn("vault: refusing to write non-magic bytes",
+			slog.String("path", path),
+			slog.Int("len", len(sealed)),
+		)
+		return fmt.Errorf("vault: refusing to write %s — payload missing HAOMAVLT magic header (would corrupt vault)", path)
+	}
+	return writeAtomic(path, sealed)
 }
 
 func writeAtomic(path string, data []byte) error {

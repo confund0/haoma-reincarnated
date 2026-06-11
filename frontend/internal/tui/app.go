@@ -387,6 +387,9 @@ func (a *App) sysBarText() string {
 	if nickText == "" {
 		nickText = "mynick"
 	}
+	if override := a.activeChatNickOverride(); override != "" {
+		nickText = override
+	}
 	meSuffix := "  " + presenceTag(selfLabel) + "[" + StylePipelineText + "me: " + nickText + presenceTag(selfLabel) + "]" + StyleReset
 
 	rotSuffix := ""
@@ -1762,6 +1765,36 @@ func (a *App) activeChat() string {
 	defer a.winMu.Unlock()
 	if cp, ok := a.chatPages[chatID]; ok {
 		return cp.peerID
+	}
+	return ""
+}
+
+func (a *App) effectiveSelfNickForChat(chatID string) string {
+	a.winMu.Lock()
+	defer a.winMu.Unlock()
+	for i := range a.chats {
+		if a.chats[i].ChatID == chatID && a.chats[i].NickOverride != "" {
+			return a.chats[i].NickOverride
+		}
+	}
+	if a.selfNick != "" {
+		return a.selfNick
+	}
+	return "mynick"
+}
+
+func (a *App) activeChatNickOverride() string {
+	front, _ := a.pages.GetFrontPage()
+	if !strings.HasPrefix(front, "chat:") {
+		return ""
+	}
+	chatID := strings.TrimPrefix(front, "chat:")
+	a.winMu.Lock()
+	defer a.winMu.Unlock()
+	for i := range a.chats {
+		if a.chats[i].ChatID == chatID {
+			return a.chats[i].NickOverride
+		}
 	}
 	return ""
 }

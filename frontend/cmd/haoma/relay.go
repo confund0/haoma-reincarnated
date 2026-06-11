@@ -701,6 +701,8 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			)
 			return
 		}
+
+		applyCallSenderNick(ctx, d, entry.PeerID, body.SenderNick, wrapper.Ts, "call_offer")
 		ingestCallOffer(ctx, d, chatID, entry.PeerID, body.CallID, body.Modalities, body.OutboundKey, body.Tokens)
 
 	case msg.KindCallAccept:
@@ -713,6 +715,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			)
 			return
 		}
+		applyCallSenderNick(ctx, d, entry.PeerID, body.SenderNick, wrapper.Ts, "call_accept")
 		applyCallAccept(ctx, d, body.CallID, body.OutboundKey, body.Tokens)
 
 	case msg.KindCallReject:
@@ -958,6 +961,32 @@ func chatRetentionTTL(d *daemon, chatID chat.ChatID) uint32 {
 		return 0
 	}
 	return c.Retention()
+}
+
+func applyCallSenderNick(ctx context.Context, d *daemon, peerID, senderNick string, senderTs int64, source string) {
+	if senderNick == "" || d.peerMeta == nil || peerID == "" {
+		return
+	}
+	clampedTs := events.ClampSenderTs(senderTs, time.Now().Unix())
+	changed, err := d.peerMeta.SetNick(peerID, senderNick, clampedTs)
+	if err != nil {
+		slog.Warn("peerMeta.SetNick (call piggyback) failed",
+			slog.String("peer_id", peerID),
+			slog.String("source", source),
+			slog.Any("err", err),
+		)
+		return
+	}
+	slog.Debug("peer-meta nick updated (call piggyback)",
+		slog.String("peer_id", peerID),
+		slog.String("source", source),
+		slog.String("nick", senderNick),
+		slog.Int64("clamped_ts", clampedTs),
+		slog.Bool("changed", changed),
+	)
+	if changed {
+		pushPeerMetaUpdated(ctx, d, peerID)
+	}
 }
 
 func notificationToStatusEvent(n backendapi.Notification) ipc.StatusEventPayload {
