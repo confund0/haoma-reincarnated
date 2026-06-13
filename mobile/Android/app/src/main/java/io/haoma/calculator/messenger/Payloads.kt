@@ -1398,6 +1398,9 @@ data class SettingsSnapshot(
     val notifyShowSender: Boolean,
     val notifyShowBody: Boolean,
     val notificationsOnLock: Boolean,
+    
+    val notifyPersistUntilOpen: Boolean,
+    val notifyDeepLink: Boolean,
     val threatProfile: String,
     val panicAction: String,
     val hasTorPassword: Boolean,
@@ -1414,6 +1417,8 @@ data class SettingsSnapshot(
         put("notify_show_sender", notifyShowSender)
         put("notify_show_body", notifyShowBody)
         put("notifications_on_lock", notificationsOnLock)
+        if (notifyPersistUntilOpen) put("notify_persist_until_open", true)
+        if (notifyDeepLink) put("notify_deep_link", true)
         if (threatProfile.isNotEmpty()) put("threat_profile", threatProfile)
         if (panicAction.isNotEmpty()) put("panic_action", panicAction)
         put("has_tor_password", hasTorPassword)

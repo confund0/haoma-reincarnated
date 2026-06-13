@@ -25,6 +25,7 @@ type Event struct {
 	ChatID    string
 	PeerLabel string
 	Body      string
+	Persist   bool
 }
 
 type Runner interface {
@@ -218,6 +219,10 @@ func (b *linuxBackend) Send(ctx context.Context, ev Event, title, body string) e
 	args := []string{
 		"-p",
 		"-a", "Haoma",
+	}
+	if ev.Persist {
+
+		args = append(args, "-t", "0")
 	}
 	b.mu.Lock()
 	prev, hasPrev := b.liveIDs[ev.ChatID]

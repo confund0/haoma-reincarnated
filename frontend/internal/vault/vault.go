@@ -137,6 +137,10 @@ type Payload struct {
 
 	NotifyNoisy bool `json:"notify_noisy,omitempty"`
 
+	NotifyPersistUntilOpen bool `json:"notify_persist_until_open,omitempty"`
+
+	NotifyDeepLink bool `json:"notify_deep_link,omitempty"`
+
 	DefaultSaveDir        string `json:"default_save_dir,omitempty"`
 	DefaultAttachStartDir string `json:"default_attach_start_dir,omitempty"`
 

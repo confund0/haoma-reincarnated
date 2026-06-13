@@ -17,6 +17,19 @@ class IdleLockDispatcher(
     private val onWillLock: (action: String) -> Unit = {},
 ) {
     
+
+    fun forceHardLock(reason: String) {
+        val current = state.state.value
+        if (current is AppState.Locked.Hard) {
+            Logger.i("idle", "forceHardLock reason=$reason skipped (already Hard)")
+            return
+        }
+        Logger.i("idle", "forceHardLock reason=$reason → Hard")
+        state.update(AppState.Locked.Hard)
+        stopFgs()
+    }
+
+    
     fun fire(reason: String): Boolean {
         val current = state.state.value
         if (current is AppState.Locked) {

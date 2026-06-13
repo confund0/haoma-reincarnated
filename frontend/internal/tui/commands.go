@@ -85,6 +85,9 @@ func (a *App) handleInput(_ tcell.Key) {
 	case "/set-tor-password":
 		a.cmdSetTorPassword(rest)
 		return
+	case "/backup":
+		a.cmdBackup(rest)
+		return
 	case "/settings":
 		a.cmdSettings()
 		return
@@ -224,6 +227,7 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/set-idle-timeout <seconds>[white]           — how long idle before the lock fires")
 	a.log("  [yellow]/set-pin-validity <seconds>[white]           — soft-lock escalation window (0 = no escalation)")
 	a.log("  [yellow]/set-tor-password <password>[white]          — tor control-port password (haomad restart required)")
+	a.log("  [yellow]/backup [path][white]                         — stop daemons + write full-cfg-dir tar (default: ~/haoma-backup-<ts>.tar); session exits, restart to continue")
 	a.log("  [yellow]/settings[white]                              — open the settings dialog (one canonical home for prefs)")
 	a.log("navigation: Esc+1 status  Esc+2 contacts  Esc+3 chats  Esc+N chat")
 	a.log("focus: [yellow]F6[white] toggles between the input bar and the active window's main pane (table / list / scroll view)")

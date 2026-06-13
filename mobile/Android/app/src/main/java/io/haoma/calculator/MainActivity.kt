@@ -33,6 +33,7 @@ import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.MessengerScaffold
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.calls.CallWindowHost
+import io.haoma.calculator.messenger.loadNotificationSettings
 import io.haoma.calculator.messenger.updateBluetoothConnectGranted
 import io.haoma.calculator.messenger.updateCameraGranted
 import io.haoma.calculator.messenger.updateRecordAudioGranted
@@ -123,11 +124,13 @@ class MainActivity : ComponentActivity() {
 
         
         consumeDisguiseTipExtras(intent, app)
+        consumeDeepLinkExtra(intent, app)
 
         setContent {
             MaterialTheme {
                 val state by app.appState.state.collectAsStateWithLifecycle()
                 val pendingTip by app.pendingDisguiseTip.collectAsStateWithLifecycle()
+                val stagedRestore by app.stagedRestore.collectAsStateWithLifecycle()
                 Surface(
                     state = state,
                     skin = skin,
@@ -136,6 +139,8 @@ class MainActivity : ComponentActivity() {
                     messenger = app.messengerStore,
                     pendingTip = pendingTip,
                     onTipDismissed = { app.setPendingDisguiseTip(null) },
+                    stagedRestore = stagedRestore,
+                    onStagedRestoreSet = { app.setStagedRestore(it) },
                 )
             }
         }
@@ -143,18 +148,28 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        consumeDisguiseTipExtras(intent, application as HaomaApp)
+        val app = application as HaomaApp
+        consumeDisguiseTipExtras(intent, app)
+        consumeDeepLinkExtra(intent, app)
     }
 
     
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) {
-            (application as HaomaApp).notificationPoster.cancelAll()
-        }
+        if (!hasFocus) return
+        val app = application as HaomaApp
+        if (app.messengerStore.loadNotificationSettings()?.persistUntilOpen == true) return
+        app.notificationPoster.cancelAll()
     }
 
     
+    private fun consumeDeepLinkExtra(src: Intent?, app: HaomaApp) {
+        val chatId = src?.getStringExtra(NotificationPoster.EXTRA_CHAT_ID) ?: return
+        if (chatId.isEmpty()) return
+        Logger.i("notifications", "deep-link extra consumed chat=${chatId.take(8)}…")
+        app.deepLinkChatId.value = chatId
+    }
+
     private fun consumeDisguiseTipExtras(src: Intent?, app: HaomaApp) {
         val title = src?.getStringExtra(NotificationPoster.EXTRA_DISGUISE_TIP_TITLE)
         val body = src?.getStringExtra(NotificationPoster.EXTRA_DISGUISE_TIP_BODY)
@@ -165,8 +180,16 @@ class MainActivity : ComponentActivity() {
 
     
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
-        (application as HaomaApp).idleTimer.touch()
+        val app = application as HaomaApp
+        app.idleTimer.touch()
+        app.notificationPoster.onUserInteraction()
         return super.dispatchTouchEvent(ev)
+    }
+
+    
+    override fun dispatchKeyEvent(ev: android.view.KeyEvent): Boolean {
+        (application as HaomaApp).notificationPoster.onUserInteraction()
+        return super.dispatchKeyEvent(ev)
     }
 
     
@@ -303,6 +326,8 @@ private fun Surface(
     messenger: MessengerStore,
     pendingTip: DisguiseTip?,
     onTipDismissed: () -> Unit,
+    stagedRestore: io.haoma.calculator.core.StagedRestoreState?,
+    onStagedRestoreSet: (io.haoma.calculator.core.StagedRestoreState?) -> Unit,
 ) {
     
     
@@ -325,6 +350,8 @@ private fun Surface(
             AppState.Locked.Passphrase -> PassphraseScreen(
                 unlock = unlock,
                 log = { Logger.i("passphrase", it) },
+                stagedRestore = stagedRestore,
+                onStagedRestoreSet = onStagedRestoreSet,
             )
             
             

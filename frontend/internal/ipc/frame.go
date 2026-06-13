@@ -817,6 +817,9 @@ type Settings struct {
 	NotifyShowBody      bool `json:"notify_show_body"`
 	NotificationsOnLock bool `json:"notifications_on_lock"`
 
+	NotifyPersistUntilOpen bool `json:"notify_persist_until_open,omitempty"`
+	NotifyDeepLink         bool `json:"notify_deep_link,omitempty"`
+
 	ThreatProfile    string   `json:"threat_profile,omitempty"`
 	PanicAction      string   `json:"panic_action,omitempty"`
 	SecurityWarnings []string `json:"security_warnings,omitempty"`

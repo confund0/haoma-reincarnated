@@ -7,6 +7,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/gdamore/tcell/v2 v2.13.9
 	github.com/h2non/filetype v1.1.3
+	github.com/klauspost/compress v1.18.0
 	github.com/rivo/tview v0.42.0
 	go.mau.fi/libsignal v0.2.1
 	golang.org/x/crypto v0.42.0
@@ -24,7 +25,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect

@@ -39,4 +39,28 @@ class VerifyingRevealController(
             }
         }
     }
+
+    
+    override fun bypass() {
+        when (state.state.value) {
+            AppState.Locked.Soft -> {
+                log("bypass soft→warm")
+                state.update(AppState.Warm)
+            }
+            AppState.Locked.Hard -> {
+                log("bypass hard→Passphrase")
+                unlock.handleHardSlideMatch()
+            }
+            AppState.Locked.Safe -> {
+                log("bypass safe→Passphrase")
+                unlock.handleHardSlideMatch()
+            }
+            AppState.Locked.Passphrase -> {
+                log("bypass no-op (already at passphrase)")
+            }
+            AppState.Warm -> {
+                log("bypass no-op (already warm)")
+            }
+        }
+    }
 }

@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import io.haoma.calculator.MainActivity
@@ -14,6 +15,7 @@ import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.NotificationEmittedPayload
 import io.haoma.calculator.messenger.NotificationSettings
 import io.haoma.disguise.DisguiseTip
+import java.util.concurrent.ConcurrentHashMap
 
 
 class NotificationPoster(
@@ -21,7 +23,17 @@ class NotificationPoster(
     private val settingsProvider: () -> NotificationSettings? = { null },
     private val tipProvider: () -> DisguiseTip = { DisguiseTip("Math Tip", "New message") },
     private val iconProvider: () -> Int = { android.R.drawable.ic_menu_info_details },
+    
+    
+    private val isForegroundedProvider: () -> Boolean = { false },
+    private val isKeyguardLockedProvider: () -> Boolean = { false },
+    
+    
+    private val nowMs: () -> Long = { SystemClock.uptimeMillis() },
 ) {
+
+    
+    private val pendingAutoDismiss = ConcurrentHashMap<String, Long>()
 
     init {
         ensureChannel()
@@ -50,6 +62,8 @@ class NotificationPoster(
             payload.title to payload.body
         }
 
+        
+        val deepLinkActive = settings?.deepLink == true && !disguiseActive
         val tapIntent = Intent(app, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             if (disguiseActive) {
@@ -57,18 +71,25 @@ class NotificationPoster(
                 
                 putExtra(EXTRA_DISGUISE_TIP_TITLE, title)
                 putExtra(EXTRA_DISGUISE_TIP_BODY, body)
+            } else if (deepLinkActive) {
+                putExtra(EXTRA_CHAT_ID, payload.chatId)
             }
         }
         val tap = PendingIntent.getActivity(
             app,
             
             
-            if (disguiseActive) 1 else 0,
+            when {
+                disguiseActive -> 1
+                deepLinkActive -> payload.chatId.hashCode()
+                else -> 0
+            },
             tapIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
         val noisy = settings?.noisy == true
+        val persistUntilOpen = settings?.persistUntilOpen == true
         val channelId = if (noisy) NOISY_CHANNEL_ID else CHANNEL_ID
         val visibility = if (noisy) {
             NotificationCompat.VISIBILITY_PUBLIC
@@ -85,7 +106,9 @@ class NotificationPoster(
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setVisibility(visibility)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setAutoCancel(true)
+            
+            
+            .setAutoCancel(!persistUntilOpen)
             .setContentIntent(tap)
             .setShowWhen(true)
         if (noisy) {
@@ -98,8 +121,11 @@ class NotificationPoster(
             mgr.notify(payload.chatId, NOTIF_ID_MESSAGE, notification)
             Logger.i(
                 "notifications",
-                "posted chat=${shortTag(payload.chatId)} disguise=$disguiseActive noisy=$noisy",
+                "posted chat=${shortTag(payload.chatId)} disguise=$disguiseActive noisy=$noisy persist=$persistUntilOpen",
             )
+            
+            
+            if (!persistUntilOpen) maybeEnrollAutoDismiss(payload.chatId)
         } catch (t: SecurityException) {
             
             
@@ -108,8 +134,62 @@ class NotificationPoster(
     }
 
     
+    private fun maybeEnrollAutoDismiss(chatId: String) {
+        if (!isForegroundedProvider()) return
+        if (isKeyguardLockedProvider()) return
+        pendingAutoDismiss[chatId] = nowMs() + AUTO_DISMISS_DEBOUNCE_MS
+        Logger.d("notifications", "auto-dismiss enrolled chat=${shortTag(chatId)}")
+    }
+
+    
+    fun enrollAllActiveOnUnlock() {
+        
+        
+        if (settingsProvider()?.persistUntilOpen == true) return
+        if (isKeyguardLockedProvider()) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val sysMgr = app.getSystemService(NotificationManager::class.java) ?: return
+        val active = try {
+            sysMgr.activeNotifications
+        } catch (t: Throwable) {
+            Logger.w("notifications", "activeNotifications threw: ${t.message}")
+            return
+        }
+        val due = nowMs() + AUTO_DISMISS_DEBOUNCE_MS
+        var n = 0
+        active.asSequence()
+            .filter { it.id == NOTIF_ID_MESSAGE }
+            .mapNotNull { it.tag }
+            .forEach { tag ->
+                pendingAutoDismiss[tag] = due
+                n++
+            }
+        if (n > 0) Logger.i("notifications", "auto-dismiss enrolled on-unlock count=$n")
+    }
+
+    
+    fun onUserInteraction() {
+        if (pendingAutoDismiss.isEmpty()) return
+        val now = nowMs()
+        val mgr = NotificationManagerCompat.from(app)
+        val it = pendingAutoDismiss.entries.iterator()
+        while (it.hasNext()) {
+            val (chatId, dueAt) = it.next()
+            if (now < dueAt) continue
+            it.remove()
+            try {
+                mgr.cancel(chatId, NOTIF_ID_MESSAGE)
+                Logger.i("notifications", "auto-dismissed chat=${shortTag(chatId)}")
+            } catch (t: Throwable) {
+                Logger.w("notifications", "auto-dismiss cancel failed: ${t.message}")
+            }
+        }
+    }
+
+    
     fun cancelAll() {
         val mgr = NotificationManagerCompat.from(app)
+        pendingAutoDismiss.clear()
         
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -233,6 +313,18 @@ class NotificationPoster(
     }
 
     
+    fun cancelChatBanner(chatId: String) {
+        if (chatId.isEmpty()) return
+        try {
+            NotificationManagerCompat.from(app).cancel(chatId, NOTIF_ID_MESSAGE)
+            pendingAutoDismiss.remove(chatId)
+            Logger.d("notifications", "chat-banner cancelled chat=${shortTag(chatId)}")
+        } catch (t: Throwable) {
+            Logger.w("notifications", "chat-banner cancel failed: ${t.message}")
+        }
+    }
+
+    
     fun cancelCall(callId: String) {
         try {
             NotificationManagerCompat.from(app).cancel(callId, NOTIF_ID_CALL)
@@ -269,8 +361,14 @@ class NotificationPoster(
         const val NOTIF_ID_CALL = 2002
 
         
+        const val AUTO_DISMISS_DEBOUNCE_MS = 500L
+
+        
         const val EXTRA_DISGUISE_TIP_TITLE = "haoma.disguise_tip_title"
         const val EXTRA_DISGUISE_TIP_BODY = "haoma.disguise_tip_body"
+
+        
+        const val EXTRA_CHAT_ID = "haoma.chat_id"
 
         
         const val ACTION_ANSWER = "io.haoma.calculator.CALL_ANSWER"

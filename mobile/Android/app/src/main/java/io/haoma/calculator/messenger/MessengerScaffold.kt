@@ -27,9 +27,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.messenger.calls.ChatCallHistoryScreen
 import io.haoma.calculator.messenger.chat.ChatDetailScreen
 import io.haoma.calculator.messenger.chat.ChatSettingsScreen
@@ -58,6 +60,19 @@ fun MessengerScaffold(store: MessengerStore) {
             store.requestSelfProbeForActiveSurface()
             store.requestExternalProbeBurst()
         }
+    }
+
+    
+    val app = LocalContext.current.applicationContext as HaomaApp
+    val deepLinkChatId by app.deepLinkChatId.collectAsStateWithLifecycle()
+    LaunchedEffect(deepLinkChatId) {
+        val chatId = deepLinkChatId ?: return@LaunchedEffect
+        val top = store.current.value
+        val alreadyOn = top is Screen.ChatDetail && top.chatId == chatId
+        if (!alreadyOn) {
+            store.openChatDetail(chatId)
+        }
+        app.deepLinkChatId.value = null
     }
 
     KeepScreenOnDuringCalls(store = store)

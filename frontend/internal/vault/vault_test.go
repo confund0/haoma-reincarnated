@@ -487,6 +487,8 @@ func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 		"notifications_on_lock":     true,
 		"notify_disguise_enabled":   false,
 		"notify_noisy":              false,
+		"notify_persist_until_open": false,
+		"notify_deep_link":          false,
 		"default_retention_sec":     0,
 		"default_send_receipts":     true,
 		"idle_action":               "safe-lock",
@@ -529,6 +531,8 @@ func TestPayload_RoundTripsAllFields(t *testing.T) {
 	want.NotifyShellEnabled = true
 	want.NotifyShowSender = true
 	want.NotifyShowBody = true
+	want.NotifyPersistUntilOpen = true
+	want.NotifyDeepLink = true
 
 	want.DefaultSaveDir = "/tmp/haoma-test-saves"
 	want.DefaultAttachStartDir = "/tmp/haoma-test-attach"

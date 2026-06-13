@@ -38,6 +38,7 @@ type spawnOpts struct {
 	logFile       string
 	logFormat     string
 	idleOverride  int
+	restoreBackup string
 }
 
 func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
@@ -149,6 +150,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 	app.Version = version
 	app.SweepVideoFifos()
 	app.VaultCtl = vc
+	app.BackupCtl = newBackupController(root, opts.haomaVaultBin, client, haomad, haoma)
 
 	if vc.IsInsecureDefaultPassphrase() {
 		app.PostStatus("[red]WARNING:[white] vault sealed with the insecure default passphrase. Run [yellow]/change-pass <old> <new>[white] before sharing anything sensitive.")

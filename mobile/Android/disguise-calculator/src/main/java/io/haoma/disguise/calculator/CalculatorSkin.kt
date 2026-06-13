@@ -1,15 +1,19 @@
 package io.haoma.disguise.calculator
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import io.haoma.disguise.DisguiseSkin
 import io.haoma.disguise.DisguiseTip
 import io.haoma.disguise.RevealController
 import io.haoma.disguise.calculator.ui.CalculatorScreen
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 
 class CalculatorSkin(
-    private val config: RevealConfig = RevealConfig(),
+    private val configFlow: StateFlow<RevealConfig> = MutableStateFlow(RevealConfig()),
 ) : DisguiseSkin {
     override val id: String = "calculator"
 
@@ -19,9 +23,10 @@ class CalculatorSkin(
         pendingTip: DisguiseTip?,
         onTipDismissed: () -> Unit,
     ) {
+        val liveConfig by configFlow.collectAsState()
         CalculatorScreen(
             reveal = reveal,
-            config = config,
+            config = liveConfig,
             modifier = Modifier,
             pendingTip = pendingTip,
             onTipDismissed = onTipDismissed,

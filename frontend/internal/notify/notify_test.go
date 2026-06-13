@@ -174,6 +174,34 @@ func TestLinuxFirstEmitNoReplaceFlag(t *testing.T) {
 	}
 }
 
+func TestLinuxPersistFlagAppended(t *testing.T) {
+	r := &fakeRunner{}
+	r.queueOutput("10")
+	r.queueOutput("11")
+	d := New(r, fakeLookPath(map[string]string{"notify-send": "/usr/bin/notify-send"}), "linux")
+	d.Notify(context.Background(), Event{ChatID: "cP", PeerLabel: "Alice", Body: "hi", Persist: true},
+		Privacy{ShellEnabled: true, ShowSender: true, ShowBody: true})
+	waitForCalls(t, r, 1)
+	d.Notify(context.Background(), Event{ChatID: "cN", PeerLabel: "Alice", Body: "hi"},
+		Privacy{ShellEnabled: true, ShowSender: true, ShowBody: true})
+	calls := waitForCalls(t, r, 2)
+
+	hasFlag := func(args []string) bool {
+		for i, a := range args {
+			if a == "-t" && i+1 < len(args) && args[i+1] == "0" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasFlag(calls[0]) {
+		t.Errorf("Persist=true emit should carry -t 0; got %v", calls[0])
+	}
+	if hasFlag(calls[1]) {
+		t.Errorf("Persist=false emit must NOT carry -t 0; got %v", calls[1])
+	}
+}
+
 func TestLinuxSecondEmitReplacesFirst(t *testing.T) {
 	r := &fakeRunner{}
 	r.queueOutput("42")

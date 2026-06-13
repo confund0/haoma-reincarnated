@@ -23,4 +23,9 @@ data class RevealConfig(
     val pinSubmitHoldMillis: Long = 2_000,
     
     val pinIdleCancelMillis: Long = 5_000,
+
+    
+    val bypassKey: String = "",
+    
+    val bypassHoldMillis: Long = 2_000,
 )

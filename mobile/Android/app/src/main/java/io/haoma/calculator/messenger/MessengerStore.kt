@@ -47,6 +47,12 @@ class MessengerStore(
     
     
     internal val policyUpdater: (IdlePolicy) -> Unit = {},
+    
+    
+    internal val unlockKeysStore: io.haoma.calculator.core.UnlockKeysStore? = null,
+    
+    
+    internal val revealKeysUpdater: (UnlockKeySettings) -> Unit = {},
 ) {
     internal val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Default + Logger.coroutineExceptionHandler,

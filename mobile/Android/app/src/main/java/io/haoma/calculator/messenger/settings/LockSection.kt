@@ -18,6 +18,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -37,8 +39,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.window.PopupProperties
 import io.haoma.calculator.messenger.CtaButton
 import io.haoma.calculator.messenger.DirtyBar
@@ -49,11 +53,17 @@ import io.haoma.calculator.messenger.LockSettings
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.Section
 import io.haoma.calculator.messenger.THREAT_PRESET_BUNDLES
+import io.haoma.calculator.messenger.UnlockKeySettings
 import io.haoma.calculator.messenger.applyThreatPreset
 import io.haoma.calculator.messenger.changePassphrase
 import io.haoma.calculator.messenger.changeUnlockPattern
+import io.haoma.calculator.messenger.loadCurrentPin
 import io.haoma.calculator.messenger.loadLockSettings
+import io.haoma.calculator.messenger.loadUnlockKeys
 import io.haoma.calculator.messenger.saveLock
+import io.haoma.calculator.messenger.saveUnlockKeys
+import io.haoma.calculator.unlock.EyeOffVector
+import io.haoma.calculator.unlock.EyeOpenVector
 import kotlinx.coroutines.launch
 
 
@@ -88,6 +98,7 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     var confirmPreset by remember { mutableStateOf<String?>(null) }
     var showPatternDialog by remember { mutableStateOf(false) }
     var showPassphraseDialog by remember { mutableStateOf(false) }
+    var showUnlockKeysDialog by remember { mutableStateOf(false) }
 
     val current by remember(idleIndex, idleTimeoutText, pinValidityText, panicIndex) {
         derivedStateOf {
@@ -186,13 +197,26 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
 
             Section(label = "Credentials") {
                 CtaButton(
-                    label = "Change unlock pattern…",
+                    label = "Unlock keys…",
+                    accent = HaomaPalette.FG_LINK,
+                    enabled = !saving,
+                ) { showUnlockKeysDialog = true }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Pick which calc keys trigger the slide-pattern, the tap-PIN, and the optional soft-lock bypass.",
+                    color = HaomaPalette.FG_SECONDARY,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                CtaButton(
+                    label = "Change PIN / pattern…",
                     accent = HaomaPalette.FG_LINK,
                     enabled = !saving,
                 ) { showPatternDialog = true }
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "The digit secret that reveals the messenger from soft-lock. Two ways to enter it: long-hold [5] then slide through the digits, or long-hold [1] then tap the digits and long-hold [=] to submit. Default `78963` is in effect until you change it here.",
+                    text = "The digit secret that reveals the messenger from soft-lock.",
                     color = HaomaPalette.FG_SECONDARY,
                     fontSize = 13.sp,
                     lineHeight = 18.sp,
@@ -268,8 +292,18 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     }
 
     confirmPreset?.let { presetId ->
+        
+        
+        val currentBypass = if (presetId.isNotEmpty()) {
+            store.loadUnlockKeys().bypassKey
+        } else ""
+        val pinForWarning = if (currentBypass.isNotEmpty()) {
+            store.loadCurrentPin().orEmpty()
+        } else ""
         ApplyPresetConfirmDialog(
             presetId = presetId,
+            bypassWasSet = currentBypass.isNotEmpty(),
+            currentPin = pinForWarning,
             onDismiss = {
                 
                 
@@ -305,7 +339,10 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     }
 
     if (showPatternDialog) {
+        val liveKeys = store.loadUnlockKeys()
         ChangePatternDialog(
+            patternKey = liveKeys.patternKey,
+            pinKey = liveKeys.pinKey,
             onDismiss = { showPatternDialog = false },
             onSave = { old, new, onResult ->
                 coroutineScope.launch {
@@ -325,6 +362,21 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
                     val result = store.changePassphrase(old, new)
                     onResult(result)
                     if (result.isSuccess) showPassphraseDialog = false
+                }
+            },
+        )
+    }
+
+    if (showUnlockKeysDialog) {
+        val current = store.loadUnlockKeys()
+        UnlockKeysDialog(
+            initial = current,
+            onDismiss = { showUnlockKeysDialog = false },
+            onSave = { settings, onResult ->
+                coroutineScope.launch {
+                    val result = store.saveUnlockKeys(settings)
+                    onResult(result)
+                    if (result.isSuccess) showUnlockKeysDialog = false
                 }
             },
         )
@@ -412,13 +464,20 @@ private fun NumericField(
 
 @Composable
 private fun ChangePatternDialog(
+    patternKey: String,
+    pinKey: String,
     onDismiss: () -> Unit,
     onSave: (String, String, (Result<Unit>) -> Unit) -> Unit,
 ) {
     var oldDraft by remember { mutableStateOf("") }
     var newDraft by remember { mutableStateOf("") }
+    var repeatDraft by remember { mutableStateOf("") }
+    var visible by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    val mismatch = repeatDraft.isNotEmpty() && newDraft != repeatDraft
+    val canSave = !saving && newDraft.length >= 4 && newDraft == repeatDraft
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -430,13 +489,17 @@ private fun ChangePatternDialog(
     ) {
         AlertDialog(
             onDismissRequest = { if (!saving) onDismiss() },
-            title = { Text("Change unlock pattern", color = HaomaPalette.FG_PRIMARY) },
+            title = { Text("Change PIN / pattern", color = HaomaPalette.FG_PRIMARY) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Digits only, length ≥ 4. Default is `78963` until first changed.",
-                        color = HaomaPalette.FG_SECONDARY,
-                        fontSize = 13.sp,
+                    BulletList(
+                        bullets = listOf(
+                            "PIN and pattern are the same value.",
+                            "To enter PIN: tap+hold [$pinKey].",
+                            "To use pattern: tap+hold [$patternKey].",
+                            "Only digits are supported.",
+                            "Default is 78963 until changed.",
+                        ),
                     )
                     if (saving) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -453,36 +516,45 @@ private fun ChangePatternDialog(
                             )
                         }
                     } else {
-                        OutlinedTextField(
+                        RevealToggleRow(visible = visible, onToggle = { visible = !visible })
+                        SecretField(
                             value = oldDraft,
+                            label = "Current pattern",
+                            visible = visible,
+                            digitsOnly = true,
                             onValueChange = {
-                                oldDraft = it.filter { c -> c.isDigit() }
+                                oldDraft = it
                                 if (error != null) error = null
                             },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.NumberPassword,
-                            ),
-                            label = { Text("Current pattern", color = HaomaPalette.FG_DIM) },
-                            colors = dialogFieldColors(),
-                            modifier = Modifier.fillMaxWidth(),
                         )
-                        OutlinedTextField(
+                        SecretField(
                             value = newDraft,
+                            label = "New pattern",
+                            visible = visible,
+                            digitsOnly = true,
                             onValueChange = {
-                                newDraft = it.filter { c -> c.isDigit() }
+                                newDraft = it
                                 if (error != null) error = null
                             },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.NumberPassword,
-                            ),
-                            label = { Text("New pattern", color = HaomaPalette.FG_DIM) },
-                            colors = dialogFieldColors(),
-                            modifier = Modifier.fillMaxWidth(),
                         )
+                        SecretField(
+                            value = repeatDraft,
+                            label = "Repeat new pattern",
+                            visible = visible,
+                            digitsOnly = true,
+                            isError = mismatch,
+                            onValueChange = {
+                                repeatDraft = it
+                                if (error != null) error = null
+                            },
+                        )
+                        if (mismatch) {
+                            Text(
+                                text = "Patterns don't match",
+                                color = HaomaPalette.C_DANGER,
+                                fontSize = 12.sp,
+                            )
+                        }
                     }
                     error?.let {
                         Text(text = it, color = HaomaPalette.C_DANGER, fontSize = 13.sp)
@@ -491,7 +563,7 @@ private fun ChangePatternDialog(
             },
             confirmButton = {
                 TextButton(
-                    enabled = !saving,
+                    enabled = canSave,
                     onClick = {
                         saving = true
                         error = null
@@ -503,7 +575,7 @@ private fun ChangePatternDialog(
                 ) {
                     Text(
                         text = "Save",
-                        color = if (saving) HaomaPalette.FG_DIM else HaomaPalette.FG_LINK,
+                        color = if (canSave) HaomaPalette.FG_LINK else HaomaPalette.FG_DIM,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -531,8 +603,13 @@ private fun ChangePassphraseDialog(
 ) {
     var oldDraft by remember { mutableStateOf("") }
     var newDraft by remember { mutableStateOf("") }
+    var repeatDraft by remember { mutableStateOf("") }
+    var visible by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    val mismatch = repeatDraft.isNotEmpty() && newDraft != repeatDraft
+    val canSave = !saving && newDraft.isNotEmpty() && newDraft == repeatDraft
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -552,6 +629,11 @@ private fun ChangePassphraseDialog(
                         color = HaomaPalette.C_DANGER,
                         fontSize = 13.sp,
                     )
+                    Text(
+                        text = "Default passphrase is good-girls-go-to-heaven until changed.",
+                        color = HaomaPalette.FG_SECONDARY,
+                        fontSize = 13.sp,
+                    )
                     if (saving) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(
@@ -567,30 +649,36 @@ private fun ChangePassphraseDialog(
                             )
                         }
                     } else {
-                        OutlinedTextField(
+                        RevealToggleRow(visible = visible, onToggle = { visible = !visible })
+                        SecretField(
                             value = oldDraft,
+                            label = "Current passphrase",
+                            visible = visible,
+                            digitsOnly = false,
                             onValueChange = { oldDraft = it; if (error != null) error = null },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Password,
-                            ),
-                            label = { Text("Current passphrase", color = HaomaPalette.FG_DIM) },
-                            colors = dialogFieldColors(),
-                            modifier = Modifier.fillMaxWidth(),
                         )
-                        OutlinedTextField(
+                        SecretField(
                             value = newDraft,
+                            label = "New passphrase",
+                            visible = visible,
+                            digitsOnly = false,
                             onValueChange = { newDraft = it; if (error != null) error = null },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Password,
-                            ),
-                            label = { Text("New passphrase", color = HaomaPalette.FG_DIM) },
-                            colors = dialogFieldColors(),
-                            modifier = Modifier.fillMaxWidth(),
                         )
+                        SecretField(
+                            value = repeatDraft,
+                            label = "Repeat new passphrase",
+                            visible = visible,
+                            digitsOnly = false,
+                            isError = mismatch,
+                            onValueChange = { repeatDraft = it; if (error != null) error = null },
+                        )
+                        if (mismatch) {
+                            Text(
+                                text = "Passphrases don't match",
+                                color = HaomaPalette.C_DANGER,
+                                fontSize = 12.sp,
+                            )
+                        }
                     }
                     error?.let {
                         Text(text = it, color = HaomaPalette.C_DANGER, fontSize = 13.sp)
@@ -599,12 +687,8 @@ private fun ChangePassphraseDialog(
             },
             confirmButton = {
                 TextButton(
-                    enabled = !saving,
+                    enabled = canSave,
                     onClick = {
-                        if (newDraft.isEmpty()) {
-                            error = "new passphrase must not be empty"
-                            return@TextButton
-                        }
                         saving = true
                         error = null
                         onSave(oldDraft, newDraft) { result ->
@@ -615,7 +699,7 @@ private fun ChangePassphraseDialog(
                 ) {
                     Text(
                         text = "Save",
-                        color = if (saving) HaomaPalette.FG_DIM else HaomaPalette.FG_LINK,
+                        color = if (canSave) HaomaPalette.FG_LINK else HaomaPalette.FG_DIM,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -639,6 +723,8 @@ private fun ChangePassphraseDialog(
 @Composable
 private fun ApplyPresetConfirmDialog(
     presetId: String,
+    bypassWasSet: Boolean,
+    currentPin: String,
     onDismiss: () -> Unit,
     onApply: () -> Unit,
 ) {
@@ -663,11 +749,45 @@ private fun ApplyPresetConfirmDialog(
             onDismissRequest = onDismiss,
             title = { Text(title, color = HaomaPalette.FG_PRIMARY) },
             text = {
-                Text(
-                    text = body,
-                    color = HaomaPalette.FG_SECONDARY,
-                    fontSize = 13.sp,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = body,
+                        color = HaomaPalette.FG_SECONDARY,
+                        fontSize = 13.sp,
+                    )
+                    if (bypassWasSet) {
+                        
+                        
+                        val pinShown = currentPin.ifEmpty { "(unset)" }
+                        val annotated = androidx.compose.ui.text.buildAnnotatedString {
+                            append("We are disabling PIN bypass. Your PIN is ")
+                            pushStyle(
+                                androidx.compose.ui.text.SpanStyle(
+                                    color = HaomaPalette.BTN_GIVE,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFamily = FontFamily.Monospace,
+                                ),
+                            )
+                            append(pinShown)
+                            pop()
+                            append(" — ")
+                            pushStyle(
+                                androidx.compose.ui.text.SpanStyle(
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                ),
+                            )
+                            append("write it down")
+                            pop()
+                            append(".")
+                        }
+                        Text(
+                            text = annotated,
+                            color = HaomaPalette.FG_PRIMARY,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = onApply) {
@@ -736,3 +856,247 @@ private val PANIC_LABELS: List<String> = listOf(
     "self-destruct",
 )
 private val PANIC_VALUES: List<String> = listOf("", "safe-lock", "hard-lock", "self-destruct")
+
+
+@Composable
+private fun BulletList(bullets: List<String>) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        bullets.forEach { line ->
+            Row(verticalAlignment = Alignment.Top) {
+                Text(
+                    text = "• ",
+                    color = HaomaPalette.FG_SECONDARY,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                )
+                Text(
+                    text = line,
+                    color = HaomaPalette.FG_SECONDARY,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RevealToggleRow(visible: Boolean, onToggle: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onToggle, modifier = Modifier.size(28.dp)) {
+            Icon(
+                imageVector = if (visible) EyeOpenVector else EyeOffVector,
+                contentDescription = if (visible) "Hide fields" else "Show fields",
+                tint = HaomaPalette.FG_LINK,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = if (visible) "Hide" else "Show",
+            color = HaomaPalette.FG_LINK,
+            fontSize = 13.sp,
+        )
+    }
+}
+
+@Composable
+private fun SecretField(
+    value: String,
+    label: String,
+    visible: Boolean,
+    digitsOnly: Boolean,
+    isError: Boolean = false,
+    onValueChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { input ->
+            onValueChange(if (digitsOnly) input.filter { it.isDigit() } else input)
+        },
+        singleLine = true,
+        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (digitsOnly) KeyboardType.NumberPassword else KeyboardType.Password,
+        ),
+        label = { Text(label, color = HaomaPalette.FG_DIM) },
+        colors = dialogFieldColors(),
+        isError = isError,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+
+private val UNLOCK_DIGIT_KEYS: List<String> =
+    listOf("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")
+private val UNLOCK_BYPASS_KEYS: List<String> = listOf(
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "+", "−", "×", "÷", "(", ")", "√", "^", "%", ".",
+)
+
+@Composable
+private fun UnlockKeysDialog(
+    initial: UnlockKeySettings,
+    onDismiss: () -> Unit,
+    onSave: (UnlockKeySettings, (Result<Unit>) -> Unit) -> Unit,
+) {
+    var pattern by remember { mutableStateOf(initial.patternKey) }
+    var pin by remember { mutableStateOf(initial.pinKey) }
+    var bypass by remember { mutableStateOf(initial.bypassKey) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    val patternOptions = UNLOCK_DIGIT_KEYS.filter { it != pin && it != bypass }
+    val pinOptions = UNLOCK_DIGIT_KEYS.filter { it != pattern && it != bypass }
+    val bypassOptions = listOf("") + UNLOCK_BYPASS_KEYS.filter { it != pattern && it != pin }
+
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            surface = HaomaPalette.BG_BAR,
+            onSurface = HaomaPalette.FG_PRIMARY,
+            background = HaomaPalette.BG_BAR,
+            onBackground = HaomaPalette.FG_PRIMARY,
+        ),
+    ) {
+        AlertDialog(
+            onDismissRequest = { if (!saving) onDismiss() },
+            title = { Text("Unlock keys", color = HaomaPalette.FG_PRIMARY) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GlyphDropdown(
+                        label = "Enter pattern key",
+                        options = patternOptions,
+                        currentValue = pattern,
+                    ) { pattern = it; if (error != null) error = null }
+                    GlyphDropdown(
+                        label = "Enter PIN key",
+                        options = pinOptions,
+                        currentValue = pin,
+                    ) { pin = it; if (error != null) error = null }
+                    GlyphDropdown(
+                        label = "Bypass lock key",
+                        options = bypassOptions,
+                        currentValue = bypass,
+                        emptyLabel = "Disabled",
+                    ) { bypass = it; if (error != null) error = null }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "When in calculator — long tap the key to start entering the unlock sequence.",
+                        color = HaomaPalette.FG_SECONDARY,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                    )
+                    if (saving) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                color = HaomaPalette.BTN_PRIMARY,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.height(20.dp).width(20.dp),
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "re-sealing vault (1–3s)…",
+                                color = HaomaPalette.FG_SECONDARY,
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+                    error?.let {
+                        Text(text = it, color = HaomaPalette.C_DANGER, fontSize = 13.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !saving,
+                    onClick = {
+                        saving = true
+                        error = null
+                        onSave(UnlockKeySettings(pattern, pin, bypass)) { result ->
+                            saving = false
+                            result.onFailure { t -> error = t.message ?: "save failed" }
+                        }
+                    },
+                ) {
+                    Text(
+                        text = "Save",
+                        color = if (saving) HaomaPalette.FG_DIM else HaomaPalette.FG_LINK,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !saving,
+                    onClick = onDismiss,
+                ) {
+                    Text(
+                        text = "Cancel",
+                        color = if (saving) HaomaPalette.FG_DIM else HaomaPalette.FG_LINK,
+                    )
+                }
+            },
+            containerColor = HaomaPalette.BG_BAR,
+        )
+    }
+}
+
+
+@Composable
+private fun GlyphDropdown(
+    label: String,
+    options: List<String>,
+    currentValue: String,
+    emptyLabel: String = "",
+    onPick: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    fun render(v: String): String = if (v.isEmpty()) emptyLabel else v
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = label,
+            color = HaomaPalette.FG_LINK,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Box {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = true }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = render(currentValue),
+                    color = HaomaPalette.BTN_GIVE,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(text = "▾", color = HaomaPalette.FG_LINK, fontSize = 14.sp)
+            }
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    surface = HaomaPalette.BG_BAR,
+                    onSurface = HaomaPalette.FG_PRIMARY,
+                ),
+            ) {
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false },
+                    properties = PopupProperties(focusable = false),
+                ) {
+                    options.forEach { opt ->
+                        HaomaDropdownItem(
+                            label = render(opt),
+                            selected = opt == currentValue,
+                            onClick = { onPick(opt); expanded = false },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

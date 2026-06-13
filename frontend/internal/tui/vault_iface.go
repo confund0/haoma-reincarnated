@@ -24,6 +24,9 @@ type VaultController interface {
 	SetNotifyShowSender(b bool) error
 	SetNotifyShowBody(b bool) error
 	SetNotificationsOnLock(b bool) error
+
+	SetNotifyPersistUntilOpen(b bool) error
+	SetNotifyDeepLink(b bool) error
 	SetThreatProfile(s string) error
 	SetPanicAction(s string) error
 
@@ -35,4 +38,8 @@ type VaultController interface {
 	Settings() ipc.Settings
 
 	Mutate(label string, transform func(*vault.Payload) error) error
+}
+
+type BackupController interface {
+	Backup(destPath string) (resolvedPath string, files int, byteCount int64, err error)
 }

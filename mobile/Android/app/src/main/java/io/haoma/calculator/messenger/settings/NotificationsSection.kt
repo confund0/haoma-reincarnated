@@ -37,13 +37,20 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
     val coroutineScope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 
-    val snapshot = initial
-    if (snapshot == null) {
+    val rawSnapshot = initial
+    if (rawSnapshot == null) {
         Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
             SectionHeader(title = "Notifications", store = store, onBack = onBack)
             VaultUnavailableBanner(message = "Vault session unavailable — re-unlock the app to edit notification settings.")
         }
         return
+    }
+
+    
+    val snapshot = if (rawSnapshot.disguiseEnabled) {
+        rawSnapshot.copy(showSender = false, showBody = false)
+    } else {
+        rawSnapshot
     }
 
     var shellEnabled by remember(snapshot) { mutableStateOf(snapshot.shellEnabled) }
@@ -52,18 +59,26 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
     var onLock by remember(snapshot) { mutableStateOf(snapshot.onLock) }
     var disguiseEnabled by remember(snapshot) { mutableStateOf(snapshot.disguiseEnabled) }
     var noisy by remember(snapshot) { mutableStateOf(snapshot.noisy) }
+    var persistUntilOpen by remember(snapshot) { mutableStateOf(snapshot.persistUntilOpen) }
+    var deepLink by remember(snapshot) { mutableStateOf(snapshot.deepLink) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    val current by remember(shellEnabled, showSender, showBody, onLock, disguiseEnabled, noisy) {
+    
+    val effectiveShowSender = !disguiseEnabled && showSender
+    val effectiveShowBody = !disguiseEnabled && showBody
+
+    val current by remember(shellEnabled, effectiveShowSender, effectiveShowBody, onLock, disguiseEnabled, noisy, persistUntilOpen, deepLink) {
         derivedStateOf {
             NotificationSettings(
                 shellEnabled = shellEnabled,
-                showSender = showSender,
-                showBody = showBody,
+                showSender = effectiveShowSender,
+                showBody = effectiveShowBody,
                 onLock = onLock,
                 disguiseEnabled = disguiseEnabled,
                 noisy = noisy,
+                persistUntilOpen = persistUntilOpen,
+                deepLink = deepLink,
             )
         }
     }
@@ -80,24 +95,24 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
         )
 
         Column(modifier = Modifier.weight(1f).verticalScroll(scrollState)) {
-            Section(label = "Banner posture") {
+            Section(label = "General") {
                 ToggleRow(
                     label = "Enable per-OS notifications",
-                    hint = "Shows banners via the OS notification channel.",
+                    hint = "Master switch. Off = no system tray banners at all.",
                     checked = shellEnabled,
                     onCheckedChange = { shellEnabled = it; if (error != null) error = null },
                 )
+            }
+
+            Section(
+                label = "Banner posture",
+                description = "Controls how the banner appears and when it fires. All three keep the inspection-safe posture intact.",
+            ) {
                 ToggleRow(
-                    label = "Show sender name in notifications",
-                    hint = "Off = banners hide who sent the message.",
-                    checked = showSender,
-                    onCheckedChange = { showSender = it; if (error != null) error = null },
-                )
-                ToggleRow(
-                    label = "Show message body in notifications",
-                    hint = "Off = banners hide the message text.",
-                    checked = showBody,
-                    onCheckedChange = { showBody = it; if (error != null) error = null },
+                    label = "Disguise notifications as cover-skin tips",
+                    hint = "Banners look like calculator math tips; tapping opens a tip page in the calculator. Forces the two Show toggles below off.",
+                    checked = disguiseEnabled,
+                    onCheckedChange = { disguiseEnabled = it; if (error != null) error = null },
                 )
                 ToggleRow(
                     label = "Allow notifications while UI is locked",
@@ -107,18 +122,49 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                 )
                 ToggleRow(
                     label = "Noisy notifications",
-                    hint = "Standard messenger posture: lock-screen visible + heads-up banners while unlocked. Off = silent tray entry, lock-screen hidden.",
+                    hint = "Lock-screen visible + heads-up banners while unlocked. Off = silent tray entry, lock-screen hidden.",
                     checked = noisy,
                     onCheckedChange = { noisy = it; if (error != null) error = null },
                 )
             }
 
-            Section(label = "Disguise mode") {
+            Section(
+                label = "Unrestricted",
+                description = "Standard-messenger conveniences. Defaults OFF preserve the inspection-safe posture; turn them on for a WhatsApp/Signal-style experience when nobody else watches the screen.",
+            ) {
                 ToggleRow(
-                    label = "Disguise notifications as cover-skin tips",
-                    hint = "Only when both Show toggles above are off. Banners look like calculator math tips; tapping opens a tip page in the calculator.",
-                    checked = disguiseEnabled,
-                    onCheckedChange = { disguiseEnabled = it; if (error != null) error = null },
+                    label = "Show sender name in notifications",
+                    hint = if (disguiseEnabled) {
+                        "Disabled while Disguise is ON."
+                    } else {
+                        "Off = banners hide who sent the message."
+                    },
+                    checked = effectiveShowSender,
+                    enabled = !disguiseEnabled,
+                    onCheckedChange = { showSender = it; if (error != null) error = null },
+                )
+                ToggleRow(
+                    label = "Show message body in notifications",
+                    hint = if (disguiseEnabled) {
+                        "Disabled while Disguise is ON."
+                    } else {
+                        "Off = banners hide the message text."
+                    },
+                    checked = effectiveShowBody,
+                    enabled = !disguiseEnabled,
+                    onCheckedChange = { showBody = it; if (error != null) error = null },
+                )
+                ToggleRow(
+                    label = "Keep notification until I open that chat",
+                    hint = "Banner stays in the tray until you actually enter the chat. Tapping outside (e.g. the contacts list) does not clear it.",
+                    checked = persistUntilOpen,
+                    onCheckedChange = { persistUntilOpen = it; if (error != null) error = null },
+                )
+                ToggleRow(
+                    label = "Tap notification → open that chat",
+                    hint = "Navigates directly to the chat the message came from (after unlock if needed).",
+                    checked = deepLink,
+                    onCheckedChange = { deepLink = it; if (error != null) error = null },
                 )
             }
 
@@ -161,6 +207,8 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                     onLock = snapshot.onLock
                     disguiseEnabled = snapshot.disguiseEnabled
                     noisy = snapshot.noisy
+                    persistUntilOpen = snapshot.persistUntilOpen
+                    deepLink = snapshot.deepLink
                     error = null
                 },
             )

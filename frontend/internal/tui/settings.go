@@ -731,6 +731,15 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 		sp.markDirty(settingsDomainNotifs)
 	})
 	form.AddFormItem(onLockBox)
+
+	persistBox := newBracketCheckbox("Keep notification until I open that chat", sp.initial.NotifyPersistUntilOpen, func(_ bool) {
+		sp.markDirty(settingsDomainNotifs)
+	})
+	form.AddFormItem(persistBox)
+	deepLinkBox := newBracketCheckbox("Tap notification → open that chat (desktop: bring terminal to focus)", sp.initial.NotifyDeepLink, func(_ bool) {
+		sp.markDirty(settingsDomainNotifs)
+	})
+	form.AddFormItem(deepLinkBox)
 	form.AddTextView("Privacy posture",
 		renderAdvisory("info", "settings.notifs.privacy",
 			"With both Show toggles off, banners read \"Haoma: New message\" — safest under physical inspection."),
@@ -741,11 +750,15 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 		showSender := senderBox.Checked()
 		showBody := bodyBox.Checked()
 		onLock := onLockBox.Checked()
+		persist := persistBox.Checked()
+		deepLink := deepLinkBox.Checked()
 		if err := a.VaultCtl.Mutate("notifications", func(p *vault.Payload) error {
 			p.NotifyShellEnabled = shell
 			p.NotifyShowSender = showSender
 			p.NotifyShowBody = showBody
 			p.NotificationsOnLock = onLock
+			p.NotifyPersistUntilOpen = persist
+			p.NotifyDeepLink = deepLink
 			return nil
 		}); err != nil {
 			return err
@@ -754,6 +767,8 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 		sp.initial.NotifyShowSender = showSender
 		sp.initial.NotifyShowBody = showBody
 		sp.initial.NotificationsOnLock = onLock
+		sp.initial.NotifyPersistUntilOpen = persist
+		sp.initial.NotifyDeepLink = deepLink
 		sp.markClean(settingsDomainNotifs)
 		a.pushSettingsSync()
 		a.log("[green]notifications saved[white]")

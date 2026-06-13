@@ -11,6 +11,9 @@ fun MessengerStore.markRead(chatId: String) {
     val c = ipc ?: return
     val payload = JSONObject().apply { put("chat_id", chatId) }
     c.send(Frame(type = FrameType.MarkRead, payload = payload))
+    
+    
+    notificationPoster?.cancelChatBanner(chatId)
     Logger.d("messenger", "mark_read emit chat=${shortChat(chatId)}")
 }
 

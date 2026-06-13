@@ -321,6 +321,32 @@ func (vc *vaultController) SetNotificationsOnLock(b bool) error {
 	return nil
 }
 
+func (vc *vaultController) SetNotifyPersistUntilOpen(b bool) error {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	prev := vc.payload.NotifyPersistUntilOpen
+	vc.payload.NotifyPersistUntilOpen = b
+	if err := vc.resealLocked(); err != nil {
+		vc.payload.NotifyPersistUntilOpen = prev
+		return fmt.Errorf("re-seal: %w", err)
+	}
+	slog.Info("vault: NotifyPersistUntilOpen set", slog.Bool("on", b))
+	return nil
+}
+
+func (vc *vaultController) SetNotifyDeepLink(b bool) error {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	prev := vc.payload.NotifyDeepLink
+	vc.payload.NotifyDeepLink = b
+	if err := vc.resealLocked(); err != nil {
+		vc.payload.NotifyDeepLink = prev
+		return fmt.Errorf("re-seal: %w", err)
+	}
+	slog.Info("vault: NotifyDeepLink set", slog.Bool("on", b))
+	return nil
+}
+
 func (vc *vaultController) SetThreatProfile(s string) error {
 	switch s {
 	case "", vault.PresetDomestic, vault.PresetPrivacy, vault.PresetActivist:
@@ -433,20 +459,22 @@ func (vc *vaultController) Settings() ipc.Settings {
 	defer vc.mu.Unlock()
 	p := vc.payload
 	return ipc.Settings{
-		DefaultRetentionSec:   p.DefaultRetentionSec,
-		DefaultSendReceipts:   p.DefaultSendReceipts,
-		IdleAction:            p.IdleAction,
-		IdleTimeoutSeconds:    p.IdleTimeoutSeconds,
-		PinValiditySec:        p.PinValiditySec,
-		NotifyShellEnabled:    p.NotifyShellEnabled,
-		NotifyShowSender:      p.NotifyShowSender,
-		NotifyShowBody:        p.NotifyShowBody,
-		NotificationsOnLock:   p.NotificationsOnLock,
-		ThreatProfile:         p.ThreatProfile,
-		PanicAction:           p.PanicAction,
-		SecurityWarnings:      append([]string(nil), p.SecurityWarnings...),
-		HasTorPassword:        p.TorPassword != "",
-		DefaultSaveDir:        p.DefaultSaveDir,
-		DefaultAttachStartDir: p.DefaultAttachStartDir,
+		DefaultRetentionSec:    p.DefaultRetentionSec,
+		DefaultSendReceipts:    p.DefaultSendReceipts,
+		IdleAction:             p.IdleAction,
+		IdleTimeoutSeconds:     p.IdleTimeoutSeconds,
+		PinValiditySec:         p.PinValiditySec,
+		NotifyShellEnabled:     p.NotifyShellEnabled,
+		NotifyShowSender:       p.NotifyShowSender,
+		NotifyShowBody:         p.NotifyShowBody,
+		NotificationsOnLock:    p.NotificationsOnLock,
+		NotifyPersistUntilOpen: p.NotifyPersistUntilOpen,
+		NotifyDeepLink:         p.NotifyDeepLink,
+		ThreatProfile:          p.ThreatProfile,
+		PanicAction:            p.PanicAction,
+		SecurityWarnings:       append([]string(nil), p.SecurityWarnings...),
+		HasTorPassword:         p.TorPassword != "",
+		DefaultSaveDir:         p.DefaultSaveDir,
+		DefaultAttachStartDir:  p.DefaultAttachStartDir,
 	}
 }

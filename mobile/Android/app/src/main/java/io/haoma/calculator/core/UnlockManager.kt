@@ -49,6 +49,12 @@ class UnlockManager(
     suspend fun submitDefaultPassphrase(): Outcome =
         runUnseal(VaultHelper.DefaultPassphraseBytes)
 
+    
+    suspend fun submitStagedRestoreCommit(
+        passphrase: ByteArray,
+        stagingPath: String,
+    ): Outcome = runCommit(passphrase, stagingPath)
+
     private suspend fun runUnseal(passphrase: ByteArray): Outcome {
         if (!inFlight.compareAndSet(false, true)) {
             Logger.w("unlock", "unseal attempt dropped: another in flight")
@@ -67,10 +73,42 @@ class UnlockManager(
         }
     }
 
+    private suspend fun runCommit(passphrase: ByteArray, stagingPath: String): Outcome {
+        if (!inFlight.compareAndSet(false, true)) {
+            Logger.w("unlock", "commit attempt dropped: another in flight")
+            return Outcome.WrongPassphrase
+        }
+        try {
+            val outcome = withContext(Dispatchers.IO) {
+                tryCommitAndSpawn(passphrase, stagingPath)
+            }
+            if (outcome == Outcome.Warmed) {
+                state.update(AppState.Warm)
+            }
+            return outcome
+        } finally {
+            inFlight.set(false)
+        }
+    }
+
     
     fun revertToHard() {
         Logger.i("unlock", "revert → Hard")
         state.update(AppState.Locked.Hard)
+    }
+
+    private suspend fun tryCommitAndSpawn(passphrase: ByteArray, stagingPath: String): Outcome {
+        val unsealed = try {
+            VaultHelper.archiveCommit(app, stagingPath, passphrase)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            
+            
+            Logger.w("unlock", "archive-commit failed: ${t.message}")
+            return Outcome.WrongPassphrase
+        }
+        return finishUnseal(passphrase, unsealed)
     }
 
     private suspend fun tryUnsealAndSpawn(passphrase: ByteArray, isDefault: Boolean): Outcome {
@@ -87,6 +125,13 @@ class UnlockManager(
                 Outcome.WrongPassphrase
             }
         }
+        return finishUnseal(passphrase, unsealed)
+    }
+
+    private suspend fun finishUnseal(
+        passphrase: ByteArray,
+        unsealed: VaultHelper.Unsealed,
+    ): Outcome {
         
         
         policySink(unsealed.policy)

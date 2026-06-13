@@ -55,6 +55,52 @@ object VaultHelper {
     enum class DisguiseVerifyResult { Match, Mismatch, Missing }
 
     
+    fun archiveWrite(context: Context, destPath: String) {
+        execHelper(context, args = arrayOf("--archive-write=$destPath"), stdin = ByteArray(0))
+        Logger.i("vault", "archive-write ok bytes=${File(destPath).length()}")
+    }
+
+    
+    fun archiveStage(context: Context, archivePath: String): String {
+        val stdout = execHelper(
+            context,
+            args = arrayOf("--archive-stage=$archivePath"),
+            stdin = ByteArray(0),
+        )
+        val staging = stdout.toString(Charsets.UTF_8).trim()
+        require(staging.isNotEmpty()) { "archive-stage produced empty stdout" }
+        Logger.i("vault", "archive-stage ok staging=$staging")
+        return staging
+    }
+
+    
+    fun archiveCommit(context: Context, stagingPath: String, passphrase: ByteArray): Unsealed {
+        Logger.d("vault", "archive-commit enter pass_len=${passphrase.size} staging=$stagingPath")
+        val stdout = execHelper(
+            context,
+            args = arrayOf("--archive-commit=$stagingPath"),
+            stdin = passphrase,
+        )
+        return splitOutput(stdout)
+    }
+
+    
+    fun archiveDiscard(context: Context, stagingPath: String) {
+        execHelper(context, args = arrayOf("--archive-discard=$stagingPath"), stdin = ByteArray(0))
+        Logger.i("vault", "archive-discard ok staging=$stagingPath")
+    }
+
+    
+    fun findStagedRestoreDirs(context: Context): List<String> {
+        val cfg = cfgDir(context)
+        if (!cfg.exists() || !cfg.isDirectory) return emptyList()
+        return cfg.listFiles { f -> f.isDirectory && f.name.startsWith(".staging-") }
+            ?.sortedByDescending { it.name }
+            ?.map { it.absolutePath }
+            ?: emptyList()
+    }
+
+    
     fun disguiseInit(context: Context, pattern: String) {
         execHelper(context, args = arrayOf("--disguise-init"), stdin = pattern.toByteArray(Charsets.UTF_8))
         Logger.i("vault", "disguise-init ok")

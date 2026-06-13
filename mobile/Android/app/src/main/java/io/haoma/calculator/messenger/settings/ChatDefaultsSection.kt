@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -200,28 +201,45 @@ internal fun ToggleRow(
     hint: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+            .clickable(enabled = enabled) { onCheckedChange(!checked) }
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = CheckboxDefaults.colors(
-                checkedColor = HaomaPalette.BTN_GIVE,
-                uncheckedColor = HaomaPalette.FG_DIM,
-                checkmarkColor = HaomaPalette.BG_BASE,
-            ),
-        )
+        if (enabled) {
+            Checkbox(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = CheckboxDefaults.colors(
+                    checkedColor = HaomaPalette.BTN_GIVE,
+                    uncheckedColor = HaomaPalette.FG_DIM,
+                    checkmarkColor = HaomaPalette.BG_BASE,
+                ),
+            )
+        } else {
+            
+            
+            Box(
+                modifier = Modifier.size(48.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "×",
+                    color = HaomaPalette.C_DANGER,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
         Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = label,
-                color = HaomaPalette.FG_LINK,
+                color = if (enabled) HaomaPalette.FG_LINK else HaomaPalette.FG_DIM,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
             )

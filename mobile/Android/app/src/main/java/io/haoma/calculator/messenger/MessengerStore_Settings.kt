@@ -24,6 +24,8 @@ fun MessengerStore.pushSettingsSync() {
         notifyShowSender = snap.optBoolean("notify_show_sender", false),
         notifyShowBody = snap.optBoolean("notify_show_body", false),
         notificationsOnLock = snap.optBoolean("notifications_on_lock", false),
+        notifyPersistUntilOpen = snap.optBoolean("notify_persist_until_open", false),
+        notifyDeepLink = snap.optBoolean("notify_deep_link", false),
         threatProfile = snap.optString("threat_profile", ""),
         panicAction = snap.optString("panic_action", ""),
         
@@ -152,6 +154,8 @@ fun MessengerStore.loadNotificationSettings(): NotificationSettings? {
         onLock = snap.optBoolean("notifications_on_lock", false),
         disguiseEnabled = snap.optBoolean("notify_disguise_enabled", false),
         noisy = snap.optBoolean("notify_noisy", false),
+        persistUntilOpen = snap.optBoolean("notify_persist_until_open", false),
+        deepLink = snap.optBoolean("notify_deep_link", false),
     )
 }
 
@@ -164,6 +168,8 @@ suspend fun MessengerStore.saveNotificationSettings(settings: NotificationSettin
         p.put("notifications_on_lock", settings.onLock)
         p.put("notify_disguise_enabled", settings.disguiseEnabled)
         p.put("notify_noisy", settings.noisy)
+        p.put("notify_persist_until_open", settings.persistUntilOpen)
+        p.put("notify_deep_link", settings.deepLink)
     }
 
 
@@ -286,12 +292,50 @@ suspend fun MessengerStore.saveLock(settings: LockSettings, clearThreatProfile: 
 suspend fun MessengerStore.applyThreatPreset(presetId: String): Result<Unit> {
     val bundle = THREAT_PRESET_BUNDLES[presetId]
         ?: return Result.failure(IllegalArgumentException("unknown preset: $presetId"))
-    return resealVault("apply-preset", "threat preset applied: $presetId") { p ->
+    val result = resealVault("apply-preset", "threat preset applied: $presetId") { p ->
         p.put("threat_profile", presetId)
         p.put("idle_action", bundle.idleAction)
         p.put("idle_timeout_seconds", bundle.idleTimeoutSeconds)
         p.put("pin_validity_sec", bundle.pinValiditySec)
         p.put("panic_action", bundle.panicAction)
+    }
+    
+    
+    if (result.isSuccess) {
+        unlockKeysStore?.let { store ->
+            val current = store.load()
+            if (current.bypassKey.isNotEmpty()) {
+                val cleared = current.copy(bypassKey = "")
+                store.save(cleared)
+                revealKeysUpdater(cleared)
+            }
+        }
+    }
+    return result
+}
+
+
+fun MessengerStore.loadCurrentPin(): String? {
+    val session = vaultSessionProvider() ?: return null
+    return session.snapshot().optString("pin", "")
+}
+
+
+fun MessengerStore.loadUnlockKeys(): UnlockKeySettings =
+    unlockKeysStore?.load() ?: io.haoma.calculator.core.UnlockKeysStore.DEFAULTS
+
+
+suspend fun MessengerStore.saveUnlockKeys(settings: UnlockKeySettings): Result<Unit> {
+    val store = unlockKeysStore
+        ?: return Result.failure(IllegalStateException("unlock-keys store unavailable"))
+    return try {
+        withContext(Dispatchers.IO) { store.save(settings) }
+        revealKeysUpdater(settings)
+        appendStatus("unlock keys saved")
+        Result.success(Unit)
+    } catch (t: Throwable) {
+        appendStatus("unlock keys: save failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+        Result.failure(t)
     }
 }
 
@@ -304,9 +348,18 @@ suspend fun MessengerStore.changeUnlockPattern(oldPattern: String, newPattern: S
     }
     val store = disguise
         ?: return Result.failure(IllegalStateException("disguise store unavailable"))
+    val session = vaultSessionProvider()
+        ?: return Result.failure(IllegalStateException("vault session unavailable (re-unlock first)"))
     return try {
         withContext(Dispatchers.IO) {
+            
+            
             store.rekey(oldPattern, newPattern)
+            
+            
+            session.mutateAndReseal("change-pattern-pin-sync") { p ->
+                p.put("pin", newPattern)
+            }
         }
         appendStatus("unlock pattern changed")
         Result.success(Unit)
@@ -354,6 +407,10 @@ data class NotificationSettings(
     val onLock: Boolean,
     val disguiseEnabled: Boolean,
     val noisy: Boolean,
+    
+    
+    val persistUntilOpen: Boolean,
+    val deepLink: Boolean,
 )
 
 
@@ -387,6 +444,13 @@ data class ThreatPresetBundle(
 
 data class AdvancedSettings(
     val urlForceChooser: Boolean,
+)
+
+
+data class UnlockKeySettings(
+    val patternKey: String,
+    val pinKey: String,
+    val bypassKey: String,
 )
 
 internal val THREAT_PRESET_BUNDLES: Map<String, ThreatPresetBundle> = mapOf(

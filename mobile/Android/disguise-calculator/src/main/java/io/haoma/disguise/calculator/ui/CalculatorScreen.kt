@@ -47,7 +47,7 @@ import io.haoma.disguise.calculator.TokenAccumulator
 import kotlinx.coroutines.withTimeoutOrNull
 
 
-internal enum class ArmState { None, Slide, Pin }
+internal enum class ArmState { None, Slide, Pin, Bypass }
 
 
 @Composable
@@ -153,9 +153,12 @@ private fun Display(text: String, error: Boolean, armState: ArmState, modifier: 
             .padding(horizontal = 24.dp, vertical = 16.dp),
     ) {
         val dotColor = when (armState) {
-            ArmState.None  -> null
-            ArmState.Slide -> GruvboxDark.ArmedDot
-            ArmState.Pin   -> GruvboxDark.ArmedDotPin
+            ArmState.None   -> null
+            ArmState.Slide  -> GruvboxDark.ArmedDot
+            ArmState.Pin    -> GruvboxDark.ArmedDotPin
+            
+            
+            ArmState.Bypass -> null
         }
         if (dotColor != null) {
             Box(
@@ -342,18 +345,30 @@ private suspend fun PointerInputScope.runRevealGesture(
             val down = awaitFirstDown(requireUnconsumed = false)
             val downKey = keyAt(down.position)
 
+            val bypassEnabled = config.bypassKey.isNotEmpty()
             val armCandidate: ArmState? = when (downKey) {
-                config.triggerKey    -> ArmState.Slide
-                config.pinTriggerKey -> ArmState.Pin
-                else                 -> null
+                config.triggerKey                              -> ArmState.Slide
+                config.pinTriggerKey                           -> ArmState.Pin
+                config.bypassKey.takeIf { bypassEnabled }      -> ArmState.Bypass
+                else                                           -> null
             }
             if (armCandidate == null) {
                 handleTap(downKey, keyAt, keysByLabel, onAction)
                 continue
             }
 
-            val triggerKey = if (armCandidate == ArmState.Slide) config.triggerKey else config.pinTriggerKey
-            val holdMs = if (armCandidate == ArmState.Slide) config.holdMillis else config.pinHoldMillis
+            val triggerKey = when (armCandidate) {
+                ArmState.Slide  -> config.triggerKey
+                ArmState.Pin    -> config.pinTriggerKey
+                ArmState.Bypass -> config.bypassKey
+                ArmState.None   -> "" 
+            }
+            val holdMs = when (armCandidate) {
+                ArmState.Slide  -> config.holdMillis
+                ArmState.Pin    -> config.pinHoldMillis
+                ArmState.Bypass -> config.bypassHoldMillis
+                ArmState.None   -> 0L 
+            }
 
             
             val holdOutcome = withTimeoutOrNull(holdMs) {
@@ -370,9 +385,15 @@ private suspend fun PointerInputScope.runRevealGesture(
 
             when (holdOutcome) {
                 null -> when (armCandidate) {
-                    ArmState.Slide -> handleArmedSlide(config, keyAtSlide, reveal, onArmStateChanged)
-                    ArmState.Pin   -> handleArmedPin(config, keyAt, reveal, onArmStateChanged)
-                    ArmState.None  -> {} 
+                    ArmState.Slide  -> handleArmedSlide(config, keyAtSlide, reveal, onArmStateChanged)
+                    ArmState.Pin    -> handleArmedPin(config, keyAt, reveal, onArmStateChanged)
+                    ArmState.Bypass -> {
+                        
+                        
+                        reveal.bypass()
+                        drainUntilLift()
+                    }
+                    ArmState.None   -> {} 
                 }
                 HoldOutcome.LiftedBeforeArm -> {
                     keysByLabel[triggerKey]?.action?.let(onAction)

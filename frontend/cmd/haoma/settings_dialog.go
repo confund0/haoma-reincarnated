@@ -44,10 +44,12 @@ func scopeSettings(full ipc.Settings, domain ipc.SettingsDomain) (ipc.Settings, 
 		}, nil
 	case ipc.SettingsDomainNotifications:
 		return ipc.Settings{
-			NotifyShellEnabled:  full.NotifyShellEnabled,
-			NotifyShowSender:    full.NotifyShowSender,
-			NotifyShowBody:      full.NotifyShowBody,
-			NotificationsOnLock: full.NotificationsOnLock,
+			NotifyShellEnabled:     full.NotifyShellEnabled,
+			NotifyShowSender:       full.NotifyShowSender,
+			NotifyShowBody:         full.NotifyShowBody,
+			NotificationsOnLock:    full.NotificationsOnLock,
+			NotifyPersistUntilOpen: full.NotifyPersistUntilOpen,
+			NotifyDeepLink:         full.NotifyDeepLink,
 		}, nil
 	case ipc.SettingsDomainAdvanced:
 		return ipc.Settings{

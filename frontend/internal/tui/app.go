@@ -104,6 +104,8 @@ type App struct {
 
 	VaultCtl VaultController
 
+	BackupCtl BackupController
+
 	settings *settingsPage
 }
 

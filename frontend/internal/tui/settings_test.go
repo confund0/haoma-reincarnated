@@ -337,30 +337,32 @@ func TestThreatModelStatusLine(t *testing.T) {
 	}
 }
 
-func TestBuildNotificationsForm_SeedsAllFour(t *testing.T) {
+func TestBuildNotificationsForm_SeedsAllSix(t *testing.T) {
 	sp := &settingsPage{
 		initial: ipc.Settings{
-			NotifyShellEnabled:  true,
-			NotifyShowSender:    true,
-			NotifyShowBody:      false,
-			NotificationsOnLock: true,
+			NotifyShellEnabled:     true,
+			NotifyShowSender:       true,
+			NotifyShowBody:         false,
+			NotificationsOnLock:    true,
+			NotifyPersistUntilOpen: true,
+			NotifyDeepLink:         false,
 		},
 		dirty: map[string]bool{},
 	}
 	form := buildNotificationsForm(&App{}, sp)
 	items := inspectForm(form)
 
-	if len(items) != 5 {
-		t.Fatalf("Notifications form items = %d, want 5", len(items))
+	if len(items) != 7 {
+		t.Fatalf("Notifications form items = %d, want 7", len(items))
 	}
-	wantStates := []string{"true", "true", "false", "true"}
+	wantStates := []string{"true", "true", "false", "true", "true", "false"}
 	for i, w := range wantStates {
 		if !strings.HasSuffix(items[i], ":"+w) {
 			t.Errorf("checkbox %d state = %v, want suffix %q", i, items[i], w)
 		}
 	}
-	if !strings.HasPrefix(items[4], "textview:Privacy posture") {
-		t.Errorf("last item should be the privacy banner: %v", items[4])
+	if !strings.HasPrefix(items[6], "textview:Privacy posture") {
+		t.Errorf("last item should be the privacy banner: %v", items[6])
 	}
 }
 

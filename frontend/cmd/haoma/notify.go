@@ -34,6 +34,7 @@ func emitInboundNotification(ctx context.Context, d *daemon, chatID chat.ChatID,
 		)
 		return
 	}
+
 	if d.clientSoftLocked.Load() && !snap.NotificationsOnLock {
 		slog.Debug("notify suppressed: soft-locked + NotificationsOnLock=false",
 			slog.String("chat_id", string(chatID)),
@@ -59,6 +60,8 @@ func emitInboundNotification(ctx context.Context, d *daemon, chatID chat.ChatID,
 		ChatID:    string(chatID),
 		PeerLabel: peerLabel,
 		Body:      body,
+
+		Persist: snap.NotifyPersistUntilOpen,
 	}
 	priv := notify.Privacy{
 		ShellEnabled: snap.NotifyShellEnabled,

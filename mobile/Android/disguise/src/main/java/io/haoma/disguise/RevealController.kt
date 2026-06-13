@@ -10,6 +10,9 @@ interface RevealController {
 
     
     fun cancel()
+
+    
+    fun bypass() {}
 }
 
 
@@ -19,4 +22,5 @@ class LoggingRevealController(
     override fun arm() = log("arm")
     override fun submit(token: Any) = log("submit token=$token")
     override fun cancel() = log("cancel")
+    override fun bypass() = log("bypass")
 }

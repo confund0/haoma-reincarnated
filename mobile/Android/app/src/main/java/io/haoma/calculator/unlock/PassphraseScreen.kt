@@ -1,5 +1,9 @@
 package io.haoma.calculator.unlock
 
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
@@ -34,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -42,7 +48,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.haoma.calculator.HaomaApp
+import io.haoma.calculator.core.StagedRestoreState
 import io.haoma.calculator.core.UnlockManager
+import io.haoma.calculator.messenger.HaomaPalette
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -51,6 +61,8 @@ import kotlinx.coroutines.launch
 fun PassphraseScreen(
     unlock: UnlockManager,
     log: (String) -> Unit,
+    stagedRestore: StagedRestoreState? = null,
+    onStagedRestoreSet: (StagedRestoreState?) -> Unit = {},
     idleTimeoutMs: Long = IdleTimeoutMs,
     maxStrikes: Int = MaxStrikes,
 ) {
@@ -62,6 +74,30 @@ fun PassphraseScreen(
 
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
+    val context = LocalContext.current
+
+    val staged = stagedRestore
+
+    val restoreLauncher = rememberLauncherForActivityResult(
+        contract = remember { ActivityResultContracts.OpenDocument() },
+    ) { uri ->
+        if (uri == null) {
+            log("restore picker cancelled")
+            return@rememberLauncherForActivityResult
+        }
+        
+        
+        val app = context.applicationContext as HaomaApp
+        submitting = true
+        error = null
+        passphrase = ""
+        app.launchStagedRestore(
+            archiveUri = uri,
+            log = log,
+            onError = { msg -> error = msg },
+            onComplete = { submitting = false },
+        )
+    }
 
     
     LaunchedEffect(Unit) {
@@ -95,7 +131,27 @@ fun PassphraseScreen(
                 fontWeight = FontWeight.Light,
                 style = TextStyle(fontSize = 32.sp, letterSpacing = 4.sp),
             )
-            Spacer(Modifier.height(40.dp))
+
+            if (staged != null) {
+                Spacer(Modifier.height(20.dp))
+                StagedRestoreBanner(
+                    onDiscard = {
+                        val app = context.applicationContext as HaomaApp
+                        submitting = true
+                        error = null
+                        passphrase = ""
+                        app.launchStagedRestoreDiscard(
+                            stagingPath = staged.stagingPath,
+                            log = log,
+                            onComplete = { submitting = false },
+                        )
+                    },
+                    enabled = !submitting,
+                )
+                Spacer(Modifier.height(20.dp))
+            } else {
+                Spacer(Modifier.height(40.dp))
+            }
 
             OutlinedTextField(
                 value = passphrase,
@@ -124,16 +180,24 @@ fun PassphraseScreen(
                             scope = scope,
                             unlock = unlock,
                             passphrase = passphrase,
+                            staged = staged,
                             log = log,
                             setSubmitting = { submitting = it },
                             onWrong = {
                                 strikes += 1
-                                error = "Wrong passphrase"
+                                error = if (staged != null) {
+                                    "Wrong source-device passphrase"
+                                } else {
+                                    "Wrong passphrase"
+                                }
                                 passphrase = ""
                                 if (strikes >= maxStrikes) {
                                     log("strike limit reached ($maxStrikes) → Hard")
                                     unlock.revertToHard()
                                 }
+                            },
+                            onWarmed = {
+                                if (staged != null) onStagedRestoreSet(null)
                             },
                             onSpawnFail = { msg -> error = "Spawn failed: $msg" },
                         )
@@ -185,16 +249,24 @@ fun PassphraseScreen(
                             scope = scope,
                             unlock = unlock,
                             passphrase = passphrase,
+                            staged = staged,
                             log = log,
                             setSubmitting = { submitting = it },
                             onWrong = {
                                 strikes += 1
-                                error = "Wrong passphrase"
+                                error = if (staged != null) {
+                                    "Wrong source-device passphrase"
+                                } else {
+                                    "Wrong passphrase"
+                                }
                                 passphrase = ""
                                 if (strikes >= maxStrikes) {
                                     log("strike limit reached ($maxStrikes) → Hard")
                                     unlock.revertToHard()
                                 }
+                            },
+                            onWarmed = {
+                                if (staged != null) onStagedRestoreSet(null)
                             },
                             onSpawnFail = { msg -> error = "Spawn failed: $msg" },
                         )
@@ -221,33 +293,47 @@ fun PassphraseScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            
-            TextButton(
-                onClick = {
-                    attemptDefaultSubmit(
-                        scope = scope,
-                        unlock = unlock,
-                        log = log,
-                        setSubmitting = { submitting = it },
-                        onWrong = {
-                            strikes += 1
-                            error = "Default passphrase doesn't apply — type yours"
-                            passphrase = ""
-                            if (strikes >= maxStrikes) {
-                                log("strike limit reached ($maxStrikes) → Hard")
-                                unlock.revertToHard()
-                            }
-                        },
-                        onSpawnFail = { msg -> error = "Spawn failed: $msg" },
+            if (staged == null) {
+                
+                
+                TextButton(
+                    onClick = {
+                        attemptDefaultSubmit(
+                            scope = scope,
+                            unlock = unlock,
+                            log = log,
+                            setSubmitting = { submitting = it },
+                            onWrong = {
+                                strikes += 1
+                                error = "Default passphrase doesn't apply — type yours"
+                                passphrase = ""
+                                if (strikes >= maxStrikes) {
+                                    log("strike limit reached ($maxStrikes) → Hard")
+                                    unlock.revertToHard()
+                                }
+                            },
+                            onSpawnFail = { msg -> error = "Spawn failed: $msg" },
+                        )
+                    },
+                    enabled = !submitting,
+                ) {
+                    Text(
+                        text = "Use default passphrase",
+                        color = if (submitting) Fg2.copy(alpha = 0.5f) else Fg2,
+                        style = TextStyle(fontSize = 13.sp),
                     )
-                },
-                enabled = !submitting,
-            ) {
-                Text(
-                    text = "Use default passphrase",
-                    color = if (submitting) Fg2.copy(alpha = 0.5f) else Fg2,
-                    style = TextStyle(fontSize = 13.sp),
-                )
+                }
+
+                TextButton(
+                    onClick = { restoreLauncher.launch(arrayOf("*/*")) },
+                    enabled = !submitting,
+                ) {
+                    Text(
+                        text = "Restore from backup",
+                        color = if (submitting) Fg2.copy(alpha = 0.5f) else Fg2,
+                        style = TextStyle(fontSize = 13.sp),
+                    )
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -264,23 +350,30 @@ fun PassphraseScreen(
 }
 
 private fun attemptSubmit(
-    scope: kotlinx.coroutines.CoroutineScope,
+    scope: CoroutineScope,
     unlock: UnlockManager,
     passphrase: String,
+    staged: StagedRestoreState?,
     log: (String) -> Unit,
     setSubmitting: (Boolean) -> Unit,
     onWrong: () -> Unit,
+    onWarmed: () -> Unit,
     onSpawnFail: (String) -> Unit,
 ) {
     if (passphrase.isEmpty()) return
     setSubmitting(true)
-    log("submit (len=${passphrase.length})")
+    log("submit (len=${passphrase.length} staged=${staged != null})")
     
     
     val passBytes = passphrase.toByteArray(Charsets.UTF_8)
     scope.launch {
         try {
-            handleOutcome(unlock.submitPassphrase(passBytes), log = log, onWrong = onWrong, onSpawnFail = onSpawnFail)
+            val outcome = if (staged != null) {
+                unlock.submitStagedRestoreCommit(passBytes, staged.stagingPath)
+            } else {
+                unlock.submitPassphrase(passBytes)
+            }
+            handleOutcome(outcome, log = log, onWrong = onWrong, onWarmed = onWarmed, onSpawnFail = onSpawnFail)
         } finally {
             java.util.Arrays.fill(passBytes, 0)
             setSubmitting(false)
@@ -289,7 +382,7 @@ private fun attemptSubmit(
 }
 
 private fun attemptDefaultSubmit(
-    scope: kotlinx.coroutines.CoroutineScope,
+    scope: CoroutineScope,
     unlock: UnlockManager,
     log: (String) -> Unit,
     setSubmitting: (Boolean) -> Unit,
@@ -300,7 +393,13 @@ private fun attemptDefaultSubmit(
     log("submit default")
     scope.launch {
         try {
-            handleOutcome(unlock.submitDefaultPassphrase(), log = log, onWrong = onWrong, onSpawnFail = onSpawnFail)
+            handleOutcome(
+                unlock.submitDefaultPassphrase(),
+                log = log,
+                onWrong = onWrong,
+                onWarmed = {},
+                onSpawnFail = onSpawnFail,
+            )
         } finally {
             setSubmitting(false)
         }
@@ -311,11 +410,13 @@ private fun handleOutcome(
     outcome: UnlockManager.Outcome,
     log: (String) -> Unit,
     onWrong: () -> Unit,
+    onWarmed: () -> Unit,
     onSpawnFail: (String) -> Unit,
 ) {
     when (outcome) {
         UnlockManager.Outcome.Warmed -> {
             log("submit → Warm")
+            onWarmed()
             
             
         }
@@ -335,6 +436,38 @@ private fun handleOutcome(
         }
     }
 }
+
+
+@Composable
+private fun StagedRestoreBanner(onDiscard: () -> Unit, enabled: Boolean) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = Bg1, shape = RoundedCornerShape(8.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "Restoring from backup",
+            color = Accent,
+            style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold),
+        )
+        Text(
+            text = "Enter the passphrase from the source device to apply the restore.",
+            color = Fg2,
+            style = TextStyle(fontSize = 14.sp),
+        )
+        TextButton(onClick = onDiscard, enabled = enabled) {
+            Text(
+                text = "Discard staged restore",
+                color = if (enabled) HaomaPalette.BTN_GIVE else HaomaPalette.BTN_GIVE.copy(alpha = 0.5f),
+                style = TextStyle(fontSize = 14.sp),
+            )
+        }
+    }
+}
+
 
 private const val IdleTimeoutMs = 5_000L
 private const val MaxStrikes = 3

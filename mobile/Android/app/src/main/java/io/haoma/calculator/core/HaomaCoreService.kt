@@ -29,7 +29,9 @@ import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -140,6 +142,10 @@ class HaomaCoreService : Service() {
         haomad = null
         haomadAddr = null
         scope.cancel()
+        
+        
+        stoppedSignal?.complete(Unit)
+        stoppedSignal = null
         super.onDestroy()
     }
 
@@ -595,6 +601,19 @@ class HaomaCoreService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, HaomaCoreService::class.java)
             context.stopService(intent)
+        }
+
+        
+        @Volatile
+        private var stoppedSignal: CompletableDeferred<Unit>? = null
+
+        
+        fun stopAndAwait(context: Context): Deferred<Unit> {
+            val deferred = CompletableDeferred<Unit>()
+            stoppedSignal = deferred
+            val intent = Intent(context, HaomaCoreService::class.java)
+            context.stopService(intent)
+            return deferred
         }
 
         

@@ -32,6 +32,7 @@ func main() {
 		logFile       string
 		logFormat     string
 		showVersion   bool
+		restoreBackup string
 	)
 	flag.StringVar(&cfgDir, "cfg-dir", "", "data root: anchors vault.enc + vault.lock + daemon tier dirs. Empty = platform per-user dir (Linux ~/.haoma, Windows %AppData%/haoma). Tilde + relative paths resolved against CWD.")
 	flag.StringVar(&haomadBin, "haomad-bin", "", "path to the haomad binary; default = same directory as haoma-text.")
@@ -40,6 +41,7 @@ func main() {
 	flag.StringVar(&logLevel, "log-level", "warn", "log level: debug|info|warn|error. Passed through to spawned haomad + haoma.")
 	flag.StringVar(&logFile, "log-file", "", "log destination: empty = <cfg-dir>/haoma-text.log (privacy default — never leak to stdio while the TUI owns the screen), \"-\" = stderr (foreground dev only), else a file path (created with 0600).")
 	flag.StringVar(&logFormat, "log-format", "text", "log format: text|json")
+	flag.StringVar(&restoreBackup, "restore-backup", "", "before unlock, restore a .tar produced by /backup: existing cfg-dir contents move to <cfg-dir>/.pre-restore-<ts>/, archive extracts in place, then the normal passphrase prompt runs against the restored vault.")
 	idleOverride := flag.Int("idle-timeout-seconds", 0, "override the vault's IdleTimeoutSeconds for this run (dev convenience). 0 = use vault value.")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
@@ -57,6 +59,7 @@ func main() {
 		logFile:       logFile,
 		logFormat:     logFormat,
 		idleOverride:  *idleOverride,
+		restoreBackup: restoreBackup,
 	})
 }
 
@@ -111,6 +114,16 @@ func runVaultBootflow(cfgDirFlag string, opts spawnOpts) {
 		}
 	}()
 
+	opts = resolveDaemonBins(opts)
+
+	if opts.restoreBackup != "" {
+		if err := runRestoreBackup(root, opts.haomaVaultBin, opts.restoreBackup); err != nil {
+			fatal("restore-backup", slog.Any("err", err))
+		}
+
+		fmt.Fprintln(os.Stderr, "haoma-text: backup restored — unlock with the passphrase of the source device.")
+	}
+
 	vaultPath := filepath.Join(root, vaultFileName)
 	unlocked, err := openOrCreateVault(vaultPath)
 	if err != nil {
@@ -123,7 +136,6 @@ func runVaultBootflow(cfgDirFlag string, opts spawnOpts) {
 		slog.Int("idle_timeout_sec", unlocked.payload.IdleTimeoutSeconds),
 	)
 
-	opts = resolveDaemonBins(opts)
 	vc := newVaultController(vaultPath, unlocked.passphrase, unlocked.payload, unlocked.params, opts.haomaVaultBin)
 
 	defer vc.Wipe()
