@@ -372,6 +372,47 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 			StyleBreadcrumbBody, stamp,
 			accent, summary,
 			StyleReset)
+	case "onion_rotation":
+		var body struct {
+			RotationID string `json:"rotation_id"`
+			Stage      string `json:"stage"`
+			Reason     string `json:"reason"`
+		}
+		_ = json.Unmarshal(ev.Body, &body)
+
+		dirGlyph := "↑"
+		if ev.Direction == "in" {
+			dirGlyph = "↓"
+		}
+		var summary string
+		accent := StyleOnionRotationOK
+		switch body.Stage {
+		case "started":
+			if ev.Direction == "in" {
+				summary = dirGlyph + " they're rotating their Tor address"
+			} else {
+				summary = dirGlyph + " rotating our Tor address"
+			}
+		case "succeeded":
+			if ev.Direction == "in" {
+				summary = dirGlyph + " they rotated their Tor address"
+			} else {
+				summary = dirGlyph + " rotated our Tor address"
+			}
+		case "failed":
+			accent = StyleOnionRotationBad
+			reason := body.Reason
+			if reason == "" {
+				reason = "unknown"
+			}
+			summary = dirGlyph + " rotation failed: " + reason
+		default:
+			summary = dirGlyph + " rotation " + body.Stage
+		}
+		return fmt.Sprintf("%s%s %s* %s%s",
+			StyleBreadcrumbBody, stamp,
+			accent, summary,
+			StyleReset)
 	default:
 		return fmt.Sprintf("[gray]%s[white] (kind=%s)", stamp, ev.Kind)
 	}

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"haoma-frontend/internal/backendapi"
+	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/ipc"
 	"haoma-frontend/internal/msg"
 	"haoma-frontend/internal/rotation"
@@ -88,26 +90,80 @@ func (r *rotationBackendRegistry) RotateOwnOnion(ctx context.Context, peerID, ad
 }
 
 type rotationNotifier struct {
-	ipcSrv *ipc.Server
+	d *daemon
 }
 
 func (n *rotationNotifier) OnRotationLifecycle(s rotation.Snapshot) {
-	push(n.ipcSrv, ipc.FrameRotateLifecycle, "", ipc.RotateLifecyclePush{
+	push(n.d.ipcSrv, ipc.FrameRotateLifecycle, "", ipc.RotateLifecyclePush{
 		RotationID: s.RotationID,
 		PeerID:     s.PeerID,
 		Role:       string(s.Role),
 		State:      string(s.State),
 		Reason:     s.Reason,
 	})
+
+	switch s.State {
+	case rotation.StateProposed:
+		n.writeRotationBreadcrumb(s, events.OnionRotationStageStarted, "")
+	case rotation.StateConfirmed:
+		n.writeRotationBreadcrumb(s, events.OnionRotationStageSucceeded, "")
+	case rotation.StateFailed:
+		n.writeRotationBreadcrumb(s, events.OnionRotationStageFailed, s.Reason)
+	}
 }
 
 func (n *rotationNotifier) OnRotationRequested(s rotation.Snapshot) {
-	push(n.ipcSrv, ipc.FrameRotateRequested, "", ipc.RotateRequestedPush{
+	push(n.d.ipcSrv, ipc.FrameRotateRequested, "", ipc.RotateRequestedPush{
 		RotationID: s.RotationID,
 		PeerID:     s.PeerID,
 		StartedAt:  s.StartedAt,
 		DeadlineAt: s.DeadlineAt,
 	})
+	n.writeRotationBreadcrumb(s, events.OnionRotationStageStarted, "")
+}
+
+func (n *rotationNotifier) writeRotationBreadcrumb(s rotation.Snapshot, stage events.OnionRotationStage, reason string) {
+	if n.d == nil || n.d.events == nil {
+		return
+	}
+	chatID, err := resolveChatForPeer(context.Background(), n.d, s.PeerID)
+	if err != nil {
+		slog.Debug("rotation breadcrumb: resolve chat failed",
+			slog.String("peer_id", s.PeerID),
+			slog.String("rotation_id", s.RotationID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	body, err := json.Marshal(events.OnionRotationBody{
+		RotationID: s.RotationID,
+		Stage:      stage,
+		Reason:     reason,
+	})
+	if err != nil {
+		slog.Warn("rotation breadcrumb: marshal body failed",
+			slog.String("rotation_id", s.RotationID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	direction := events.DirOut
+	if s.Role == rotation.RoleResponder {
+		direction = events.DirIn
+	}
+	if _, err := n.d.events.AppendLocal(events.LocalParams{
+		ChatID:        chatID,
+		Kind:          events.KindOnionRotation,
+		Direction:     direction,
+		ExpireSeconds: chatRetentionTTL(n.d, chatID),
+		Body:          body,
+	}); err != nil {
+		slog.Warn("persist onion_rotation breadcrumb failed",
+			slog.String("rotation_id", s.RotationID),
+			slog.String("stage", string(stage)),
+			slog.Any("err", err),
+		)
+	}
 }
 
 func newRotationManager(d *daemon) *rotation.Manager {
@@ -146,7 +202,7 @@ func newRotationManager(d *daemon) *rotation.Manager {
 		Publisher: &rotationBackendPublisher{d: d},
 		Send:      send,
 		Seq:       seq,
-		Notifier:  &rotationNotifier{ipcSrv: d.ipcSrv},
+		Notifier:  &rotationNotifier{d: d},
 		Registry:  &rotationBackendRegistry{d: d},
 	})
 }

@@ -20,6 +20,10 @@ internal object ChatPalette {
     val CallSummaryBad = Color(0xFFFF6B6B)     
     
     
+    val OnionRotationOk = Color(0xFFB16286)
+    val OnionRotationBad = Color(0xFFD79921)
+    
+    
     val AnchorPulse = Color(0x66D79921)
     
     

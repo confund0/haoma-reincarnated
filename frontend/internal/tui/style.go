@@ -8,6 +8,9 @@ const (
 
 	StyleCallSummaryOK  = "[#98971a]"
 	StyleCallSummaryBad = "[#cc241d]"
+
+	StyleOnionRotationOK  = "[#b16286]"
+	StyleOnionRotationBad = "[#d79921]"
 )
 
 const (

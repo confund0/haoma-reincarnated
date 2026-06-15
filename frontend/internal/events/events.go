@@ -66,7 +66,23 @@ const (
 	KindFile Kind = "file"
 
 	KindCallSummary Kind = "call_summary"
+
+	KindOnionRotation Kind = "onion_rotation"
 )
+
+type OnionRotationStage string
+
+const (
+	OnionRotationStageStarted   OnionRotationStage = "started"
+	OnionRotationStageSucceeded OnionRotationStage = "succeeded"
+	OnionRotationStageFailed    OnionRotationStage = "failed"
+)
+
+type OnionRotationBody struct {
+	RotationID string             `json:"rotation_id"`
+	Stage      OnionRotationStage `json:"stage"`
+	Reason     string             `json:"reason,omitempty"`
+}
 
 type TimerChangeBody struct {
 	From      uint32 `json:"from"`

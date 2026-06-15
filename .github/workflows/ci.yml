@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Daily 04:00 UTC — drives the dht-network job below. Offline
+    # jobs run on every push/PR; the network test is too flaky to
+    # gate merges on.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -36,3 +42,23 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - run: make tor-verify
+
+  # Network-dependent DHT round-trip — bootstrap against public DHT,
+  # put a fresh BEP-44 mutable item, fetch it back, assert byte-equal.
+  # Gated behind the `dhtnet` build tag so default `go test ./...`
+  # stays offline-deterministic. Runs on schedule + manual dispatch
+  # only (NOT on push/PR — public-DHT reachability is flaky enough
+  # that a network blip would otherwise block unrelated merges).
+  dht-network:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+          cache-dependency-path: backend/go.sum
+      - run: go test -tags=dhtnet -run=TestIntegration_BootstrapPutGetRoundTrip -timeout=4m ./internal/dht/

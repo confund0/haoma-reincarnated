@@ -1,4 +1,4 @@
-package pair
+package bencode_test
 
 import (
 	"bytes"
@@ -7,9 +7,8 @@ import (
 	"haoma/internal/bencode"
 )
 
-func TestBencodeRoundTrip_Bytes(t *testing.T) {
+func TestRoundTrip_UTF8Bytes(t *testing.T) {
 	original := []byte("hello, world — with non-ascii: αβγ ✓")
-
 	encoded, err := bencode.Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -19,11 +18,11 @@ func TestBencodeRoundTrip_Bytes(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if !bytes.Equal(decoded, original) {
-		t.Errorf("round-trip mismatch:\n  orig: %q\n  got:  %q", original, decoded)
+		t.Errorf("mismatch:\n  orig: %q\n  got:  %q", original, decoded)
 	}
 }
 
-func TestBencodeRoundTrip_Empty(t *testing.T) {
+func TestRoundTrip_Empty(t *testing.T) {
 	encoded, err := bencode.Marshal([]byte(nil))
 	if err != nil {
 		t.Fatalf("marshal empty: %v", err)
@@ -33,11 +32,11 @@ func TestBencodeRoundTrip_Empty(t *testing.T) {
 		t.Fatalf("unmarshal empty: %v", err)
 	}
 	if len(decoded) != 0 {
-		t.Errorf("expected 0-byte round-trip, got %d bytes: %q", len(decoded), decoded)
+		t.Errorf("expected 0 bytes, got %d: %q", len(decoded), decoded)
 	}
 }
 
-func TestBencodeRoundTrip_AESGCMCiphertext(t *testing.T) {
+func TestRoundTrip_EveryByteValue(t *testing.T) {
 
 	original := make([]byte, 256)
 	for i := range original {
@@ -52,6 +51,6 @@ func TestBencodeRoundTrip_AESGCMCiphertext(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if !bytes.Equal(decoded, original) {
-		t.Errorf("binary round-trip mismatch at first diff byte")
+		t.Errorf("binary mismatch")
 	}
 }

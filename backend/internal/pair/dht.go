@@ -7,14 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"time"
 
-	"github.com/anacrolix/dht/v2"
-	"github.com/anacrolix/dht/v2/bep44"
-	"github.com/anacrolix/dht/v2/exts/getput"
-	"github.com/anacrolix/dht/v2/krpc"
-	"github.com/anacrolix/torrent/bencode"
+	"haoma/internal/dht"
 )
 
 var bep44Salt = []byte("haoma-pair-v1")
@@ -23,44 +18,27 @@ var dhtSeedContext = []byte("haoma-pair-ed25519-seed/v1")
 
 type DHT struct {
 	server *dht.Server
-	conn   net.PacketConn
 }
 
 func StartDHT(ctx context.Context) (*DHT, error) {
-	conn, err := net.ListenPacket("udp", ":0")
+	srv, err := dht.NewServer(slog.Default())
 	if err != nil {
-		return nil, fmt.Errorf("pair: dht listen: %w", err)
-	}
-	cfg := dht.NewDefaultServerConfig()
-	cfg.Conn = conn
-	cfg.StartingNodes = func() ([]dht.Addr, error) {
-		return dht.GlobalBootstrapAddrs("udp")
-	}
-	srv, err := dht.NewServer(cfg)
-	if err != nil {
-		_ = conn.Close()
 		return nil, fmt.Errorf("pair: dht server: %w", err)
 	}
-	slog.Debug("pair: dht client starting", slog.String("addr", srv.Addr().String()))
-	if _, err := srv.BootstrapContext(ctx); err != nil {
+	slog.Debug("pair: dht client starting", slog.String("addr", srv.LocalAddr().String()))
+	if err := srv.Bootstrap(ctx); err != nil {
 		srv.Close()
-		_ = conn.Close()
 		return nil, fmt.Errorf("pair: dht bootstrap: %w", err)
 	}
-	slog.Debug("pair: dht bootstrapped", slog.Int("nodes", srv.NumNodes()))
-	return &DHT{server: srv, conn: conn}, nil
+	slog.Debug("pair: dht bootstrapped", slog.Int("nodes", srv.NodeCount()))
+	return &DHT{server: srv}, nil
 }
 
 func (d *DHT) Close() {
-	if d == nil {
+	if d == nil || d.server == nil {
 		return
 	}
-	if d.server != nil {
-		d.server.Close()
-	}
-	if d.conn != nil {
-		_ = d.conn.Close()
-	}
+	_ = d.server.Close()
 }
 
 func (d *DHT) Publish(ctx context.Context, idEntropy, value []byte) ([]byte, error) {
@@ -70,30 +48,38 @@ func (d *DHT) Publish(ctx context.Context, idEntropy, value []byte) ([]byte, err
 	}
 	var pubArr [32]byte
 	copy(pubArr[:], pub)
-	target := bep44.MakeMutableTarget(pubArr, bep44Salt)
-	seq := time.Now().Unix()
-	seqToPut := func(existing int64) bep44.Put {
-		if existing >= seq {
-			seq = existing + 1
-		}
-		put := bep44.Put{
-			V:    value,
-			K:    &pubArr,
-			Salt: bep44Salt,
-			Seq:  seq,
-		}
-		put.Sign(priv)
-		return put
+	item := &dht.MutableItem{
+		PrivKey: priv,
+		PubKey:  pubArr,
+		Salt:    bep44Salt,
+		Seq:     time.Now().Unix(),
+		Value:   value,
 	}
-	stats, err := getput.Put(ctx, krpc.ID(target), d.server, bep44Salt, seqToPut)
+	if err := item.Sign(); err != nil {
+		return nil, fmt.Errorf("pair: dht sign: %w", err)
+	}
+	target := item.Target()
+
+	pre, err := d.server.Get(ctx, target, &pubArr, bep44Salt)
+	if err != nil {
+		return nil, fmt.Errorf("pair: dht pre-put get: %w", err)
+	}
+	if pre.Seq >= item.Seq {
+		item.Seq = pre.Seq + 1
+		if err := item.Sign(); err != nil {
+			return nil, fmt.Errorf("pair: dht re-sign: %w", err)
+		}
+	}
+
+	stored, err := d.server.Put(ctx, item, pre.Tokens)
 	if err != nil {
 		return nil, fmt.Errorf("pair: dht put: %w", err)
 	}
 	slog.Debug("pair: dht put",
-		slog.String("target", fmt.Sprintf("%x", target[:])),
-		slog.Int64("seq", seq),
-		slog.Uint64("contacted", uint64(stats.NumAddrsTried)),
-		slog.Uint64("responded", uint64(stats.NumResponses)),
+		slog.String("target", fmt.Sprintf("%x", target)),
+		slog.Int64("seq", item.Seq),
+		slog.Int("tokens", len(pre.Tokens)),
+		slog.Int("stored", stored),
 	)
 	return pub, nil
 }
@@ -105,26 +91,23 @@ func (d *DHT) Fetch(ctx context.Context, idEntropy []byte) ([]byte, error) {
 	}
 	var pubArr [32]byte
 	copy(pubArr[:], pub)
-	target := bep44.MakeMutableTarget(pubArr, bep44Salt)
-	res, stats, err := getput.Get(ctx, target, d.server, nil, bep44Salt)
+	tmp := &dht.MutableItem{PubKey: pubArr, Salt: bep44Salt}
+	target := tmp.Target()
+
+	res, err := d.server.Get(ctx, target, &pubArr, bep44Salt)
 	if err != nil {
-		if err.Error() == "value not found" {
-			return nil, ErrItemNotFound
-		}
 		return nil, fmt.Errorf("pair: dht get: %w", err)
 	}
-	slog.Debug("pair: dht get",
-		slog.String("target", fmt.Sprintf("%x", target[:])),
-		slog.Int64("seq", res.Seq),
-		slog.Uint64("contacted", uint64(stats.NumAddrsTried)),
-		slog.Uint64("responded", uint64(stats.NumResponses)),
-	)
-
-	var out []byte
-	if err := bencode.Unmarshal(res.V, &out); err != nil {
-		return nil, fmt.Errorf("pair: bencode unmarshal value: %w", err)
+	if res.Value == nil {
+		return nil, ErrItemNotFound
 	}
-	return out, nil
+	slog.Debug("pair: dht get",
+		slog.String("target", fmt.Sprintf("%x", target)),
+		slog.Int64("seq", res.Seq),
+		slog.Int("tokens_seen", len(res.Tokens)),
+		slog.Int("bytes", len(res.Value)),
+	)
+	return res.Value, nil
 }
 
 func (d *DHT) Revoke(ctx context.Context, idEntropy []byte) error {

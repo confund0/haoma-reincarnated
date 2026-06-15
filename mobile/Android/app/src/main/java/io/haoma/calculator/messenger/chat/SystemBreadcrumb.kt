@@ -9,7 +9,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import io.haoma.calculator.messenger.EventKind
 import io.haoma.calculator.messenger.LocalHaomaTypography
@@ -21,7 +20,7 @@ internal fun SystemBreadcrumb(event: TimelineEvent, modifier: Modifier = Modifie
     val text = describe(event) ?: return
     
     
-    val alignment = if (event.kind == EventKind.CALL_SUMMARY) {
+    val alignment = if (event.kind == EventKind.CALL_SUMMARY || event.kind == EventKind.ONION_ROTATION) {
         if (event.isOutbound) Alignment.CenterEnd else Alignment.CenterStart
     } else {
         Alignment.Center
@@ -36,7 +35,6 @@ internal fun SystemBreadcrumb(event: TimelineEvent, modifier: Modifier = Modifie
             text = text,
             color = breadcrumbColor(event),
             fontFamily = FontFamily.Monospace,
-            fontStyle = FontStyle.Italic,
             fontSize = LocalHaomaTypography.current.breadcrumb,
         )
     }
@@ -55,7 +53,29 @@ private fun describe(event: TimelineEvent): String? {
         }
         EventKind.FILE -> "$prefix file (rendering parked — Files-1 mobile slice)"
         EventKind.CALL_SUMMARY -> "$prefix ${describeCallSummary(body)}"
+        EventKind.ONION_ROTATION -> "$prefix ${describeOnionRotation(event, body)}"
         else -> "$prefix ${event.kind}"
+    }
+}
+
+private fun describeOnionRotation(event: TimelineEvent, body: org.json.JSONObject): String {
+    val dirGlyph = if (event.isOutbound) "↑" else "↓"
+    return when (body.optString("stage")) {
+        "started" -> if (event.isOutbound) {
+            "$dirGlyph rotating our Tor address"
+        } else {
+            "$dirGlyph they're rotating their Tor address"
+        }
+        "succeeded" -> if (event.isOutbound) {
+            "$dirGlyph rotated our Tor address"
+        } else {
+            "$dirGlyph they rotated their Tor address"
+        }
+        "failed" -> {
+            val reason = body.optString("reason").ifEmpty { "unknown" }
+            "$dirGlyph rotation failed: $reason"
+        }
+        else -> "$dirGlyph rotation ${body.optString("stage")}"
     }
 }
 
@@ -99,5 +119,10 @@ private fun breadcrumbColor(event: TimelineEvent): Color {
         val outcome = event.body?.optString("outcome")
         return if (outcome == "completed") ChatPalette.CallSummaryOk else ChatPalette.CallSummaryBad
     }
+    if (event.kind == EventKind.ONION_ROTATION) {
+        val stage = event.body?.optString("stage")
+        return if (stage == "failed") ChatPalette.OnionRotationBad else ChatPalette.OnionRotationOk
+    }
     return ChatPalette.TextFaint
 }
+

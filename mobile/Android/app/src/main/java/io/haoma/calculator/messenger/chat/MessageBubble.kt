@@ -263,13 +263,76 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
                 }
             }
             val rendered = remember(raw) { linkifyChatText(raw, onUrl) }
+            val jumboMult = remember(raw) { emojiOnlyJumboScale(raw) }
+            val bodyFontSize = if (jumboMult != null) {
+                (type.bubbleBody.value * jumboMult).sp
+            } else {
+                type.bubbleBody
+            }
             Text(
                 text = rendered,
                 color = textColor,
-                fontSize = type.bubbleBody,
+                fontSize = bodyFontSize,
             )
         }
     }
+}
+
+
+private val EMOJI_JUMBO_MULTIPLIERS = floatArrayOf(2.3f, 2.1f, 2.0f, 1.6f, 1.5f)
+
+
+private fun emojiOnlyJumboScale(text: String): Float? {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return null
+    val it = java.text.BreakIterator.getCharacterInstance()
+    it.setText(trimmed)
+    var start = it.first()
+    var end = it.next()
+    var visibleClusters = 0
+    while (end != java.text.BreakIterator.DONE) {
+        val cluster = trimmed.substring(start, end)
+        if (!cluster.all { Character.isWhitespace(it) }) {
+            if (!clusterIsEmoji(cluster)) return null
+            visibleClusters++
+            if (visibleClusters > EMOJI_JUMBO_MULTIPLIERS.size) return null
+        }
+        start = end
+        end = it.next()
+    }
+    return when (visibleClusters) {
+        in 1..EMOJI_JUMBO_MULTIPLIERS.size -> EMOJI_JUMBO_MULTIPLIERS[visibleClusters - 1]
+        else -> null
+    }
+}
+
+
+private fun clusterIsEmoji(cluster: String): Boolean {
+    var i = 0
+    var hasBase = false
+    while (i < cluster.length) {
+        val cp = cluster.codePointAt(i)
+        when {
+            cp == 0x200D -> {}                          
+            cp == 0xFE0F || cp == 0xFE0E -> {}          
+            cp == 0x20E3 -> {}                          
+            cp in 0x1F3FB..0x1F3FF -> hasBase = true    
+            cp in 0x1F1E6..0x1F1FF -> hasBase = true    
+            isEmojiBaseCodepoint(cp) -> hasBase = true
+            else -> return false
+        }
+        i += Character.charCount(cp)
+    }
+    return hasBase
+}
+
+private fun isEmojiBaseCodepoint(cp: Int): Boolean = when {
+    cp in 0x2600..0x27BF -> true   
+    cp in 0x2300..0x23FF -> true   
+    cp in 0x2B00..0x2BFF -> true   
+    cp in 0x1F000..0x1FAFF -> true 
+    cp in 0x1F100..0x1F1FF -> true 
+    else -> false
 }
 
 

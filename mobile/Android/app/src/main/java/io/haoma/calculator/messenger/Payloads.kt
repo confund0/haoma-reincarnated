@@ -591,6 +591,9 @@ object EventKind {
     
 
     const val CALL_SUMMARY = "call_summary"
+    
+
+    const val ONION_ROTATION = "onion_rotation"
 }
 
 
