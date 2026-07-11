@@ -2,16 +2,21 @@ package io.haoma.calculator.messenger.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.haoma.calculator.messenger.EventKind
@@ -49,15 +54,17 @@ internal fun MessageActionSheet(
                 imageRow -> {
                     
                     
-                    ActionItem(label = "React", enabled = imageRow, onClick = onReact)
-                    ActionItem(label = "View", enabled = imageRow, onClick = onViewMedia)
+                    ActionItem(glyph = "😀", label = "React", enabled = imageRow, onClick = onReact)
+                    ActionItem(glyph = "▷", label = "View", enabled = imageRow, onClick = onViewMedia)
                     ActionItem(
+                        glyph = "⤓",
                         label = "Save as",
                         enabled = imageRow && !target.isOutbound,
                         onClick = onSaveImage,
                     )
-                    ActionItem(label = "Share", enabled = imageRow, onClick = onShareAttachment)
+                    ActionItem(glyph = "↗", label = "Share", enabled = imageRow, onClick = onShareAttachment)
                     ActionItem(
+                        glyph = "✕",
                         label = "Delete",
                         enabled = canDelete(target),
                         onClick = onDelete,
@@ -65,68 +72,75 @@ internal fun MessageActionSheet(
                     )
                     HorizontalDivider(color = ChatPalette.TextFaint, thickness = 0.5.dp)
                     ActionItem(
+                        glyph = "⧉",
                         label = "Copy image",
                         enabled = imageRow,
                         onClick = onCopyImage,
                     )
-                    ActionItem(label = "Info", enabled = true, onClick = onInfo)
+                    ActionItem(glyph = "≡", label = "Info", enabled = true, onClick = onInfo)
                 }
                 videoRow -> {
                     
                     
-                    ActionItem(label = "React", enabled = videoRow, onClick = onReact)
-                    ActionItem(label = "View", enabled = videoRow, onClick = onViewMedia)
+                    ActionItem(glyph = "😀", label = "React", enabled = videoRow, onClick = onReact)
+                    ActionItem(glyph = "▷", label = "View", enabled = videoRow, onClick = onViewMedia)
                     ActionItem(
+                        glyph = "⤓",
                         label = "Save as",
                         enabled = videoRow && !target.isOutbound,
                         onClick = onSaveVideo,
                     )
-                    ActionItem(label = "Share", enabled = videoRow, onClick = onShareAttachment)
+                    ActionItem(glyph = "↗", label = "Share", enabled = videoRow, onClick = onShareAttachment)
                     ActionItem(
+                        glyph = "✕",
                         label = "Delete",
                         enabled = canDelete(target),
                         onClick = onDelete,
                         destructive = true,
                     )
                     HorizontalDivider(color = ChatPalette.TextFaint, thickness = 0.5.dp)
-                    ActionItem(label = "Info", enabled = true, onClick = onInfo)
+                    ActionItem(glyph = "≡", label = "Info", enabled = true, onClick = onInfo)
                 }
                 target.kind == EventKind.FILE -> {
                     
                     
-                    ActionItem(label = "React", enabled = canReact(target), onClick = onReact)
+                    ActionItem(glyph = "😀", label = "React", enabled = canReact(target), onClick = onReact)
                     ActionItem(
+                        glyph = "▷",
                         label = "View attachment",
                         enabled = !target.isTombstoned,
                         onClick = onViewAttachment,
                     )
                     ActionItem(
+                        glyph = "↗",
                         label = "Share",
                         enabled = !target.isTombstoned,
                         onClick = onShareAttachment,
                     )
                     ActionItem(
+                        glyph = "✕",
                         label = "Delete",
                         enabled = canDelete(target),
                         onClick = onDelete,
                         destructive = true,
                     )
                     HorizontalDivider(color = ChatPalette.TextFaint, thickness = 0.5.dp)
-                    ActionItem(label = "Info", enabled = true, onClick = onInfo)
+                    ActionItem(glyph = "≡", label = "Info", enabled = true, onClick = onInfo)
                 }
                 else -> {
-                    ActionItem(label = "React", enabled = canReact(target), onClick = onReact)
-                    ActionItem(label = "Reply", enabled = canReply(target), onClick = onReply)
-                    ActionItem(label = "Edit", enabled = canEdit(target), onClick = onEdit)
+                    ActionItem(glyph = "😀", label = "React", enabled = canReact(target), onClick = onReact)
+                    ActionItem(glyph = "↩", label = "Reply", enabled = canReply(target), onClick = onReply)
+                    ActionItem(glyph = "✎", label = "Edit", enabled = canEdit(target), onClick = onEdit)
                     ActionItem(
+                        glyph = "✕",
                         label = "Delete",
                         enabled = canDelete(target),
                         onClick = onDelete,
                         destructive = true,
                     )
                     HorizontalDivider(color = ChatPalette.TextFaint, thickness = 0.5.dp)
-                    ActionItem(label = "Copy text", enabled = canCopy(target), onClick = onCopy)
-                    ActionItem(label = "Info", enabled = true, onClick = onInfo)
+                    ActionItem(glyph = "⧉", label = "Copy text", enabled = canCopy(target), onClick = onCopy)
+                    ActionItem(glyph = "≡", label = "Info", enabled = true, onClick = onInfo)
                 }
             }
         }
@@ -168,20 +182,35 @@ private fun ActionItem(
     enabled: Boolean,
     onClick: () -> Unit,
     destructive: Boolean = false,
+    glyph: String = "",
 ) {
     val color = when {
         !enabled -> ChatPalette.TextDim
         destructive -> ChatPalette.Bad
         else -> ChatPalette.Text
     }
-    Text(
-        text = label,
-        color = color,
-        fontSize = 16.sp,
+    
+    
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(ChatPalette.Surface)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 24.dp, vertical = 14.dp),
-    )
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = glyph,
+            color = color,
+            fontSize = 18.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.width(22.dp),
+        )
+        Text(
+            text = label,
+            color = color,
+            fontSize = 16.sp,
+        )
+    }
 }

@@ -34,18 +34,16 @@ const TokenByteLen = 32
 
 var (
 	ErrTokenNotFound     = errors.New("files: token not found")
-	ErrTokenInvalidated  = errors.New("files: token invalidated")
 	ErrBlobNotFound      = errors.New("files: blob not found")
 	ErrMsgIDInUse        = errors.New("files: msg id already staged")
 	ErrCiphertextTooLong = errors.New("files: ciphertext exceeds MaxBlobBytes")
 )
 
 type TokenRow struct {
-	Token             string `json:"token"`
-	RecipientPeerID   string `json:"recipient_peer_id"`
-	MsgID             string `json:"msg_id"`
-	ExpiresAt         int64  `json:"expires_at,omitempty"`
-	ReceiptsRemaining int    `json:"receipts_remaining"`
+	Token           string `json:"token"`
+	RecipientPeerID string `json:"recipient_peer_id"`
+	MsgID           string `json:"msg_id"`
+	ExpiresAt       int64  `json:"expires_at,omitempty"`
 }
 
 type Manager struct {
@@ -125,11 +123,10 @@ func (m *Manager) StageBlob(msgID string, ciphertext []byte, recipientPeerIDs []
 	if err := m.st.Update(func(txn *badger.Txn) error {
 		for i, tok := range tokens {
 			row := TokenRow{
-				Token:             tok,
-				RecipientPeerID:   recipientPeerIDs[i],
-				MsgID:             msgID,
-				ExpiresAt:         expiresAt,
-				ReceiptsRemaining: 1,
+				Token:           tok,
+				RecipientPeerID: recipientPeerIDs[i],
+				MsgID:           msgID,
+				ExpiresAt:       expiresAt,
 			}
 			raw, err := json.Marshal(row)
 			if err != nil {
@@ -176,9 +173,6 @@ func (m *Manager) LookupToken(token string) (TokenRow, error) {
 	if err := json.Unmarshal(raw, &row); err != nil {
 		return TokenRow{}, fmt.Errorf("files: decode token row: %w", err)
 	}
-	if row.ReceiptsRemaining <= 0 {
-		return row, ErrTokenInvalidated
-	}
 	return row, nil
 }
 
@@ -199,35 +193,6 @@ func (m *Manager) OpenBlob(msgID string) (*os.File, int64, error) {
 		return nil, 0, fmt.Errorf("files: stat blob %s: %w", msgID, err)
 	}
 	return f, st.Size(), nil
-}
-
-func (m *Manager) DecrementReceipts(token string) error {
-	if token == "" {
-		return ErrTokenNotFound
-	}
-	return m.st.Update(func(txn *badger.Txn) error {
-		item, err := txn.Get(tokenKey(token))
-		if errors.Is(err, badger.ErrKeyNotFound) {
-			return ErrTokenNotFound
-		}
-		if err != nil {
-			return err
-		}
-		var row TokenRow
-		if err := item.Value(func(v []byte) error {
-			return json.Unmarshal(v, &row)
-		}); err != nil {
-			return fmt.Errorf("files: decode token row: %w", err)
-		}
-		if row.ReceiptsRemaining > 0 {
-			row.ReceiptsRemaining--
-		}
-		raw, err := json.Marshal(row)
-		if err != nil {
-			return fmt.Errorf("files: marshal token row: %w", err)
-		}
-		return txn.Set(tokenKey(token), raw)
-	})
 }
 
 func (m *Manager) DropByMsgID(msgID string) error {

@@ -49,6 +49,24 @@ func (sd *sessionDispatcher) handleSetChatFontScale(_ context.Context, sess *ipc
 	slog.Debug("chat font-scale updated", slog.Float64("scale", clean))
 }
 
+func (sd *sessionDispatcher) handleSetChatDefaults(_ context.Context, sess *ipc.Session, f ipc.Frame) {
+	slog.Debug("handle set_chat_defaults")
+	var req ipc.SetChatDefaultsRequest
+	if err := json.Unmarshal(f.Payload, &req); err != nil {
+		sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
+		return
+	}
+	if err := sd.d.setChatDefaults(req.RetentionSec, req.SendReceipts); err != nil {
+		sendError(sess, f.ID, "persist_failed", err.Error())
+		return
+	}
+	push(sd.d.ipcSrv, ipc.FrameChatDefaultsChanged, "", ipc.ChatDefaultsPayload(req))
+	slog.Debug("chat defaults updated",
+		slog.Uint64("retention_sec", req.RetentionSec),
+		slog.Bool("send_receipts", req.SendReceipts),
+	)
+}
+
 func (sd *sessionDispatcher) handleSetPresenceOverride(_ context.Context, sess *ipc.Session, f ipc.Frame) {
 	slog.Debug("handle set_presence_override")
 	var req ipc.SetPresenceOverrideRequest
@@ -115,7 +133,11 @@ func (sd *sessionDispatcher) handlePushPresence(ctx context.Context, sess *ipc.S
 }
 
 func (sd *sessionDispatcher) shipPresenceTo(ctx context.Context, peerID, state string) error {
-	seq, err := sd.d.peerSeq.NextSendSeq(peerID)
+	return sd.d.shipPresence(ctx, peerID, state)
+}
+
+func (d *daemon) shipPresence(ctx context.Context, peerID, state string) error {
+	seq, err := d.peerSeq.NextSendSeq(peerID)
 	if err != nil {
 		return fmt.Errorf("seq: %w", err)
 	}
@@ -131,11 +153,11 @@ func (sd *sessionDispatcher) shipPresenceTo(ctx context.Context, peerID, state s
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	blob, err := sd.d.cipher.Encrypt(ctx, peerID, plaintext)
+	blob, err := d.cipher.Encrypt(ctx, peerID, plaintext)
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
 	}
-	_, err = sd.d.backendClient.Send(ctx, backendapi.SendRequest{
+	_, err = d.backendClient.Send(ctx, backendapi.SendRequest{
 		PeerID:         peerID,
 		Payload:        blob,
 		Kind:           backendapi.WireKindPresence,

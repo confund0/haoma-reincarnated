@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"haoma-frontend/internal/paths"
@@ -75,22 +77,48 @@ func (a *App) showAttachConfirm(peerID, path string) {
 	text := fmt.Sprintf("Send %s (%s) to %s?\n\n  Path: %s",
 		name, sizeStr, peerLabel, path)
 
-	modal := tview.NewModal().
-		SetText(text).
-		AddButtons([]string{"Send", "Pick again", "Cancel"})
-	modal.SetDoneFunc(func(_ int, label string) {
-		a.pages.RemovePage(pageName)
-		switch label {
-		case "Send":
-			a.dispatchSendFileToPeer(peerID, path)
-			a.app.SetFocus(a.input)
-		case "Pick again":
+	summary := tview.NewTextView().SetDynamicColors(true).SetText(text)
 
-			a.openAttachPicker(peerID)
-		default:
+	var caption string
+	form := tview.NewForm()
+	form.SetButtonsAlign(tview.AlignCenter)
+
+	form.AddInputField("Caption (optional)", "", 0, nil, func(v string) { caption = v })
+
+	dismissTo := func(focusInput bool) {
+		a.pages.RemovePage(pageName)
+		if focusInput {
 			a.app.SetFocus(a.input)
 		}
+	}
+	form.AddButton("Send", func() {
+		dismissTo(true)
+		a.dispatchSendFileToPeer(peerID, path, strings.TrimSpace(caption))
 	})
-	a.pages.AddPage(pageName, modal, true, true)
-	a.app.SetFocus(modal)
+	form.AddButton("Pick again", func() {
+
+		dismissTo(false)
+		a.openAttachPicker(peerID)
+	})
+	form.AddButton("Cancel", func() { dismissTo(true) })
+	form.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() == tcell.KeyEscape {
+			dismissTo(true)
+			return nil
+		}
+		return ev
+	})
+
+	flex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(summary, 5, 0, false).
+		AddItem(form, 0, 1, true)
+	flex.SetBorder(true).SetTitle(" send attachment ")
+
+	grid := tview.NewGrid().
+		SetColumns(0, 80, 0).
+		SetRows(0, 12, 0).
+		AddItem(flex, 1, 1, 1, 1, 0, 0, true)
+
+	a.pages.AddPage(pageName, grid, true, true)
+	a.app.SetFocus(form)
 }

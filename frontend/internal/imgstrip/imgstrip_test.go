@@ -222,3 +222,113 @@ func TestProcess_StripsEXIF(t *testing.T) {
 		t.Fatalf("EXIF magic survived re-encode")
 	}
 }
+
+func exifOrientationBlob(n byte) []byte {
+	tiff := []byte{
+		'I', 'I', 0x2a, 0x00,
+		0x08, 0x00, 0x00, 0x00,
+		0x01, 0x00,
+		0x12, 0x01,
+		0x03, 0x00,
+		0x01, 0x00, 0x00, 0x00,
+		n, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segLen := len(payload) + 2
+	blob := []byte{0xff, 0xe1, byte(segLen >> 8), byte(segLen)}
+	return append(blob, payload...)
+}
+
+func spliceEXIF(jpegBytes, blob []byte) []byte {
+	out := append([]byte{}, jpegBytes[:2]...)
+	out = append(out, blob...)
+	return append(out, jpegBytes[2:]...)
+}
+
+func TestOrientationOf(t *testing.T) {
+	base := makeJPEG(t, 16, 16)
+	for n := byte(1); n <= 8; n++ {
+		got := orientationOf(spliceEXIF(base, exifOrientationBlob(n)))
+		if got != int(n) {
+			t.Errorf("orientationOf(tag=%d) = %d; want %d", n, got, n)
+		}
+	}
+	if got := orientationOf(base); got != 1 {
+		t.Errorf("orientationOf(no EXIF) = %d; want 1", got)
+	}
+	if got := orientationOf([]byte("not a jpeg at all")); got != 1 {
+		t.Errorf("orientationOf(non-jpeg) = %d; want 1", got)
+	}
+}
+
+func TestApplyOrientation(t *testing.T) {
+
+	red := color.RGBA{R: 0xff, A: 0xff}
+	green := color.RGBA{G: 0xff, A: 0xff}
+	blue := color.RGBA{B: 0xff, A: 0xff}
+	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	src.Set(0, 0, red)
+	src.Set(2, 0, green)
+	src.Set(0, 1, blue)
+	src.Set(2, 1, white)
+
+	rgba := func(im image.Image, x, y int) color.RGBA {
+		r, g, b, a := im.At(x, y).RGBA()
+		return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+	}
+
+	type check struct {
+		x, y int
+		want color.RGBA
+	}
+	cases := []struct {
+		o      int
+		w, h   int
+		checks []check
+	}{
+
+		{6, 2, 3, []check{{0, 0, blue}, {1, 0, red}, {0, 2, white}, {1, 2, green}}},
+
+		{8, 2, 3, []check{{0, 0, green}, {1, 0, white}, {0, 2, red}, {1, 2, blue}}},
+
+		{3, 3, 2, []check{{2, 1, red}, {0, 1, green}, {2, 0, blue}, {0, 0, white}}},
+	}
+	for _, c := range cases {
+		out := applyOrientation(src, c.o)
+		b := out.Bounds()
+		if b.Dx() != c.w || b.Dy() != c.h {
+			t.Errorf("o=%d dims = %dx%d; want %dx%d", c.o, b.Dx(), b.Dy(), c.w, c.h)
+			continue
+		}
+		for _, ck := range c.checks {
+			if got := rgba(out, ck.x, ck.y); got != ck.want {
+				t.Errorf("o=%d pixel(%d,%d) = %v; want %v", c.o, ck.x, ck.y, got, ck.want)
+			}
+		}
+	}
+
+	if applyOrientation(src, 1) != image.Image(src) {
+		t.Errorf("o=1 should return the input untouched")
+	}
+}
+
+func TestProcess_BakesOrientation(t *testing.T) {
+
+	in := spliceEXIF(makeJPEG(t, 200, 100), exifOrientationBlob(6))
+	out, _, err := Process(in, 0)
+	if err != nil {
+		t.Fatalf("Process err: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode out: %v", err)
+	}
+	if cfg.Width != 100 || cfg.Height != 200 {
+		t.Fatalf("output %dx%d; want 100x200 (orientation baked in)", cfg.Width, cfg.Height)
+	}
+	if bytes.Contains(out, []byte("Exif\x00\x00")) {
+		t.Fatalf("EXIF magic survived re-encode")
+	}
+}

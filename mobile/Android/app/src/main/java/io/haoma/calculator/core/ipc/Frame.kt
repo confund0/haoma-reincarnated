@@ -51,6 +51,10 @@ object FrameType {
     const val ChatFontScale = "system.chat-font-scale-changed"
 
     
+    const val SetChatDefaults = "set_chat_defaults"
+    const val ChatDefaultsChanged = "system.chat-defaults-changed"
+
+    
     const val SetTorPassword = "set_tor_password"
     const val TorPasswordAccepted = "tor_password_accepted"
 

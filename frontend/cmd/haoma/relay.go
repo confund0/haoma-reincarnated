@@ -147,6 +147,8 @@ func eventsLoop(ctx context.Context, d *daemon) {
 
 			sweepInbox(ctx, d)
 
+			go sweepStagedFetches(ctx, d)
+
 			d.fileRetrySweepOnce.Do(func() {
 				go func() {
 					n, err := d.backendClient.RetryFailedFiles(ctx)
@@ -391,6 +393,17 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		return
 	}
 
+	bootAddr := protocol.NewSignalAddress(entry.PeerID, pair.DeviceID)
+	hadSession, sessErr := d.stores.ContainsSession(ctx, bootAddr)
+	if sessErr != nil {
+
+		slog.Debug("A0: contains-session precheck failed; suppressing echo",
+			slog.String("peer_id", entry.PeerID),
+			slog.Any("err", sessErr),
+		)
+		hadSession = true
+	}
+
 	plain, decErr := d.cipher.Decrypt(ctx, entry.PeerID, entry.Envelope.Payload)
 	if decErr != nil {
 
@@ -425,6 +438,20 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			slog.Any("err", decErr),
 		)
 		return
+	}
+
+	if !hadSession && d.peerSeq != nil && d.cipher != nil {
+		state := d.effectivePresenceState()
+		if err := d.shipPresence(ctx, entry.PeerID, state); err != nil {
+			slog.Warn("A0: responder presence echo failed",
+				slog.String("peer_id", entry.PeerID),
+				slog.Any("err", err),
+			)
+		} else {
+			slog.Debug("A0: responder presence echo sent (pairing round-trip closed)",
+				slog.String("peer_id", entry.PeerID),
+			)
+		}
 	}
 
 	wrapper, parseErr := msg.Unmarshal(plain)
@@ -467,6 +494,12 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		slog.String("msg_id", wrapper.MsgID),
 		slog.Uint64("sender_seq", wrapper.Seq),
 	)
+
+	if d.peerMeta != nil {
+		if rec, err := d.peerMeta.Get(entry.PeerID); err == nil && rec.Fingerprint == "" {
+			seedPeerFingerprint(d, entry.PeerID)
+		}
+	}
 
 	switch wrapper.Kind {
 	case msg.KindText:
@@ -690,6 +723,42 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			return
 		}
 		ingestFileKey(ctx, d, entry.PeerID, body.Token, key, nonce)
+
+	case msg.KindFileDelivered:
+		body, err := wrapper.FileDelivered()
+		if err != nil {
+			slog.Warn("inbound file_delivered: body parse failed",
+				slog.String("envelope_id", entry.Envelope.ID),
+				slog.String("peer_id", entry.PeerID),
+				slog.Any("err", err),
+			)
+			return
+		}
+
+		if _, err := d.events.ApplyDeliveredReceipt(body.Target, chatID); err != nil {
+			switch {
+			case errors.Is(err, events.ErrEventNotFound):
+				slog.Info("inbound file_delivered: target missing (swept or out-of-order)",
+					slog.String("target_msg_id", body.Target),
+					slog.String("peer_id", entry.PeerID),
+				)
+			case errors.Is(err, events.ErrReaderNotPeer):
+				slog.Warn("inbound file_delivered: reader/chat mismatch; rejecting",
+					slog.String("target_msg_id", body.Target),
+					slog.String("peer_id", entry.PeerID),
+				)
+			case errors.Is(err, events.ErrReadUnsupportedKind):
+				slog.Warn("inbound file_delivered: target is not a file row; rejecting",
+					slog.String("target_msg_id", body.Target),
+					slog.String("peer_id", entry.PeerID),
+				)
+			default:
+				slog.Error("inbound file_delivered: apply failed",
+					slog.String("target_msg_id", body.Target),
+					slog.Any("err", err),
+				)
+			}
+		}
 
 	case msg.KindCallOffer:
 		body, err := wrapper.CallOffer()
@@ -1054,6 +1123,7 @@ func processDHTReturns(ctx context.Context, d *daemon) {
 			continue
 		}
 		seedPairNick(d, inv.PeerID, inv.Frontend.Nick)
+		seedPeerFingerprint(d, inv.PeerID)
 		if err := pair.DeleteMyKeys(d.store, p.GUID); err != nil {
 			slog.Warn("pair: delete return-invite mykeys failed",
 				slog.String("guid", p.GUID),

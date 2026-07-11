@@ -61,7 +61,7 @@ internal fun ChatDefaultsSection(store: MessengerStore, onBack: () -> Unit) {
     if (snapshot == null) {
         Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
             SectionHeader(title = "Chat defaults", store = store, onBack = onBack)
-            VaultUnavailableBanner(message = "Vault session unavailable — re-unlock the app to edit chat defaults.")
+            VaultUnavailableBanner(message = "Daemon not connected — reconnect to edit chat defaults.")
         }
         return
     }
@@ -125,7 +125,7 @@ internal fun ChatDefaultsSection(store: MessengerStore, onBack: () -> Unit) {
                         saving = false
                         
                         
-                        result.onSuccess { initial = store.loadChatDefaults() }
+                        result.onSuccess { initial = saveSnapshot }
                         result.onFailure { t -> error = t.message ?: "save failed" }
                     }
                 },

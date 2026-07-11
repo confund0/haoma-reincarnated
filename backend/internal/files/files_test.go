@@ -79,9 +79,6 @@ func TestStageBlob_WritesBlobAndMintsTokens(t *testing.T) {
 	if row0.RecipientPeerID != peerA || row0.MsgID != testMsgA {
 		t.Errorf("row[0] = %+v", row0)
 	}
-	if row0.ReceiptsRemaining != 1 {
-		t.Errorf("row[0].ReceiptsRemaining = %d, want 1", row0.ReceiptsRemaining)
-	}
 	row1, err := mgr.LookupToken(tokens[1])
 	if err != nil {
 		t.Fatalf("LookupToken[1]: %v", err)
@@ -139,36 +136,24 @@ func TestLookupToken_Unknown(t *testing.T) {
 	}
 }
 
-func TestDecrementReceipts_DownToInvalidated(t *testing.T) {
+func TestLookupToken_MultiUse(t *testing.T) {
 	mgr, _, _ := newManager(t)
 	tokens, err := mgr.StageBlob(testMsgA, []byte("x"), []string{peerA}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tok := tokens[0]
-	if err := mgr.DecrementReceipts(tok); err != nil {
-		t.Fatalf("Decrement: %v", err)
-	}
-	row, err := mgr.LookupToken(tok)
-	if !errors.Is(err, files.ErrTokenInvalidated) {
-		t.Fatalf("err: got %v, want ErrTokenInvalidated", err)
-	}
-	if row.MsgID != testMsgA {
-		t.Errorf("invalidated row body lost: %+v", row)
+	for i := 0; i < 3; i++ {
+		if _, err := mgr.LookupToken(tok); err != nil {
+			t.Fatalf("lookup %d: got %v, want nil (multi-use)", i, err)
+		}
 	}
 
-	if err := mgr.DecrementReceipts(tok); err != nil {
-		t.Fatalf("second Decrement: %v", err)
+	if err := mgr.DropByMsgID(testMsgA); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := mgr.LookupToken(tok); !errors.Is(err, files.ErrTokenInvalidated) {
-		t.Fatalf("err: got %v, want ErrTokenInvalidated", err)
-	}
-}
-
-func TestDecrementReceipts_Unknown(t *testing.T) {
-	mgr, _, _ := newManager(t)
-	if err := mgr.DecrementReceipts("nope"); !errors.Is(err, files.ErrTokenNotFound) {
-		t.Fatalf("err: got %v, want ErrTokenNotFound", err)
+	if _, err := mgr.LookupToken(tok); !errors.Is(err, files.ErrTokenNotFound) {
+		t.Fatalf("post-drop lookup: got %v, want ErrTokenNotFound", err)
 	}
 }
 

@@ -393,12 +393,6 @@ func TestMintFreshPayload_AppliesDefaults(t *testing.T) {
 		t.Errorf("SecurityWarnings should be empty; got %v", p.SecurityWarnings)
 	}
 
-	if p.DefaultRetentionSec != 0 {
-		t.Errorf("DefaultRetentionSec should be 0 (no expiry); got %d", p.DefaultRetentionSec)
-	}
-	if !p.DefaultSendReceipts {
-		t.Error("DefaultSendReceipts should default true (Slice 5 alignment)")
-	}
 	if !p.NotifyShellEnabled {
 		t.Error("NotifyShellEnabled should default true (notify on; banner stays anonymous)")
 	}
@@ -435,10 +429,6 @@ func TestPayload_DefaultTrueBoolsSurviveOldVaults(t *testing.T) {
 		t.Error("NotificationsOnLock should remain true on old-vault upgrade " +
 			"(absent key) — defaultSeededPayload seeds it before decode")
 	}
-	if !p.DefaultSendReceipts {
-		t.Error("DefaultSendReceipts should remain true on old-vault upgrade " +
-			"(absent key)")
-	}
 	if !p.NotifyShellEnabled {
 		t.Error("NotifyShellEnabled should remain true on old-vault upgrade " +
 			"(absent key) — also requires the tag to drop omitempty so " +
@@ -454,7 +444,6 @@ func TestPayload_DefaultTrueBoolsSurviveOldVaults(t *testing.T) {
 		"frontend_store_passphrase": "b",
 		"haomad_token":              "c",
 		"notifications_on_lock":     false,
-		"default_send_receipts":     false,
 		"notify_shell_enabled":      false,
 		"url_force_chooser":         false
 	}`)
@@ -464,9 +453,6 @@ func TestPayload_DefaultTrueBoolsSurviveOldVaults(t *testing.T) {
 	}
 	if p2.NotificationsOnLock {
 		t.Error("notifications_on_lock=false in JSON must overwrite seed")
-	}
-	if p2.DefaultSendReceipts {
-		t.Error("default_send_receipts=false in JSON must overwrite seed")
 	}
 	if p2.NotifyShellEnabled {
 		t.Error("notify_shell_enabled=false in JSON must overwrite seed")
@@ -489,8 +475,6 @@ func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 		"notify_noisy":              false,
 		"notify_persist_until_open": false,
 		"notify_deep_link":          false,
-		"default_retention_sec":     0,
-		"default_send_receipts":     true,
 		"idle_action":               "safe-lock",
 		"idle_timeout_seconds":      900,
 		"pin_validity_sec":          0,
@@ -526,8 +510,6 @@ func TestPayload_RoundTripsAllFields(t *testing.T) {
 	want.HaomadURL = "http://127.0.0.1:9999"
 	want.TorPassword = "torpw"
 
-	want.DefaultRetentionSec = 86400
-	want.DefaultSendReceipts = false
 	want.NotifyShellEnabled = true
 	want.NotifyShowSender = true
 	want.NotifyShowBody = true

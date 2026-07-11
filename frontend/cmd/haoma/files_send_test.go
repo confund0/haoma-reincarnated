@@ -169,7 +169,7 @@ func TestRunSendFile_HappyPath(t *testing.T) {
 	plaintext := []byte("the cake is most assuredly a lie\n")
 	path := writeTempFile(t, plaintext)
 
-	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "", "")
 	if err != nil {
 		t.Fatalf("runSendFile: code=%q err=%v", code, err)
 	}
@@ -306,7 +306,7 @@ func TestRunSendFile_OversizedRefuses(t *testing.T) {
 	huge := make([]byte, files.MaxPlaintextBytes+1)
 	path := writeTempFile(t, huge)
 
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, path, "", "")
 	if err == nil {
 		t.Fatal("expected too_large error, got nil")
 	}
@@ -330,7 +330,7 @@ func TestRunSendFile_MissingPath(t *testing.T) {
 	preEstablishSession(t, d, peerID)
 	dc, _ := d.chats.GetByDirectPeer(peerID)
 
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, filepath.Join(t.TempDir(), "no-such-file"), "")
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, filepath.Join(t.TempDir(), "no-such-file"), "", "")
 	if err == nil {
 		t.Fatal("expected file_open error, got nil")
 	}
@@ -352,7 +352,7 @@ func TestRunSendFile_DirectoryRefuses(t *testing.T) {
 	dc, _ := d.chats.GetByDirectPeer(peerID)
 
 	dir := t.TempDir()
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, dir, "")
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, dir, "", "")
 	if err == nil {
 		t.Fatal("expected directory rejection, got nil")
 	}
@@ -374,7 +374,7 @@ func TestRunSendFile_NoSession_EncryptFailedDropsBlob(t *testing.T) {
 	plaintext := []byte("never goes anywhere")
 	path := writeTempFile(t, plaintext)
 
-	_, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
+	_, code, err := runSendFile(context.Background(), d, dc, peerID, path, "", "")
 	if err == nil {
 		t.Fatal("expected encrypt_failed error, got nil")
 	}
@@ -418,7 +418,7 @@ func TestRunSendFile_OfferShapeMatchesStaging(t *testing.T) {
 	plaintext := []byte("shape check")
 	path := writeTempFile(t, plaintext)
 
-	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "")
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "", "")
 	if err != nil {
 		t.Fatalf("runSendFile: code=%q err=%v", code, err)
 	}
@@ -490,7 +490,7 @@ func TestRunSendFile_ImageModeCompressedDownsizes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "compressed")
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "compressed", "")
 	if err != nil {
 		t.Fatalf("runSendFile: code=%q err=%v", code, err)
 	}
@@ -525,7 +525,7 @@ func TestRunSendFile_ImageModeOriginalPassesThrough(t *testing.T) {
 	plaintext := makeJPEGForTest(t, 4000, 3000)
 	path := writeTempFile(t, plaintext)
 
-	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "original")
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "original", "")
 	if err != nil {
 		t.Fatalf("runSendFile: code=%q err=%v", code, err)
 	}
@@ -549,7 +549,7 @@ func TestRunSendFile_ImageModeCompressedNonImageBypass(t *testing.T) {
 	plaintext := []byte("not an image; should pass through compressed mode untouched\n")
 	path := writeTempFile(t, plaintext)
 
-	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "compressed")
+	res, code, err := runSendFile(context.Background(), d, dc, peerID, path, "compressed", "")
 	if err != nil {
 		t.Fatalf("runSendFile: code=%q err=%v", code, err)
 	}

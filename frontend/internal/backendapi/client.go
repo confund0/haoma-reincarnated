@@ -849,8 +849,7 @@ type RedeemFileReceiptRequest struct {
 }
 
 type RedeemFileReceiptResponse struct {
-	Token             string `json:"token"`
-	ReceiptsRemaining int    `json:"receipts_remaining"`
+	Token string `json:"token"`
 }
 
 var (

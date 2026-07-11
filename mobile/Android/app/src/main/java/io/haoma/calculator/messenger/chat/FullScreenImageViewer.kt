@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Image
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.core.ImageOrient
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.ViewerTarget
@@ -51,7 +52,12 @@ fun FullScreenImageViewer(store: MessengerStore, target: ViewerTarget) {
             return@FullScreenOverlay
         }
         val bitmap = remember(target.msgId, bytes) {
-            runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+            runCatching {
+                val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                
+                
+                decoded?.let { ImageOrient.apply(it, ImageOrient.read(bytes.inputStream())) }
+            }
                 .onFailure {
                     Logger.w(
                         "image-viewer",

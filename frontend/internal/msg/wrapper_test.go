@@ -653,7 +653,7 @@ const testToken = "Q5oF1aQpJ1xVbwVN4f6PcWcL4lWCNW5kdeJ-l7Q9OVo"
 const testSha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
 func TestBuildFileOffer_RoundTrip(t *testing.T) {
-	w, err := msg.BuildFileOffer(3, 1742643890, testMsgID, testToken, "/files/"+testToken, "flies-fucking.mpg", 1024*1024, "video/mpeg", testSha256, 600)
+	w, err := msg.BuildFileOffer(3, 1742643890, testMsgID, testToken, "/files/"+testToken, "flies-fucking.mpg", 1024*1024, "video/mpeg", testSha256, "a word about the clip", 600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,32 +684,49 @@ func TestBuildFileOffer_RoundTrip(t *testing.T) {
 	if body.Sha256Ciphertext != testSha256 {
 		t.Errorf("sha256 = %q, want %q", body.Sha256Ciphertext, testSha256)
 	}
+	if body.Caption != "a word about the clip" {
+		t.Errorf("caption = %q, want %q", body.Caption, "a word about the clip")
+	}
+}
+
+func TestBuildFileOffer_OmitsEmptyCaption(t *testing.T) {
+	w, err := msg.BuildFileOffer(3, 1742643890, testMsgID, testToken, "/files/"+testToken, "n", 1, "m", testSha256, "", 600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := msg.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "caption") {
+		t.Errorf("empty caption should be omitted from wire JSON: %s", raw)
+	}
 }
 
 func TestBuildFileOffer_RejectsMissingFields(t *testing.T) {
 	cases := map[string]func() error{
 		"empty token": func() error {
-			_, e := msg.BuildFileOffer(1, 1, testMsgID, "", "/files/x", "n", 1, "m", testSha256, 0)
+			_, e := msg.BuildFileOffer(1, 1, testMsgID, "", "/files/x", "n", 1, "m", testSha256, "", 0)
 			return e
 		},
 		"empty path": func() error {
-			_, e := msg.BuildFileOffer(1, 1, testMsgID, testToken, "", "n", 1, "m", testSha256, 0)
+			_, e := msg.BuildFileOffer(1, 1, testMsgID, testToken, "", "n", 1, "m", testSha256, "", 0)
 			return e
 		},
 		"zero size": func() error {
-			_, e := msg.BuildFileOffer(1, 1, testMsgID, testToken, "/files/x", "n", 0, "m", testSha256, 0)
+			_, e := msg.BuildFileOffer(1, 1, testMsgID, testToken, "/files/x", "n", 0, "m", testSha256, "", 0)
 			return e
 		},
 		"empty sha256": func() error {
-			_, e := msg.BuildFileOffer(1, 1, testMsgID, testToken, "/files/x", "n", 1, "m", "", 0)
+			_, e := msg.BuildFileOffer(1, 1, testMsgID, testToken, "/files/x", "n", 1, "m", "", "", 0)
 			return e
 		},
 		"empty msg id": func() error {
-			_, e := msg.BuildFileOffer(1, 1, "", testToken, "/files/x", "n", 1, "m", testSha256, 0)
+			_, e := msg.BuildFileOffer(1, 1, "", testToken, "/files/x", "n", 1, "m", testSha256, "", 0)
 			return e
 		},
 		"zero seq": func() error {
-			_, e := msg.BuildFileOffer(0, 1, testMsgID, testToken, "/files/x", "n", 1, "m", testSha256, 0)
+			_, e := msg.BuildFileOffer(0, 1, testMsgID, testToken, "/files/x", "n", 1, "m", testSha256, "", 0)
 			return e
 		},
 	}

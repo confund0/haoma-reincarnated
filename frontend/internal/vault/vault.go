@@ -53,8 +53,6 @@ const (
 	DefaultPanicAction      = ""
 	DefaultRotationInterval = 0
 
-	DefaultRetentionSec     = 0
-	DefaultSendReceipts     = true
 	DefaultNotifyShell      = true
 	DefaultNotifyShowSender = false
 	DefaultNotifyShowBody   = false
@@ -122,10 +120,6 @@ type Payload struct {
 	RotationIntervalSec int `json:"rotation_interval_sec,omitempty"`
 
 	SecurityWarnings []string `json:"security_warnings,omitempty"`
-
-	DefaultRetentionSec uint64 `json:"default_retention_sec,omitempty"`
-
-	DefaultSendReceipts bool `json:"default_send_receipts"`
 
 	NotifyShellEnabled bool `json:"notify_shell_enabled"`
 
@@ -283,7 +277,6 @@ func openBytes(raw []byte, passphrase []byte) (Payload, KDFParams, error) {
 func defaultSeededPayload() Payload {
 	return Payload{
 		NotificationsOnLock: true,
-		DefaultSendReceipts: DefaultSendReceipts,
 		NotifyShellEnabled:  DefaultNotifyShell,
 		URLForceChooser:     DefaultURLForceChooser,
 	}
@@ -459,8 +452,6 @@ func MintFreshPayload() (Payload, error) {
 		NotificationsOnLock: true,
 		RotationIntervalSec: DefaultRotationInterval,
 
-		DefaultRetentionSec:   DefaultRetentionSec,
-		DefaultSendReceipts:   DefaultSendReceipts,
 		NotifyShellEnabled:    DefaultNotifyShell,
 		NotifyShowSender:      DefaultNotifyShowSender,
 		NotifyShowBody:        DefaultNotifyShowBody,

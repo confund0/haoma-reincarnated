@@ -10,8 +10,8 @@ import io.haoma.calculator.messenger.DeliveryState
 
 
 @Composable
-internal fun DeliveryGlyph(state: String, modifier: Modifier = Modifier) {
-    val (glyph, color) = glyphFor(state) ?: return
+internal fun DeliveryGlyph(state: String, isFile: Boolean = false, modifier: Modifier = Modifier) {
+    val (glyph, color) = (if (isFile) fileGlyphFor(state) else glyphFor(state)) ?: return
     Text(
         text = glyph,
         color = color,
@@ -24,6 +24,17 @@ internal fun DeliveryGlyph(state: String, modifier: Modifier = Modifier) {
 private fun glyphFor(state: String): Pair<String, Color>? = when (state) {
     DeliveryState.ENQUEUED, "" -> "…" to ChatPalette.TextDim
     DeliveryState.SENT, DeliveryState.DELIVERED -> "✓" to ChatPalette.Ok
+    DeliveryState.READ -> "✓✓" to ChatPalette.Ok
+    DeliveryState.FAILED -> "✗" to ChatPalette.Bad
+    else -> null
+}
+
+private fun fileGlyphFor(state: String): Pair<String, Color>? = when (state) {
+    DeliveryState.ENQUEUED, "" -> "…" to ChatPalette.TextDim
+    
+    DeliveryState.SENT -> "✓" to ChatPalette.TextDim
+    
+    DeliveryState.DELIVERED -> "✓" to ChatPalette.Ok
     DeliveryState.READ -> "✓✓" to ChatPalette.Ok
     DeliveryState.FAILED -> "✗" to ChatPalette.Bad
     else -> null

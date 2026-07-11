@@ -1303,6 +1303,137 @@ func TestApplyDelete_StillRejectsBreadcrumb(t *testing.T) {
 	}
 }
 
+func appendOutboundFile(t *testing.T, l *events.Log, chatID, msgID string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"name": "blob.bin", "state": "ready"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID: chat.ChatID(chatID), Kind: events.KindFile, SenderSeq: 1,
+		EnvelopeID: "env-" + msgID, MsgID: msgID, Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyDeliveredReceipt_HappyPath(t *testing.T) {
+	l, bus := newLog(t, fixedClock(1742643890))
+	appendOutboundFile(t, l, "alice", "m-file")
+
+	subCh, cancel := bus.Subscribe(4)
+	defer cancel()
+
+	updated, err := l.ApplyDeliveredReceipt("m-file", chat.ChatID("alice"))
+	if err != nil {
+		t.Fatalf("ApplyDeliveredReceipt: %v", err)
+	}
+	if updated.DeliveryState != "delivered" {
+		t.Errorf("DeliveryState = %q, want delivered", updated.DeliveryState)
+	}
+	select {
+	case got := <-subCh:
+		if got.MsgID != "m-file" || got.DeliveryState != "delivered" {
+			t.Errorf("bus push drift: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ApplyDeliveredReceipt did not publish to bus")
+	}
+}
+
+func TestApplyDeliveredReceipt_DoesNotDowngradeFromRead(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+	appendOutboundFile(t, l, "alice", "m-file")
+
+	if _, err := l.ApplyReadReceipt("m-file", 1742643895, chat.ChatID("alice")); err != nil {
+		t.Fatalf("ApplyReadReceipt on file: %v", err)
+	}
+	updated, err := l.ApplyDeliveredReceipt("m-file", chat.ChatID("alice"))
+	if err != nil {
+		t.Fatalf("ApplyDeliveredReceipt: %v", err)
+	}
+	if updated.DeliveryState != "read" {
+		t.Errorf("DeliveryState = %q after late delivered, want still read", updated.DeliveryState)
+	}
+}
+
+func TestApplyDeliveredReceipt_RejectsText(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+	body, _ := json.Marshal(events.TextBody{Text: "hi"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindText, SenderSeq: 1,
+		EnvelopeID: "env-t", MsgID: "m-t", Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := l.ApplyDeliveredReceipt("m-t", chat.ChatID("alice"))
+	if !errors.Is(err, events.ErrReadUnsupportedKind) {
+		t.Fatalf("err = %v, want ErrReadUnsupportedKind", err)
+	}
+}
+
+func TestApplyDeliveredReceipt_RejectsWrongChat(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+	appendOutboundFile(t, l, "alice", "m-file")
+	_, err := l.ApplyDeliveredReceipt("m-file", chat.ChatID("mallory"))
+	if !errors.Is(err, events.ErrReaderNotPeer) {
+		t.Fatalf("err = %v, want ErrReaderNotPeer", err)
+	}
+}
+
+func TestApplyReadReceipt_AcceptsKindFile(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+	appendOutboundFile(t, l, "alice", "m-file")
+	updated, err := l.ApplyReadReceipt("m-file", 1742643895, chat.ChatID("alice"))
+	if err != nil {
+		t.Fatalf("ApplyReadReceipt on KindFile: %v", err)
+	}
+	if updated.DeliveryState != "read" {
+		t.Errorf("DeliveryState = %q, want read", updated.DeliveryState)
+	}
+}
+
+func TestMarkRead_IncludesInboundFileRows(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+	body, _ := json.Marshal(map[string]string{"name": "blob.bin", "state": "ready"})
+	if _, err := l.AppendInbound(events.InboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindFile, SenderSeq: 1,
+		SenderTs: 1742643880, MsgID: "in-file", Status: events.DecryptOK, Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, pending, err := l.MarkRead(chat.ChatID("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, id := range pending {
+		if id == "in-file" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("pending receipts = %v, want to include in-file", pending)
+	}
+}
+
+func TestMarkRead_ExcludesUnsealedFileRows(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+	body, _ := json.Marshal(map[string]string{"name": "blob.bin", "state": "downloading"})
+	if _, err := l.AppendInbound(events.InboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindFile, SenderSeq: 1,
+		SenderTs: 1742643880, MsgID: "in-file", Status: events.DecryptOK, Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, pending, err := l.MarkRead(chat.ChatID("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range pending {
+		if id == "in-file" {
+			t.Errorf("pending receipts = %v, want in-file excluded (still downloading)", pending)
+		}
+	}
+}
+
 func TestBus_SubscribeDeletions_Lifecycle(t *testing.T) {
 	bus := events.NewBus()
 	ch, cancel := bus.SubscribeDeletions(2)

@@ -50,6 +50,8 @@ func peerEntryFor(d *daemon, p backendapi.Peer) ipc.PeerEntry {
 	entry.Nick = meta.Nick
 	entry.Alias = meta.Alias
 	entry.Label = peerstate.Resolve(meta, p.ID)
+	entry.Verified = meta.Verified
+	entry.Blocked = meta.Blocked
 	applyPresenceSnapshot(d, p.ID, &entry)
 	return entry
 }
@@ -69,6 +71,42 @@ func seedPairNick(d *daemon, peerID, nick string) {
 	slog.Debug("peer-meta nick seeded (pair handoff)",
 		slog.String("peer_id", peerID),
 		slog.String("nick", nick),
+		slog.Bool("changed", changed),
+	)
+}
+
+func seedPeerFingerprint(d *daemon, peerID string) {
+	if d == nil || d.peerMeta == nil || d.stores == nil || peerID == "" {
+		return
+	}
+	addr := protocol.NewSignalAddress(peerID, pair.DeviceID)
+	remoteKey, err := d.stores.GetRemoteIdentity(addr)
+	if err != nil {
+		slog.Warn("peer-meta fingerprint seed skipped: remote identity unavailable",
+			slog.String("peer_id", peerID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	fp := remoteKey.Fingerprint()
+	changed, prev, err := d.peerMeta.SetFingerprint(peerID, fp)
+	if err != nil {
+		slog.Warn("peerMeta.SetFingerprint (pair seed) failed",
+			slog.String("peer_id", peerID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	if prev != "" && prev != fp {
+		slog.Warn("peer fingerprint changed on re-pair (possible identity rotation/mismatch)",
+			slog.String("peer_id", peerID),
+			slog.String("prev_fingerprint", prev),
+			slog.String("new_fingerprint", fp),
+		)
+	}
+	slog.Debug("peer-meta fingerprint seeded (pair handoff)",
+		slog.String("peer_id", peerID),
+		slog.String("fingerprint", fp),
 		slog.Bool("changed", changed),
 	)
 }
@@ -219,6 +257,8 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleWipeOpenTransient(ctx, sess, f)
 	case ipc.FrameSetAlias:
 		sd.handleSetAlias(ctx, sess, f)
+	case ipc.FrameSetPeerVerified:
+		sd.handleSetPeerVerified(ctx, sess, f)
 	case ipc.FramePeerAction:
 		sd.handlePeerAction(ctx, sess, f)
 	case ipc.FrameListChats:
@@ -247,6 +287,8 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleSetNick(ctx, sess, f)
 	case ipc.FrameSetChatFontScale:
 		sd.handleSetChatFontScale(ctx, sess, f)
+	case ipc.FrameSetChatDefaults:
+		sd.handleSetChatDefaults(ctx, sess, f)
 	case ipc.FramePushPresence:
 		sd.handlePushPresence(ctx, sess, f)
 	case ipc.FrameInviteDHT:
@@ -415,6 +457,7 @@ func (sd *sessionDispatcher) handleInviteAccept(ctx context.Context, sess *ipc.S
 		return
 	}
 	seedPairNick(sd.d, inv.PeerID, inv.Frontend.Nick)
+	seedPeerFingerprint(sd.d, inv.PeerID)
 	if err := pair.DeleteMyKeys(sd.d.store, pasteInPendingHandle); err != nil {
 		slog.Warn("delete pending mykeys failed", slog.Any("err", err))
 	}
@@ -527,12 +570,6 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 		replyToEvent = &events.ReplyToSnapshot{MsgID: req.ReplyToMsgID, Text: tb.Text}
 	}
 
-	seq, err := sd.d.peerSeq.NextSendSeq(req.PeerID)
-	if err != nil {
-		sendError(sess, f.ID, "seq_failed", err.Error())
-		return
-	}
-
 	msgID, err := msg.NewID()
 	if err != nil {
 		sendError(sess, f.ID, "build_failed", err.Error())
@@ -540,37 +577,71 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 	}
 
 	expireSeconds := dc.RetentionTTL
-
 	presenceState := sd.d.effectivePresenceState()
-
 	senderNick := sd.d.selfNick()
 	if dc.NickOverride != "" {
 		senderNick = dc.NickOverride
 	}
-	wrapper, err := msg.BuildText(seq, time.Now().Unix(), msgID, req.Text, expireSeconds, presenceState, senderNick, replyToWire)
-	if err != nil {
-		sendError(sess, f.ID, "build_failed", err.Error())
-		return
-	}
-	plaintext, err := msg.Marshal(wrapper)
-	if err != nil {
-		sendError(sess, f.ID, "build_failed", err.Error())
-		return
-	}
+	sendTs := time.Now().Unix()
 
-	blob, err := sd.d.cipher.Encrypt(ctx, req.PeerID, plaintext)
-	if err != nil {
-		sendError(sess, f.ID, "encrypt_failed", err.Error())
+	targets := dc.FanoutPeerIDs()
+	if len(targets) == 0 {
+		sendError(sess, f.ID, "unknown_peer", fmt.Sprintf("chat for peer %s has no routing targets", req.PeerID))
 		return
 	}
+	var (
+		envIDs         []string
+		primarySeq     uint64
+		primaryEnvID   string
+		primaryPayload int
+		lastSendErr    error
+	)
+	for _, pid := range targets {
+		seq, seqErr := sd.d.peerSeq.NextSendSeq(pid)
+		if seqErr != nil {
+			sendError(sess, f.ID, "seq_failed", seqErr.Error())
+			return
+		}
+		wrapper, bErr := msg.BuildText(seq, sendTs, msgID, req.Text, expireSeconds, presenceState, senderNick, replyToWire)
+		if bErr != nil {
+			sendError(sess, f.ID, "build_failed", bErr.Error())
+			return
+		}
+		plaintext, mErr := msg.Marshal(wrapper)
+		if mErr != nil {
+			sendError(sess, f.ID, "build_failed", mErr.Error())
+			return
+		}
+		blob, encErr := sd.d.cipher.Encrypt(ctx, pid, plaintext)
+		if encErr != nil {
+			sendError(sess, f.ID, "encrypt_failed", encErr.Error())
+			return
+		}
+		resp, sErr := sd.d.backendClient.Send(ctx, backendapi.SendRequest{
+			PeerID:         pid,
+			Payload:        blob,
+			PresenceSource: backendapi.PresenceSourceHaoma,
+		})
+		if sErr != nil {
 
-	sendResp, err := sd.d.backendClient.Send(ctx, backendapi.SendRequest{
-		PeerID:         req.PeerID,
-		Payload:        blob,
-		PresenceSource: backendapi.PresenceSourceHaoma,
-	})
-	if err != nil {
-		sendError(sess, f.ID, "backend_send", err.Error())
+			lastSendErr = sErr
+			slog.Warn("fan-out send to a device failed",
+				slog.String("peer_id", pid),
+				slog.String("msg_id", msgID),
+				slog.Any("err", sErr),
+			)
+			continue
+		}
+		envIDs = append(envIDs, resp.EnvelopeID)
+		if primaryEnvID == "" {
+			primarySeq = seq
+			primaryEnvID = resp.EnvelopeID
+			primaryPayload = len(blob)
+		}
+	}
+	if len(envIDs) == 0 {
+
+		sendError(sess, f.ID, "backend_send", lastSendErr.Error())
 		return
 	}
 
@@ -581,14 +652,14 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 		} else if _, persistErr := sd.d.events.AppendOutbound(events.OutboundParams{
 			ChatID:        dc.ID,
 			Kind:          events.KindText,
-			SenderSeq:     seq,
-			EnvelopeID:    sendResp.EnvelopeID,
+			SenderSeq:     primarySeq,
+			EnvelopeIDs:   envIDs,
 			MsgID:         msgID,
 			ExpireSeconds: expireSeconds,
 			Body:          body,
 		}); persistErr != nil {
 			slog.Error("persist outbound timeline event failed",
-				slog.String("envelope_id", sendResp.EnvelopeID),
+				slog.String("envelope_id", primaryEnvID),
 				slog.Any("err", persistErr),
 			)
 		} else {
@@ -598,18 +669,20 @@ func (sd *sessionDispatcher) handleSendText(ctx context.Context, sess *ipc.Sessi
 	}
 	slog.Debug("text sent",
 		slog.String("peer_id", req.PeerID),
-		slog.String("envelope_id", sendResp.EnvelopeID),
+		slog.String("envelope_id", primaryEnvID),
+		slog.Int("fanout_targets", len(targets)),
+		slog.Int("fanout_delivered", len(envIDs)),
 		slog.String("msg_id", msgID),
-		slog.Uint64("sender_seq", seq),
-		slog.Int("payload_bytes", len(blob)),
+		slog.Uint64("sender_seq", primarySeq),
+		slog.Int("payload_bytes", primaryPayload),
 		slog.String("presence_state", presenceState),
 		slog.String("sender_nick", senderNick),
 	)
 
 	resp, err := ipc.NewFrame(ipc.FrameTextSent, f.ID, ipc.SendTextResponse{
-		EnvelopeID: sendResp.EnvelopeID,
+		EnvelopeID: primaryEnvID,
 		MsgID:      msgID,
-		SenderSeq:  seq,
+		SenderSeq:  primarySeq,
 	})
 	if err != nil {
 		sendError(sess, f.ID, "encode_frame", err.Error())
@@ -1124,7 +1197,7 @@ func (sd *sessionDispatcher) handleSetAlias(ctx context.Context, sess *ipc.Sessi
 		sendError(sess, f.ID, "not_ready", "peer-meta store not wired")
 		return
 	}
-	changed, err := sd.d.peerMeta.SetAlias(req.PeerID, req.Alias)
+	changed, err := sd.d.peerMeta.SetAlias(req.PeerID, req.Alias, time.Now().Unix())
 	if err != nil {
 		sendError(sess, f.ID, "internal", fmt.Sprintf("set alias: %v", err))
 		return
@@ -1156,6 +1229,53 @@ func (sd *sessionDispatcher) handleSetAlias(ctx context.Context, sess *ipc.Sessi
 	}
 	if err := sess.Send(resp); err != nil {
 		slog.Warn("send nickname_updated frame failed", slog.Any("err", err))
+	}
+}
+
+func (sd *sessionDispatcher) handleSetPeerVerified(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
+	slog.Debug("handle set_peer_verified")
+	var req ipc.SetPeerVerifiedRequest
+	if err := json.Unmarshal(f.Payload, &req); err != nil {
+		sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
+		return
+	}
+	if req.PeerID == "" {
+		sendError(sess, f.ID, "bad_request", "peer_id required")
+		return
+	}
+	if sd.d.peerMeta == nil {
+		sendError(sess, f.ID, "not_ready", "peer-meta store not wired")
+		return
+	}
+	changed, err := sd.d.peerMeta.SetVerified(req.PeerID, req.Verified, time.Now().Unix())
+	if err != nil {
+		sendError(sess, f.ID, "internal", fmt.Sprintf("set verified: %v", err))
+		return
+	}
+	slog.Debug("peer-meta verified persisted",
+		slog.String("peer_id", req.PeerID),
+		slog.Bool("verified", req.Verified),
+		slog.Bool("changed", changed),
+	)
+	var peerEntry ipc.PeerEntry
+	if sd.d.backendClient != nil {
+		if p, err := sd.d.backendClient.Peer(ctx, req.PeerID); err == nil {
+			peerEntry = peerEntryFor(sd.d, p)
+		}
+	}
+	if peerEntry.ID == "" {
+		peerEntry = peerEntryFor(sd.d, backendapi.Peer{ID: req.PeerID})
+	}
+	if changed {
+		pushPeerMetaUpdated(ctx, sd.d, req.PeerID)
+	}
+	resp, err := ipc.NewFrame(ipc.FramePeerVerified, f.ID, ipc.PeerVerifiedResponse{Peer: peerEntry})
+	if err != nil {
+		sendError(sess, f.ID, "encode_frame", err.Error())
+		return
+	}
+	if err := sess.Send(resp); err != nil {
+		slog.Warn("send peer_verified frame failed", slog.Any("err", err))
 	}
 }
 
@@ -1980,6 +2100,7 @@ func (sd *sessionDispatcher) handleAcceptDHT(ctx context.Context, sess *ipc.Sess
 		return
 	}
 	seedPairNick(sd.d, inv.PeerID, inv.Frontend.Nick)
+	seedPeerFingerprint(sd.d, inv.PeerID)
 	if sd.d.chats != nil {
 		if _, _, err := sd.d.createDirectWithDefaults(inv.PeerID); err != nil {
 			slog.Warn("create direct chat after accept_dht failed",
@@ -2203,6 +2324,7 @@ func (sd *sessionDispatcher) runOnionInviteWait(ctx context.Context, sess *ipc.S
 	}
 	slog.Debug("pair: onion-wait pair.Import ok", slog.String("handle_id", handleID), slog.String("peer_id", inv.PeerID))
 	seedPairNick(sd.d, inv.PeerID, inv.Frontend.Nick)
+	seedPeerFingerprint(sd.d, inv.PeerID)
 
 	if sd.d.chats != nil {
 		if _, _, err := sd.d.createDirectWithDefaults(inv.PeerID); err != nil {
@@ -2217,7 +2339,7 @@ func (sd *sessionDispatcher) runOnionInviteWait(ctx context.Context, sess *ipc.S
 	if alias != "" {
 
 		if sd.d.peerMeta != nil {
-			if _, err := sd.d.peerMeta.SetAlias(inv.PeerID, alias); err != nil {
+			if _, err := sd.d.peerMeta.SetAlias(inv.PeerID, alias, time.Now().Unix()); err != nil {
 				slog.Debug("pair: onion-wait apply alias failed",
 					slog.String("peer_id", inv.PeerID),
 					slog.Any("err", err),
@@ -2225,6 +2347,20 @@ func (sd *sessionDispatcher) runOnionInviteWait(ctx context.Context, sess *ipc.S
 			} else {
 				slog.Debug("pair: onion-wait alias applied", slog.String("peer_id", inv.PeerID), slog.String("alias", alias))
 			}
+		}
+	}
+
+	if sd.d.cipher != nil && sd.d.peerSeq != nil {
+		state := sd.d.effectivePresenceState()
+		if err := sd.d.shipPresence(ctx, inv.PeerID, state); err != nil {
+			slog.Warn("pair: onion-wait initiator presence ship failed",
+				slog.String("peer_id", inv.PeerID),
+				slog.Any("err", err),
+			)
+		} else {
+			slog.Debug("pair: onion-wait initiator presence shipped (X3DH bootstrap)",
+				slog.String("peer_id", inv.PeerID),
+			)
 		}
 	}
 
@@ -2335,11 +2471,13 @@ func (sd *sessionDispatcher) handlePairOnionAccept(ctx context.Context, sess *ip
 		sendError(sess, f.ID, "bad_invite", err.Error())
 		return
 	}
-	if err := pair.Import(ctx, sd.d.stores, sd.d.backendClient, inviterInv, mine, minted); err != nil {
+
+	if err := pair.ImportResponder(ctx, sd.d.stores, sd.d.backendClient, inviterInv, mine, minted); err != nil {
 		sendError(sess, f.ID, "import_failed", err.Error())
 		return
 	}
 	seedPairNick(sd.d, inviterInv.PeerID, inviterInv.Frontend.Nick)
+	seedPeerFingerprint(sd.d, inviterInv.PeerID)
 	if sd.d.chats != nil {
 		if _, _, err := sd.d.createDirectWithDefaults(inviterInv.PeerID); err != nil {
 			slog.Warn("create direct chat after onion accept failed",
@@ -2349,7 +2487,7 @@ func (sd *sessionDispatcher) handlePairOnionAccept(ctx context.Context, sess *ip
 		}
 	}
 	if req.Alias != "" && sd.d.peerMeta != nil {
-		if _, err := sd.d.peerMeta.SetAlias(inviterInv.PeerID, req.Alias); err != nil {
+		if _, err := sd.d.peerMeta.SetAlias(inviterInv.PeerID, req.Alias, time.Now().Unix()); err != nil {
 			slog.Debug("apply alias after onion accept failed",
 				slog.String("peer_id", inviterInv.PeerID),
 				slog.Any("err", err),

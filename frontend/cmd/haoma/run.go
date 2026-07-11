@@ -65,6 +65,9 @@ type daemon struct {
 
 	chatFontScaleCache atomic.Pointer[float64]
 
+	defaultRetentionCache    atomic.Pointer[uint64]
+	defaultSendReceiptsCache atomic.Pointer[bool]
+
 	presenceCache *presence.Cache
 
 	settingsSnapshot atomic.Pointer[ipc.Settings]
@@ -212,6 +215,9 @@ func run(ctx context.Context, cfg config) error {
 	if err := d.loadChatFontScaleInto(); err != nil {
 		return fmt.Errorf("load chat-font-scale: %w", err)
 	}
+	if err := d.loadChatDefaultsInto(); err != nil {
+		return fmt.Errorf("load chat-defaults: %w", err)
+	}
 
 	tlsCfg, err := ipc.LoadOrCreateTLS(dataDir)
 	if err != nil {
@@ -231,6 +237,8 @@ func run(ctx context.Context, cfg config) error {
 		wp.SelfNick = d.selfNick()
 		wp.SelfNickIsDefault = d.selfNickIsDefault()
 		wp.ChatFontScale = d.chatFontScale()
+		wp.DefaultRetentionSec = d.defaultRetentionSec()
+		wp.DefaultSendReceipts = d.defaultSendReceipts()
 		return wp
 	}
 

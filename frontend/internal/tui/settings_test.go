@@ -148,11 +148,9 @@ func TestBuildProfileForm_SeedsNick(t *testing.T) {
 
 func TestBuildDefaultsForm_SeedsRetentionAndReceipts(t *testing.T) {
 	sp := &settingsPage{
-		initial: ipc.Settings{
-			DefaultRetentionSec: 3600,
-			DefaultSendReceipts: false,
-		},
-		dirty: map[string]bool{},
+		initialRetention: 3600,
+		initialReceipts:  false,
+		dirty:            map[string]bool{},
 	}
 	form := buildDefaultsForm(&App{}, sp)
 	items := inspectForm(form)

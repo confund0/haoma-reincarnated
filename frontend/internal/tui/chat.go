@@ -102,7 +102,7 @@ func (cp *chatPage) renderEntry(e chatEntry) string {
 
 		var fb fileBodyMin
 		_ = json.Unmarshal(ev.Body, &fb)
-		arrow = fileArrow(ev.Direction, fb.State)
+		arrow = fileArrow(ev.Direction, fb.State, e.delivery)
 	}
 	return cp.renderEventJSON(e.evJSON, arrow)
 }
@@ -131,24 +131,30 @@ type fileBodyMin struct {
 	State         string `json:"state"`
 	BytesReceived uint64 `json:"bytes_received,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
+	Caption       string `json:"caption,omitempty"`
 }
 
-func fileArrow(direction, state string) string {
-	switch state {
-	case "ready":
-		if direction == "out" {
+func fileArrow(direction, transferState, deliveryState string) string {
+	if direction == "out" {
+		switch deliveryState {
+		case "read":
+			return "[green]<<[-]"
+		case "delivered":
 			return "[green]<-[-]"
-		}
-		return "[green]->[-]"
-	case "failed_permanent", "expired":
-		if direction == "out" {
+		case "sent":
+			return "[gray]<[green]-[-]"
+		case "failed":
 			return "[red]✗-[-]"
-		}
-		return "[red]✗>[-]"
-	default:
-		if direction == "out" {
+		default:
 			return "[gray]<-[-]"
 		}
+	}
+	switch transferState {
+	case "ready":
+		return "[green]->[-]"
+	case "failed_permanent", "expired":
+		return "[red]✗>[-]"
+	default:
 		return "[gray]->[-]"
 	}
 }
@@ -265,8 +271,13 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 			name = "(unnamed)"
 		}
 		chip := renderFileStateChip(fb, cp.fileProgress[ev.MsgID])
-		return fmt.Sprintf("[gray]%s[white] %s file: %s (%s) %s",
+		row := fmt.Sprintf("[gray]%s[white] %s file: %s (%s) %s",
 			stamp, arrow, name, formatFileSize(fb.Size), chip)
+
+		if fb.Caption != "" {
+			row += "\n            " + fb.Caption
+		}
+		return row
 	case "timer_change":
 		var body struct {
 			From      uint32 `json:"from"`

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.mau.fi/libsignal/keys/prekey"
@@ -78,6 +80,38 @@ func pairAlice(t *testing.T) (alice, bob *signal.Stores) {
 	bState, bob := newStateAndStores(t)
 	processBundleFor(t, alice, bobID, bState)
 	return alice, bob
+}
+
+func TestConcurrentEncrypt_NoCounterCollision(t *testing.T) {
+	ctx := context.Background()
+	alice, bob := pairAlice(t)
+	aCipher := session.New(alice)
+	bCipher := session.New(bob)
+
+	const n = 64
+	blobs := make([][]byte, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			blobs[i], errs[i] = aCipher.Encrypt(ctx, bobID, []byte(fmt.Sprintf("msg-%d", i)))
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("concurrent encrypt #%d failed: %v", i, errs[i])
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		if _, err := bCipher.Decrypt(ctx, aliceID, blobs[i]); err != nil {
+			t.Fatalf("decrypt #%d failed (counter collision?): %v", i, err)
+		}
+	}
 }
 
 func TestRoundTrip_TypeTagTransition(t *testing.T) {

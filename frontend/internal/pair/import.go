@@ -15,6 +15,14 @@ import (
 )
 
 func Import(ctx context.Context, stores *signal.Stores, backend *backendapi.Client, inv *Invite, myKeys *MyKeys, minted backendapi.MintedOnion) error {
+	return importPeer(ctx, stores, backend, inv, myKeys, minted, true)
+}
+
+func ImportResponder(ctx context.Context, stores *signal.Stores, backend *backendapi.Client, inv *Invite, myKeys *MyKeys, minted backendapi.MintedOnion) error {
+	return importPeer(ctx, stores, backend, inv, myKeys, minted, false)
+}
+
+func importPeer(ctx context.Context, stores *signal.Stores, backend *backendapi.Client, inv *Invite, myKeys *MyKeys, minted backendapi.MintedOnion, initiate bool) error {
 	if err := inv.Validate(); err != nil {
 		return err
 	}
@@ -47,6 +55,9 @@ func Import(ctx context.Context, stores *signal.Stores, backend *backendapi.Clie
 		return fmt.Errorf("pair: save identity: %w", err)
 	}
 
+	if !initiate {
+		return nil
+	}
 	ser := serialize.NewJSONSerializer()
 	builder := session.NewBuilder(stores, stores, stores, stores, addr, ser)
 	if err := builder.ProcessBundle(ctx, bundle); err != nil {

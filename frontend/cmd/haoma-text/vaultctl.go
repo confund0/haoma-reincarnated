@@ -243,32 +243,6 @@ func (vc *vaultController) IsInsecureDefaultPIN() bool {
 	return vault.IsInsecureDefaultPIN(vc.payload.PIN)
 }
 
-func (vc *vaultController) SetDefaultRetentionSec(n uint64) error {
-	vc.mu.Lock()
-	defer vc.mu.Unlock()
-	prev := vc.payload.DefaultRetentionSec
-	vc.payload.DefaultRetentionSec = n
-	if err := vc.resealLocked(); err != nil {
-		vc.payload.DefaultRetentionSec = prev
-		return fmt.Errorf("re-seal: %w", err)
-	}
-	slog.Info("vault: DefaultRetentionSec set", slog.Uint64("seconds", n))
-	return nil
-}
-
-func (vc *vaultController) SetDefaultSendReceipts(b bool) error {
-	vc.mu.Lock()
-	defer vc.mu.Unlock()
-	prev := vc.payload.DefaultSendReceipts
-	vc.payload.DefaultSendReceipts = b
-	if err := vc.resealLocked(); err != nil {
-		vc.payload.DefaultSendReceipts = prev
-		return fmt.Errorf("re-seal: %w", err)
-	}
-	slog.Info("vault: DefaultSendReceipts set", slog.Bool("on", b))
-	return nil
-}
-
 func (vc *vaultController) SetNotifyShellEnabled(b bool) error {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
@@ -459,8 +433,6 @@ func (vc *vaultController) Settings() ipc.Settings {
 	defer vc.mu.Unlock()
 	p := vc.payload
 	return ipc.Settings{
-		DefaultRetentionSec:    p.DefaultRetentionSec,
-		DefaultSendReceipts:    p.DefaultSendReceipts,
 		IdleAction:             p.IdleAction,
 		IdleTimeoutSeconds:     p.IdleTimeoutSeconds,
 		PinValiditySec:         p.PinValiditySec,

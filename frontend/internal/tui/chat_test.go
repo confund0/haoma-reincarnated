@@ -29,19 +29,27 @@ func TestFormatFileSize_Boundaries(t *testing.T) {
 
 func TestFileArrow_StateAndDirectionMatrix(t *testing.T) {
 	cases := []struct {
-		dir, state string
-		want       string
+		name          string
+		dir           string
+		transferState string
+		deliveryState string
+		want          string
 	}{
-		{"out", "ready", "[green]<-[-]"},
-		{"in", "ready", "[green]->[-]"},
-		{"out", "downloading", "[gray]<-[-]"},
-		{"in", "awaiting_key", "[gray]->[-]"},
-		{"out", "failed_permanent", "[red]✗-[-]"},
-		{"in", "expired", "[red]✗>[-]"},
+
+		{"in ready", "in", "ready", "", "[green]->[-]"},
+		{"in awaiting_key", "in", "awaiting_key", "", "[gray]->[-]"},
+		{"in expired", "in", "expired", "", "[red]✗>[-]"},
+
+		{"out pending (empty)", "out", "ready", "", "[gray]<-[-]"},
+		{"out pending (enqueued)", "out", "ready", "enqueued", "[gray]<-[-]"},
+		{"out offer-delivered (half)", "out", "ready", "sent", "[gray]<[green]-[-]"},
+		{"out available", "out", "ready", "delivered", "[green]<-[-]"},
+		{"out read", "out", "ready", "read", "[green]<<[-]"},
+		{"out failed", "out", "ready", "failed", "[red]✗-[-]"},
 	}
 	for _, c := range cases {
-		if got := fileArrow(c.dir, c.state); got != c.want {
-			t.Errorf("fileArrow(%q,%q) = %q, want %q", c.dir, c.state, got, c.want)
+		if got := fileArrow(c.dir, c.transferState, c.deliveryState); got != c.want {
+			t.Errorf("%s: fileArrow(%q,%q,%q) = %q, want %q", c.name, c.dir, c.transferState, c.deliveryState, got, c.want)
 		}
 	}
 }

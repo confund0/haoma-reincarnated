@@ -42,6 +42,7 @@ type BaseChat struct {
 	CreatedAt         int64    `json:"created_at"`
 	LastActivityAt    int64    `json:"last_activity_at,omitempty"`
 	UnreadCount       uint32   `json:"unread_count,omitempty"`
+	LastReadAt        int64    `json:"last_read_at,omitempty"`
 	GroupName         string   `json:"group_name,omitempty"`
 	GroupAlias        string   `json:"group_alias,omitempty"`
 
@@ -56,9 +57,21 @@ type DirectChat struct {
 	BaseChat
 	MaxMembers int    `json:"max_members"`
 	PeerID     string `json:"peer_id"`
+
+	PeerIDs []string `json:"peer_ids,omitempty"`
 }
 
 func (d *DirectChat) Kind() Kind { return KindDirect }
+
+func (d *DirectChat) FanoutPeerIDs() []string {
+	if len(d.PeerIDs) > 0 {
+		return d.PeerIDs
+	}
+	if d.PeerID != "" {
+		return []string{d.PeerID}
+	}
+	return nil
+}
 
 type GroupChat struct {
 	BaseChat
@@ -139,6 +152,7 @@ func (s *Store) CreateDirect(peerID string) (*DirectChat, error) {
 		},
 		MaxMembers: MaxMembersDirect,
 		PeerID:     peerID,
+		PeerIDs:    []string{peerID},
 	}
 	if err := s.putDirect(dc); err != nil {
 		return nil, err
@@ -423,15 +437,22 @@ func (s *Store) ClearUnread(id ChatID) (bool, error) {
 	if id == "" {
 		return false, errors.New("chat: ClearUnread: empty id")
 	}
+
 	var changed bool
 	err := s.mutate(id, func(c Chat) error {
 		switch v := c.(type) {
 		case *DirectChat:
+			if v.LastActivityAt > v.LastReadAt {
+				v.LastReadAt = v.LastActivityAt
+			}
 			if v.UnreadCount != 0 {
 				v.UnreadCount = 0
 				changed = true
 			}
 		case *GroupChat:
+			if v.LastActivityAt > v.LastReadAt {
+				v.LastReadAt = v.LastActivityAt
+			}
 			if v.UnreadCount != 0 {
 				v.UnreadCount = 0
 				changed = true
@@ -567,6 +588,10 @@ func decodeRecord(raw []byte) (Chat, error) {
 		var dc DirectChat
 		if err := json.Unmarshal(rec.Data, &dc); err != nil {
 			return nil, fmt.Errorf("chat: decode direct: %w", err)
+		}
+
+		if len(dc.PeerIDs) == 0 && dc.PeerID != "" {
+			dc.PeerIDs = []string{dc.PeerID}
 		}
 		return &dc, nil
 	case KindGroup:

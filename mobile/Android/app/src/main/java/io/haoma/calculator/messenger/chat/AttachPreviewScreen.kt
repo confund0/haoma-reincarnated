@@ -1,6 +1,7 @@
 package io.haoma.calculator.messenger.chat
 
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -11,16 +12,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,14 +38,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import io.haoma.calculator.messenger.LocalHaomaTypography
 import io.haoma.calculator.saf.ImageDims
 import io.haoma.calculator.saf.SafBridge
 import io.haoma.calculator.saf.UriMetadata
@@ -54,13 +63,16 @@ internal fun AttachPreviewScreen(
     uri: Uri,
     peerLabel: String,
     onPickAgain: () -> Unit,
-    onSend: (compressed: Boolean) -> Unit,
+    onSend: (compressed: Boolean, caption: String) -> Unit,
 ) {
     val context = LocalContext.current
     var meta by remember(uri) { mutableStateOf<UriMetadata?>(null) }
     var dims by remember(uri) { mutableStateOf<ImageDims?>(null) }
     
     var compressed by remember(uri) { mutableStateOf(true) }
+    
+    
+    var caption by remember(uri) { mutableStateOf("") }
 
     LaunchedEffect(uri) {
         meta = withContext(Dispatchers.IO) { SafBridge.peekMetadata(context, uri) }
@@ -96,7 +108,8 @@ internal fun AttachPreviewScreen(
                 toggleEnabled = toggleEnabled,
                 onToggle = { compressed = !compressed },
             )
-            SendRow(onSend = { onSend(effectiveCompressed) })
+            CaptionField(value = caption, onChange = { caption = it })
+            SendRow(onSend = { onSend(effectiveCompressed, caption.trim()) })
         }
     }
 }
@@ -230,6 +243,47 @@ private fun SizeToggleRow(compressed: Boolean, onToggle: () -> Unit) {
     )
 }
 
+
+@Composable
+private fun CaptionField(value: String, onChange: (String) -> Unit) {
+    val type = LocalHaomaTypography.current
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .heightIn(min = CaptionMinHeight),
+        shape = RoundedCornerShape(CaptionCornerRadius),
+        color = ChatPalette.InboundBubble,
+        border = BorderStroke(width = 1.dp, color = ChatPalette.TextFaint),
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight(Alignment.CenterVertically)
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            textStyle = TextStyle(color = ChatPalette.Text, fontSize = type.bubbleBody),
+            cursorBrush = SolidColor(ChatPalette.Accent),
+            maxLines = 3,
+            decorationBox = { inner ->
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (value.isEmpty()) {
+                        BasicText(
+                            text = "Add a caption…",
+                            style = TextStyle(
+                                color = ChatPalette.TextDim,
+                                fontSize = type.bubbleBody,
+                            ),
+                        )
+                    }
+                    inner()
+                }
+            },
+        )
+    }
+}
+
 @Composable
 private fun SendRow(onSend: () -> Unit) {
     Row(
@@ -316,6 +370,10 @@ private fun extensionFor(meta: UriMetadata?): String {
     val ext = name.substring(dot + 1).uppercase(Locale.US).take(5)
     return ext
 }
+
+
+private val CaptionMinHeight = 46.dp
+private val CaptionCornerRadius = 23.dp
 
 private val SendButtonContainer = Color(0xFFD79921) 
 private val VideoAccent = Color(0xFF83A598)         

@@ -207,6 +207,11 @@ func newTestDaemon(t *testing.T, stub *haomadStub) (d *daemon, addr, certPEM, to
 	}
 	srv.OnSession = newSessionDispatcher(d).run
 
+	zeroTTL := uint64(0)
+	receiptsOn := true
+	d.defaultRetentionCache.Store(&zeroTTL)
+	d.defaultSendReceiptsCache.Store(&receiptsOn)
+
 	pushCtx, pushCancel := context.WithCancel(context.Background())
 	go pushTimelineEvents(pushCtx, bus, srv)
 	t.Cleanup(pushCancel)
@@ -964,6 +969,38 @@ func makeInboundCiphertext(t *testing.T, d *daemon, fromPeerID, text string, seq
 
 	_ = fromPeerID
 	return blob
+}
+
+func TestProcessInboxEntry_SeedsPeerFingerprint(t *testing.T) {
+	stub := startHaomadStub(t, []string{"our-onion"}, http.StatusCreated)
+	d, _, _, _ := newTestDaemon(t, stub)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const aliceID = "0000000000000000000000000000aaaa"
+	const senderTs int64 = 1742643890
+
+	if rec, _ := d.peerMeta.Get(aliceID); rec.Fingerprint != "" {
+		t.Fatalf("precondition: fingerprint should be empty, got %q", rec.Fingerprint)
+	}
+
+	blob := makeInboundCiphertext(t, d, aliceID, "hello bob", 7, senderTs)
+	processInboxEntry(ctx, d, backendapi.InboxEntry{
+		ArrivalAt: time.Now().UnixNano(),
+		PeerID:    aliceID,
+		Envelope: backendapi.RawEnvelope{
+			ID: "env-fp-1", Timestamp: senderTs, From: "alice-onion",
+			Kind: "text", Payload: blob, Mac: []byte{1, 2, 3, 4},
+		},
+	})
+
+	rec, err := d.peerMeta.Get(aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Fingerprint == "" {
+		t.Error("fingerprint not seeded after first decrypt — C1 joiner backfill failed")
+	}
 }
 
 func TestProcessInboxEntry_DecryptOK_PersistsAndPushes(t *testing.T) {

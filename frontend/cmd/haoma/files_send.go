@@ -75,7 +75,7 @@ func (sd *sessionDispatcher) handleSendFile(ctx context.Context, sess *ipc.Sessi
 		return
 	}
 
-	res, code, err := runSendFile(ctx, sd.d, dc, req.PeerID, req.Path, req.ImageMode)
+	res, code, err := runSendFile(ctx, sd.d, dc, req.PeerID, req.Path, req.ImageMode, req.Caption)
 	if err != nil {
 		sendError(sess, f.ID, code, err.Error())
 		return
@@ -98,7 +98,7 @@ func (sd *sessionDispatcher) handleSendFile(ctx context.Context, sess *ipc.Sessi
 	}
 }
 
-func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, path, imageMode string) (sendFileResult, string, error) {
+func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, path, imageMode, caption string) (sendFileResult, string, error) {
 
 	logger := slog.With(
 		slog.String("peer_id", peerID),
@@ -269,7 +269,7 @@ func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, pa
 			}
 			return sendFileResult{}, "internal", fmt.Errorf("next seq for peer %s: %w", rid, err)
 		}
-		wrapper, err := msg.BuildFileOffer(seq, time.Now().Unix(), msgID, token, "/files/"+token, name, size, mime, sha256Hex, dc.RetentionTTL)
+		wrapper, err := msg.BuildFileOffer(seq, time.Now().Unix(), msgID, token, "/files/"+token, name, size, mime, sha256Hex, caption, dc.RetentionTTL)
 		if err != nil {
 			zeroBytes(key)
 			if firstEnvelope == "" {
@@ -331,16 +331,18 @@ func runSendFile(ctx context.Context, d *daemon, dc *chat.DirectChat, peerID, pa
 		Mime:             mime,
 		Sha256Ciphertext: sha256Hex,
 		State:            string(files.StateReady),
+		Caption:          caption,
 	}
 	bodyRaw, err := json.Marshal(feBody)
 	if err != nil {
 
 		logger.Error("marshal outbound file event body failed", slog.Any("err", err))
 	} else if _, persistErr := d.events.AppendOutbound(events.OutboundParams{
-		ChatID:        dc.ID,
-		Kind:          events.KindFile,
-		SenderSeq:     firstSeq,
-		EnvelopeID:    firstEnvelope,
+		ChatID:    dc.ID,
+		Kind:      events.KindFile,
+		SenderSeq: firstSeq,
+
+		EnvelopeIDs:   []string{firstEnvelope},
 		MsgID:         msgID,
 		ExpireSeconds: dc.RetentionTTL,
 		Body:          bodyRaw,

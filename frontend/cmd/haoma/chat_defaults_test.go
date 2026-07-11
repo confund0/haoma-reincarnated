@@ -3,18 +3,18 @@ package main
 import (
 	"net/http"
 	"testing"
-
-	"haoma-frontend/internal/ipc"
 )
 
-func TestCreateDirectWithDefaults_FreshChatInheritsSnapshot(t *testing.T) {
+func setTestChatDefaults(d *daemon, retentionSec uint64, sendReceipts bool) {
+	d.defaultRetentionCache.Store(&retentionSec)
+	d.defaultSendReceiptsCache.Store(&sendReceipts)
+}
+
+func TestCreateDirectWithDefaults_FreshChatInheritsDefaults(t *testing.T) {
 	stub := startHaomadStub(t, nil, http.StatusCreated)
 	d, _, _, _ := newTestDaemon(t, stub)
 
-	d.settingsSnapshot.Store(&ipc.Settings{
-		DefaultRetentionSec: 3600,
-		DefaultSendReceipts: false,
-	})
+	setTestChatDefaults(d, 3600, false)
 
 	dc, fresh, err := d.createDirectWithDefaults("peer-fresh")
 	if err != nil {
@@ -28,10 +28,10 @@ func TestCreateDirectWithDefaults_FreshChatInheritsSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.RetentionTTL != 3600 {
-		t.Errorf("RetentionTTL = %d, want 3600 (inherited from snapshot)", got.RetentionTTL)
+		t.Errorf("RetentionTTL = %d, want 3600 (inherited from defaults)", got.RetentionTTL)
 	}
 	if !got.DisableReadReceipts {
-		t.Error("DisableReadReceipts = false, want true (snapshot DefaultSendReceipts=false)")
+		t.Error("DisableReadReceipts = false, want true (default send-receipts=false)")
 	}
 	_ = dc
 }
@@ -40,10 +40,7 @@ func TestCreateDirectWithDefaults_IdempotentPreservesOverrides(t *testing.T) {
 	stub := startHaomadStub(t, nil, http.StatusCreated)
 	d, _, _, _ := newTestDaemon(t, stub)
 
-	d.settingsSnapshot.Store(&ipc.Settings{
-		DefaultRetentionSec: 60,
-		DefaultSendReceipts: true,
-	})
+	setTestChatDefaults(d, 60, true)
 	if _, _, err := d.createDirectWithDefaults("peer-stable"); err != nil {
 		t.Fatal(err)
 	}
@@ -56,10 +53,7 @@ func TestCreateDirectWithDefaults_IdempotentPreservesOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d.settingsSnapshot.Store(&ipc.Settings{
-		DefaultRetentionSec: 600,
-		DefaultSendReceipts: true,
-	})
+	setTestChatDefaults(d, 600, true)
 
 	dc, fresh, err := d.createDirectWithDefaults("peer-stable")
 	if err != nil {
@@ -76,23 +70,27 @@ func TestCreateDirectWithDefaults_IdempotentPreservesOverrides(t *testing.T) {
 	}
 }
 
-func TestCreateDirectWithDefaults_NilSnapshotIsGraceful(t *testing.T) {
+func TestCreateDirectWithDefaults_UnconfiguredSeedsShippedFallbacks(t *testing.T) {
 	stub := startHaomadStub(t, nil, http.StatusCreated)
 	d, _, _, _ := newTestDaemon(t, stub)
 
-	d.settingsSnapshot.Store(nil)
+	d.defaultRetentionCache.Store(nil)
+	d.defaultSendReceiptsCache.Store(nil)
 
-	dc, fresh, err := d.createDirectWithDefaults("peer-nilcase")
-	if err != nil {
-		t.Fatalf("createDirectWithDefaults with nil snapshot: %v", err)
-	}
-	if !fresh {
+	if _, fresh, err := d.createDirectWithDefaults("peer-fallback"); err != nil {
+		t.Fatalf("createDirectWithDefaults: %v", err)
+	} else if !fresh {
 		t.Error("fresh expected on first create")
 	}
-	if dc.RetentionTTL != 0 {
-		t.Errorf("RetentionTTL = %d, want 0 (zero-value with nil snapshot)", dc.RetentionTTL)
+
+	got, err := d.chats.GetByDirectPeer("peer-fallback")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if dc.DisableReadReceipts {
-		t.Error("DisableReadReceipts should remain false-default with nil snapshot")
+	if got.RetentionTTL != uint32(defaultRetentionSecFallback) {
+		t.Errorf("RetentionTTL = %d, want %d (4w shipped fallback)", got.RetentionTTL, defaultRetentionSecFallback)
+	}
+	if got.DisableReadReceipts {
+		t.Error("DisableReadReceipts should be false — receipts default ON must survive the vault→badger move")
 	}
 }

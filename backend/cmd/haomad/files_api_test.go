@@ -265,29 +265,48 @@ func TestPeerOnion_FetchFile_NotFound(t *testing.T) {
 	}
 }
 
-func TestPeerOnion_FetchFile_Gone(t *testing.T) {
+func TestPeerOnion_FetchFile_MultiUse(t *testing.T) {
 	d := newFilesTestDaemon(t)
-	srv := httptest.NewServer(newPeerOnionMux(d))
-	defer srv.Close()
+	onion := httptest.NewServer(newPeerOnionMux(d))
+	defer onion.Close()
+	api := httptest.NewServer(d.apiHandler())
+	defer api.Close()
 
-	tokens, err := d.files.StageBlob(filesTestMsgID, []byte("x"), []string{filesPeerA}, 0)
+	ct := []byte("the-bytes-of-a-tiny-file")
+	tokens, err := d.files.StageBlob(filesTestMsgID, ct, []string{filesPeerA}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.files.DecrementReceipts(tokens[0]); err != nil {
-		t.Fatal(err)
+
+	fetch := func(tag string) {
+		resp, err := http.Get(onion.URL + "/files/" + tokens[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", tag, resp.StatusCode)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		if !bytes.Equal(got, ct) {
+			t.Fatalf("%s: body diverged", tag)
+		}
 	}
-	resp, err := http.Get(srv.URL + "/files/" + tokens[0])
-	if err != nil {
-		t.Fatal(err)
+
+	fetch("first pull")
+	fetch("retry pull")
+
+	rec := postJSON(t, api, "/files/receipts", receiveReceiptRequest{
+		Token: tokens[0], RecipientPeerID: filesPeerA,
+	})
+	rec.Body.Close()
+	if rec.StatusCode != http.StatusOK {
+		t.Fatalf("receipt ack status = %d, want 200", rec.StatusCode)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusGone {
-		t.Errorf("status = %d, want 410", resp.StatusCode)
-	}
+	fetch("post-receipt failover pull")
 }
 
-func TestAPI_ReceiveFileReceipt_DecrementsAndReturnsCount(t *testing.T) {
+func TestAPI_ReceiveFileReceipt_VerifiesAndTokenStaysValid(t *testing.T) {
 	d := newFilesTestDaemon(t)
 	srv := httptest.NewServer(d.apiHandler())
 	defer srv.Close()
@@ -308,12 +327,12 @@ func TestAPI_ReceiveFileReceipt_DecrementsAndReturnsCount(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	if out.ReceiptsRemaining != 0 {
-		t.Errorf("receipts_remaining = %d, want 0", out.ReceiptsRemaining)
+	if out.Token != tokens[0] {
+		t.Errorf("token = %q, want %q", out.Token, tokens[0])
 	}
 
-	if _, err := d.files.LookupToken(tokens[0]); err == nil {
-		t.Errorf("token still resolvable after redeem")
+	if _, err := d.files.LookupToken(tokens[0]); err != nil {
+		t.Errorf("token invalidated by receipt ack: %v", err)
 	}
 }
 
@@ -352,7 +371,7 @@ func TestAPI_ReceiveFileReceipt_UnknownTokenIs404(t *testing.T) {
 	}
 }
 
-func TestAPI_ReceiveFileReceipt_AlreadyRedeemedIs200_Idempotent(t *testing.T) {
+func TestAPI_ReceiveFileReceipt_DuplicateIs200_Idempotent(t *testing.T) {
 	d := newFilesTestDaemon(t)
 	srv := httptest.NewServer(d.apiHandler())
 	defer srv.Close()
@@ -361,16 +380,15 @@ func TestAPI_ReceiveFileReceipt_AlreadyRedeemedIs200_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.files.DecrementReceipts(tokens[0]); err != nil {
-		t.Fatal(err)
-	}
 
-	resp := postJSON(t, srv, "/files/receipts", receiveReceiptRequest{
-		Token: tokens[0], RecipientPeerID: filesPeerA,
-	})
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("idempotent re-call status = %d, want 200", resp.StatusCode)
+	for i := 0; i < 2; i++ {
+		resp := postJSON(t, srv, "/files/receipts", receiveReceiptRequest{
+			Token: tokens[0], RecipientPeerID: filesPeerA,
+		})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("ack %d status = %d, want 200", i, resp.StatusCode)
+		}
 	}
 }
 

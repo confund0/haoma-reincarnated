@@ -91,7 +91,7 @@ func ingestFileReceipt(ctx context.Context, d *daemon, fromPeerID string, body *
 		}
 		return
 	}
-	logger.Info("file receipt processed; key shipped + token decremented",
+	logger.Info("file receipt processed; key shipped + receipt verified",
 		slog.String("msg_id", meta.MsgID),
 	)
 }
@@ -277,6 +277,12 @@ func convergeFileReady(ctx context.Context, d *daemon, msgID string) {
 		}
 		stampFileEventState(d, meta.ChatID, msgID, files.StateReady, meta.Size, "")
 		logger.Info("file ready (sealed at rest)")
+
+		if peerID := directChatPeerID(d, meta.ChatID); peerID != "" {
+			d.shipFileDelivered(ctx, peerID, msgID)
+		}
+
+		d.autoMarkOnArrival(ctx, meta.ChatID)
 	case haveStaging && !haveKey:
 
 		if meta.State != files.StateAwaitingKey {
@@ -295,6 +301,81 @@ func convergeFileReady(ctx context.Context, d *daemon, msgID string) {
 	default:
 		logger.Debug("file converge: nothing in hand; nothing to do")
 	}
+}
+
+func directChatPeerID(d *daemon, chatID chat.ChatID) string {
+	if d.chats == nil {
+		return ""
+	}
+	c, err := d.chats.Get(chatID)
+	if err != nil {
+		return ""
+	}
+	dc, ok := c.(*chat.DirectChat)
+	if !ok {
+		return ""
+	}
+	return dc.PeerID
+}
+
+func (d *daemon) shipFileDelivered(ctx context.Context, peerID, offerMsgID string) {
+	if d.cipher == nil || d.peerSeq == nil || d.backendClient == nil {
+		slog.Warn("ship file delivered: wiring incomplete; skipping",
+			slog.String("peer_id", peerID),
+		)
+		return
+	}
+	seq, err := d.peerSeq.NextSendSeq(peerID)
+	if err != nil {
+		slog.Warn("ship file delivered: next seq failed",
+			slog.String("peer_id", peerID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	rcptMsgID, err := msg.NewID()
+	if err != nil {
+		slog.Warn("ship file delivered: new id failed", slog.Any("err", err))
+		return
+	}
+	wrapper, err := msg.BuildFileDelivered(seq, time.Now().Unix(), rcptMsgID, offerMsgID, 0)
+	if err != nil {
+		slog.Warn("ship file delivered: build wrapper failed", slog.Any("err", err))
+		return
+	}
+	plaintext, err := msg.Marshal(wrapper)
+	if err != nil {
+		slog.Warn("ship file delivered: marshal failed", slog.Any("err", err))
+		return
+	}
+	blob, err := d.cipher.Encrypt(ctx, peerID, plaintext)
+	if err != nil {
+		slog.Warn("ship file delivered: encrypt failed",
+			slog.String("peer_id", peerID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	resp, err := d.backendClient.Send(ctx, backendapi.SendRequest{
+		PeerID:         peerID,
+		Payload:        blob,
+		PresenceSource: backendapi.PresenceSourceHaoma,
+	})
+	if err != nil {
+		slog.Warn("ship file delivered: backend send failed",
+			slog.String("peer_id", peerID),
+			slog.String("offer_msg_id", offerMsgID),
+			slog.Any("err", err),
+		)
+		return
+	}
+	slog.Debug("file delivered receipt shipped",
+		slog.String("peer_id", peerID),
+		slog.String("offer_msg_id", offerMsgID),
+		slog.String("envelope_id", resp.EnvelopeID),
+		slog.String("receipt_msg_id", rcptMsgID),
+		slog.Uint64("sender_seq", seq),
+	)
 }
 
 func stagingExists(d *daemon, msgID string) bool {

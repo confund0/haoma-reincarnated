@@ -26,6 +26,188 @@ func newCounters(t *testing.T) (*peerstate.Counters, string) {
 	return peerstate.New(st), dir
 }
 
+func newMeta(t *testing.T) (*peerstate.Meta, string) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Lock() })
+	return peerstate.NewMeta(st), dir
+}
+
+func TestSetAlias_StampsAliasAt(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.SetAlias("alice", "Ally", 1000); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := m.Get("alice")
+	if rec.Alias != "Ally" || rec.AliasAt != 1000 {
+		t.Fatalf("alias=%q at=%d, want Ally/1000", rec.Alias, rec.AliasAt)
+	}
+
+	if _, err := m.SetAlias("alice", "Al", 2000); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := m.Get("alice"); rec.AliasAt != 2000 {
+		t.Errorf("AliasAt = %d, want 2000", rec.AliasAt)
+	}
+	if _, err := m.SetAlias("alice", "stale", 500); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := m.Get("alice"); rec.AliasAt != 2000 {
+		t.Errorf("AliasAt = %d after stale write, want 2000 (no backward move)", rec.AliasAt)
+	}
+}
+
+func TestSetVerified_LWW(t *testing.T) {
+	m, _ := newMeta(t)
+	changed, err := m.SetVerified("alice", true, 1000)
+	if err != nil || !changed {
+		t.Fatalf("first set: changed=%v err=%v, want changed=true", changed, err)
+	}
+
+	if changed, _ := m.SetVerified("alice", false, 500); changed {
+		t.Error("stale verified write should be rejected")
+	}
+	if rec, _ := m.Get("alice"); !rec.Verified || rec.VerifiedAt != 1000 {
+		t.Errorf("verified=%v at=%d, want true/1000 (stale rejected)", rec.Verified, rec.VerifiedAt)
+	}
+
+	if changed, _ := m.SetVerified("alice", false, 2000); !changed {
+		t.Error("newer verified write should apply")
+	}
+	if rec, _ := m.Get("alice"); rec.Verified || rec.VerifiedAt != 2000 {
+		t.Errorf("verified=%v at=%d, want false/2000", rec.Verified, rec.VerifiedAt)
+	}
+}
+
+func TestSetBlocked_LWWAndReportsChange(t *testing.T) {
+	m, _ := newMeta(t)
+	if changed, _ := m.SetBlocked("alice", true, 1000); !changed {
+		t.Error("first block should report changed")
+	}
+	if changed, _ := m.SetBlocked("alice", true, 1500); changed {
+		t.Error("re-blocking (same value) should report changed=false")
+	}
+	if rec, _ := m.Get("alice"); !rec.Blocked || rec.BlockedAt != 1500 {
+		t.Errorf("blocked=%v at=%d, want true/1500 (At bumps even on same-value)", rec.Blocked, rec.BlockedAt)
+	}
+}
+
+func TestSetVerified_RejectsEmptyPeerID(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.SetVerified("", true, 1); err == nil {
+		t.Error("empty peer id should error")
+	}
+}
+
+func TestSetFingerprint_SetsAndReports(t *testing.T) {
+	m, _ := newMeta(t)
+	changed, prev, err := m.SetFingerprint("alice", "fp-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || prev != "" {
+		t.Errorf("first seed: changed=%v prev=%q, want changed=true prev empty", changed, prev)
+	}
+	rec, err := m.Get("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Fingerprint != "fp-abc" {
+		t.Errorf("Fingerprint = %q, want fp-abc", rec.Fingerprint)
+	}
+}
+
+func TestSetFingerprint_Idempotent(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, _, err := m.SetFingerprint("alice", "fp-abc"); err != nil {
+		t.Fatal(err)
+	}
+	changed, prev, err := m.SetFingerprint("alice", "fp-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("re-seeding the same fingerprint should report changed=false")
+	}
+	if prev != "fp-abc" {
+		t.Errorf("prev = %q, want fp-abc", prev)
+	}
+}
+
+func TestSetFingerprint_ChangeReportsPrev(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, _, err := m.SetFingerprint("alice", "fp-old"); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, prev, err := m.SetFingerprint("alice", "fp-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || prev != "fp-old" {
+		t.Errorf("change: changed=%v prev=%q, want changed=true prev=fp-old", changed, prev)
+	}
+	rec, _ := m.Get("alice")
+	if rec.Fingerprint != "fp-new" {
+		t.Errorf("Fingerprint = %q, want fp-new (last write wins)", rec.Fingerprint)
+	}
+}
+
+func TestSetFingerprint_EmptyIsNoOp(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, _, err := m.SetFingerprint("alice", "fp-abc"); err != nil {
+		t.Fatal(err)
+	}
+	changed, _, err := m.SetFingerprint("alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("empty fingerprint must be a no-op, not clear the record")
+	}
+	rec, _ := m.Get("alice")
+	if rec.Fingerprint != "fp-abc" {
+		t.Errorf("Fingerprint = %q, want fp-abc (empty must not blank it)", rec.Fingerprint)
+	}
+}
+
+func TestSetFingerprint_PersistsAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := peerstate.NewMeta(st).SetFingerprint("alice", "fp-persist"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st2.Lock() })
+	rec, err := peerstate.NewMeta(st2).Get("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Fingerprint != "fp-persist" {
+		t.Errorf("Fingerprint after reopen = %q, want fp-persist", rec.Fingerprint)
+	}
+}
+
+func TestSetFingerprint_RejectsEmptyPeerID(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, _, err := m.SetFingerprint("", "fp"); err == nil {
+		t.Error("empty peer id should error")
+	}
+}
+
 func TestNextSendSeq_StartsAtOne(t *testing.T) {
 	c, _ := newCounters(t)
 	got, err := c.NextSendSeq("alice")

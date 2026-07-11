@@ -243,6 +243,7 @@ func chatToEntry(c chat.Chat) ipc.ChatEntry {
 			CreatedAt:           v.CreatedAt,
 			LastActivityAt:      v.LastActivityAt,
 			UnreadCount:         v.UnreadCount,
+			LastReadAt:          v.LastReadAt,
 			LastTimerChangeTs:   v.LastTimerChangeTs,
 			GroupName:           v.GroupName,
 			GroupAlias:          v.GroupAlias,
@@ -261,6 +262,7 @@ func chatToEntry(c chat.Chat) ipc.ChatEntry {
 			CreatedAt:           v.CreatedAt,
 			LastActivityAt:      v.LastActivityAt,
 			UnreadCount:         v.UnreadCount,
+			LastReadAt:          v.LastReadAt,
 			LastTimerChangeTs:   v.LastTimerChangeTs,
 		}
 	default:

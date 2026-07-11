@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.haoma.calculator.messenger.LocalHaomaTypography
 import io.haoma.calculator.messenger.TimelineEvent
 
 
@@ -57,6 +58,7 @@ internal fun ChatInput(
 ) {
     
     
+    val type = LocalHaomaTypography.current
     var editBuffer by remember { mutableStateOf("") }
     val editing = editingTarget != null
     val visible = if (editing) editBuffer else composeDraft
@@ -129,7 +131,7 @@ internal fun ChatInput(
                         .fillMaxWidth()
                         .wrapContentHeight(Alignment.CenterVertically)
                         .padding(horizontal = 14.dp, vertical = 8.dp),
-                    textStyle = TextStyle(color = ChatPalette.Text, fontSize = 14.sp),
+                    textStyle = TextStyle(color = ChatPalette.Text, fontSize = type.bubbleBody),
                     cursorBrush = SolidColor(ChatPalette.Accent),
                     maxLines = 5,
                     decorationBox = { inner ->
@@ -146,7 +148,7 @@ internal fun ChatInput(
                                     text = placeholder,
                                     style = TextStyle(
                                         color = ChatPalette.TextDim,
-                                        fontSize = 14.sp,
+                                        fontSize = type.bubbleBody,
                                     ),
                                 )
                             }

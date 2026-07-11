@@ -16,7 +16,7 @@ func (a *App) cmdSearch(query string) {
 	}
 	front, _ := a.pages.GetFrontPage()
 	if !strings.HasPrefix(front, "chat:") {
-		a.log("[red]/search[white] only works inside a chat window")
+		a.log("[red]/search[white] must be used inside a chat window")
 		return
 	}
 	chatID := strings.TrimPrefix(front, "chat:")

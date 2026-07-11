@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	qrcode "github.com/skip2/go-qrcode"
 
 	"haoma-frontend/internal/ipc"
 )
@@ -23,6 +25,149 @@ func parseCommand(input string) (name, rest string, ok bool) {
 		return trimmed, "", true
 	}
 	return trimmed[:i], strings.TrimLeft(trimmed[i+1:], " \t"), true
+}
+
+var slashCommands = []string{
+	"/about",
+	"/accept-dht", "/accept-file", "/accept-paste", "/accept-tor",
+	"/answer", "/attach", "/backup",
+	"/call", "/cancel-dht", "/cancel-tor",
+	"/change-pass", "/change-pin", "/chats", "/close", "/contacts",
+	"/decline", "/delete", "/edit", "/files", "/fsbrowse",
+	"/h", "/hangup", "/help", "/inspect",
+	"/invite-dht", "/invite-file", "/invite-paste", "/invite-tor",
+	"/msg", "/new-circuit", "/nick", "/panic", "/peers",
+	"/q", "/quit", "/react", "/reject", "/renew-circuit", "/retry",
+	"/rotate-tor", "/search", "/send-file",
+	"/set-idle-action", "/set-idle-timeout", "/set-pin-validity", "/set-tor-password",
+	"/settings", "/status", "/tor-info", "/verify", "/vidcall",
+}
+
+type winScope int
+
+const (
+	scopeOther winScope = iota
+	scopeStatus
+	scopeChat
+)
+
+var chatOnlyCommands = map[string]bool{
+	"/attach": true, "/call": true, "/delete": true, "/edit": true,
+	"/files": true, "/new-circuit": true, "/react": true, "/renew-circuit": true,
+	"/rotate-tor": true, "/search": true, "/vidcall": true,
+}
+
+var statusOnlyCommands = map[string]bool{
+	"/about":        true,
+	"/invite-paste": true, "/invite-file": true, "/invite-dht": true, "/invite-tor": true,
+	"/accept-paste": true, "/accept-file": true, "/accept-dht": true, "/accept-tor": true,
+	"/cancel-dht": true, "/cancel-tor": true,
+	"/set-idle-action": true, "/set-idle-timeout": true, "/set-pin-validity": true, "/set-tor-password": true,
+	"/change-pass": true, "/change-pin": true, "/backup": true,
+}
+
+func (a *App) currentScope() winScope {
+	front, _ := a.pages.GetFrontPage()
+	switch {
+	case strings.HasPrefix(front, "chat:"):
+		return scopeChat
+	case front == "status":
+		return scopeStatus
+	default:
+		return scopeOther
+	}
+}
+
+func commandsForContext(scope winScope) []string {
+	out := make([]string, 0, len(slashCommands))
+	for _, c := range slashCommands {
+		switch scope {
+		case scopeChat:
+			if statusOnlyCommands[c] {
+				continue
+			}
+		case scopeStatus:
+			if chatOnlyCommands[c] {
+				continue
+			}
+		default:
+			if statusOnlyCommands[c] || chatOnlyCommands[c] {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+type tabResult struct {
+	replace string
+	list    []string
+}
+
+func completeCommandToken(input string, cmds []string) tabResult {
+	trimmed := strings.TrimLeft(input, " \t")
+	if !strings.HasPrefix(trimmed, "/") || strings.ContainsAny(trimmed, " \t") {
+		return tabResult{}
+	}
+	var matches []string
+	for _, c := range cmds {
+		if strings.HasPrefix(c, trimmed) {
+			matches = append(matches, c)
+		}
+	}
+	if len(matches) == 0 {
+		return tabResult{}
+	}
+	sort.Strings(matches)
+	if len(matches) == 1 {
+		return tabResult{replace: matches[0] + " "}
+	}
+	if cp := longestCommonPrefix(matches); len(cp) > len(trimmed) {
+		return tabResult{replace: cp}
+	}
+	return tabResult{list: matches}
+}
+
+func longestCommonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	p := ss[0]
+	for _, s := range ss[1:] {
+		for !strings.HasPrefix(s, p) {
+			p = p[:len(p)-1]
+		}
+	}
+	return p
+}
+
+func (a *App) completeCommand() {
+	scope := a.currentScope()
+	res := completeCommandToken(a.input.GetText(), commandsForContext(scope))
+	if res.replace != "" {
+		a.input.SetText(res.replace)
+	}
+	if len(res.list) == 0 {
+		return
+	}
+	joined := strings.Join(res.list, " ")
+	if scope == scopeChat {
+		if cp := a.chatPages[a.frontChatID()]; cp != nil {
+			fmt.Fprintf(cp.view, "%savailable commands: %s%s\n", StyleCommandHint, joined, StyleReset)
+			cp.view.ScrollToEnd()
+			return
+		}
+	}
+	a.log("[gray]available commands:[white] %s", joined)
+}
+
+func (a *App) frontChatID() string {
+	front, _ := a.pages.GetFrontPage()
+	if !strings.HasPrefix(front, "chat:") {
+		return ""
+	}
+	return strings.TrimPrefix(front, "chat:")
 }
 
 func (a *App) handleInput(_ tcell.Key) {
@@ -54,6 +199,10 @@ func (a *App) handleInput(_ tcell.Key) {
 		}
 		a.log("not a command; type [yellow]/help[white] to see what's available")
 		return
+	}
+
+	if statusOnlyCommands[cmd] && a.currentScope() != scopeStatus {
+		a.switchTo("status")
 	}
 
 	switch cmd {
@@ -158,6 +307,8 @@ func (a *App) handleInput(_ tcell.Key) {
 		a.cmdStatus(rest)
 	case "/nick":
 		a.cmdNick(rest)
+	case "/verify":
+		a.cmdVerify(rest)
 	case "/call":
 		a.cmdCall()
 	case "/vidcall":
@@ -216,6 +367,7 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/new-circuit, /renew-circuit[white]         — flush this chat's tor circuit; next outbound rebuilds (peer identity stays put)")
 	a.log("  [yellow]/status [available|away|busy][white]        — set your presence; broadcasts (status pane) or targets the chat peer (chat pane). No arg = reset to available.")
 	a.log("  [yellow]/nick [name][white]                          — set your self-nick (embedded in outgoing invites). No arg = show current.")
+	a.log("  [yellow]/verify [peer-id] [on|off][white]           — mark a peer verified (synced trust bit; peer-id optional in chat window). No badge/enforcement yet.")
 	a.log("  [yellow]/inspect <msg_id>[white]                     — dev: dump the event row for a msg_id")
 	a.log("  [yellow]/about[white]                                — build identity: haoma-text + haoma + haomad versions, uptimes, protocol")
 	a.log("  [yellow]/help, /h[white]                             — this list")
@@ -234,6 +386,38 @@ func (a *App) showHelp() {
 	a.log("input: each window keeps its own draft; switching windows preserves what you typed without leaking it into another pane")
 	a.log("contacts pane: Enter opens chat, [yellow]e[white] edits contact (alias + unpair + delete)")
 	a.log("chats pane: Enter opens chat, [yellow]e[white] edits conversation (disappearing messages + clear/delete)")
+}
+
+func (a *App) cmdVerify(arg string) {
+	fields := strings.Fields(arg)
+	verified := true
+	if n := len(fields); n > 0 {
+		switch strings.ToLower(fields[n-1]) {
+		case "off", "false", "no", "0":
+			verified = false
+			fields = fields[:n-1]
+		case "on", "true", "yes", "1":
+			verified = true
+			fields = fields[:n-1]
+		}
+	}
+	var peerID string
+	if len(fields) > 0 {
+		peerID = fields[0]
+	} else if active := a.activeChat(); active != "" {
+		peerID = active
+	}
+	if peerID == "" {
+		a.log("[red]/verify[white] needs <peer-id> (or run inside a chat window)")
+		return
+	}
+	a.sendRequest(ipc.FrameSetPeerVerified, ipc.SetPeerVerifiedRequest{PeerID: peerID, Verified: verified}, func(f ipc.Frame) {
+		if f.Type == ipc.FrameError {
+			a.renderError(f)
+			return
+		}
+		a.log("[green]verified[white] %s → %v", shortID(peerID), verified)
+	})
 }
 
 func (a *App) cmdContacts() {
@@ -283,15 +467,15 @@ func (a *App) cmdSendFile(arg string) {
 			return
 		}
 	}
-	a.dispatchSendFileToPeer(peerID, path)
+	a.dispatchSendFileToPeer(peerID, path, "")
 }
 
-func (a *App) dispatchSendFileToPeer(peerID, path string) {
+func (a *App) dispatchSendFileToPeer(peerID, path, caption string) {
 	if a.peerRetiredAt(peerID) != 0 {
 		a.log("[red]peer retired[white] — file not sent")
 		return
 	}
-	a.sendRequest(ipc.FrameSendFile, ipc.SendFileRequest{PeerID: peerID, Path: path}, func(f ipc.Frame) {
+	a.sendRequest(ipc.FrameSendFile, ipc.SendFileRequest{PeerID: peerID, Path: path, Caption: caption}, func(f ipc.Frame) {
 		if f.Type == ipc.FrameError {
 			a.renderError(f)
 			return
@@ -912,8 +1096,40 @@ func (a *App) revealPendingOnionInvite(handleID string, fallbackTimeout bool) {
 	} else {
 		a.log("[green]ready[white] — share these %d words OOB:", len(pending.words))
 	}
-	a.log("  [yellow]%s", strings.Join(pending.words, " "))
+	words := strings.Join(pending.words, " ")
+	a.log("  [yellow]%s", words)
+	a.renderInviteQR(words)
 	a.log("[gray]waiting for the joiner to dial…[white]")
+}
+
+func (a *App) renderInviteQR(payload string) {
+	code, err := qrcode.New(payload, qrcode.Medium)
+	if err != nil {
+		return
+	}
+	bitmap := code.Bitmap()
+	cell := func(dark bool) string {
+		if dark {
+			return "black"
+		}
+		return "white"
+	}
+	var b strings.Builder
+	for y := 0; y < len(bitmap); y += 2 {
+		b.Reset()
+		for x := range bitmap[y] {
+			top := bitmap[y][x]
+			bottom := false
+			if y+1 < len(bitmap) {
+				bottom = bitmap[y+1][x]
+			}
+
+			fmt.Fprintf(&b, "[%s:%s]▀", cell(top), cell(bottom))
+		}
+		b.WriteString("[-:-]")
+		fmt.Fprintf(a.statusView, "%s\n", b.String())
+	}
+	a.statusView.ScrollToEnd()
 }
 
 func (a *App) cmdAcceptTor(arg string) {

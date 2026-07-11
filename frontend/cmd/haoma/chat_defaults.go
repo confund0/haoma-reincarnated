@@ -9,18 +9,16 @@ import (
 )
 
 func (d *daemon) applyChatDefaults(chatID chat.ChatID) {
-	snap := d.settingsSnapshot.Load()
-	if snap == nil {
-		return
-	}
-	if err := d.chats.SetRetentionTTL(chatID, uint32(snap.DefaultRetentionSec)); err != nil {
+	retention := d.defaultRetentionSec()
+	sendReceipts := d.defaultSendReceipts()
+	if err := d.chats.SetRetentionTTL(chatID, uint32(retention)); err != nil {
 		slog.Warn("apply chat default retention failed",
 			slog.String("chat_id", string(chatID)),
 			slog.Any("err", err),
 		)
 	}
 
-	if err := d.chats.SetDisableReadReceipts(chatID, !snap.DefaultSendReceipts); err != nil {
+	if err := d.chats.SetDisableReadReceipts(chatID, !sendReceipts); err != nil {
 		slog.Warn("apply chat default receipts failed",
 			slog.String("chat_id", string(chatID)),
 			slog.Any("err", err),
@@ -28,8 +26,8 @@ func (d *daemon) applyChatDefaults(chatID chat.ChatID) {
 	}
 	slog.Debug("chat defaults applied",
 		slog.String("chat_id", string(chatID)),
-		slog.Uint64("retention_sec", snap.DefaultRetentionSec),
-		slog.Bool("send_receipts", snap.DefaultSendReceipts),
+		slog.Uint64("retention_sec", retention),
+		slog.Bool("send_receipts", sendReceipts),
 	)
 }
 

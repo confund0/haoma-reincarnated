@@ -16,7 +16,7 @@ fun MessengerStore.timelineFor(chatId: String): StateFlow<TimelineCache> =
     _timelines
         .map { it[chatId] ?: TimelineCache(chatId = chatId) }
         .distinctUntilChanged()
-        .stateIn(scope, SharingStarted.Eagerly, TimelineCache(chatId = chatId))
+        .stateIn(scope, SharingStarted.Eagerly, _timelines.value[chatId] ?: TimelineCache(chatId = chatId))
 
 
 fun MessengerStore.loadTimeline(chatId: String, head: Boolean = false) {

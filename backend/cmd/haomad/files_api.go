@@ -29,14 +29,6 @@ func (d *daemon) handleFileFetch(w http.ResponseWriter, r *http.Request) {
 			slog.String("remote", r.RemoteAddr),
 		)
 		return
-	case errors.Is(err, files.ErrTokenInvalidated):
-		http.Error(w, "token invalidated", http.StatusGone)
-		slog.Debug("/files invalidated",
-			slog.String("status", "410"),
-			slog.String("msg_id", row.MsgID),
-			slog.String("recipient_peer_id", row.RecipientPeerID),
-		)
-		return
 	case err != nil:
 		slog.Warn("/files lookup failed", slog.Any("err", err))
 		writeErr(w, http.StatusInternalServerError, err)
@@ -287,8 +279,7 @@ type receiveReceiptRequest struct {
 }
 
 type receiveReceiptResponse struct {
-	Token             string `json:"token"`
-	ReceiptsRemaining int    `json:"receipts_remaining"`
+	Token string `json:"token"`
 }
 
 func (d *daemon) handleReceiveFileReceipt(w http.ResponseWriter, r *http.Request) {
@@ -321,23 +312,6 @@ func (d *daemon) handleReceiveFileReceipt(w http.ResponseWriter, r *http.Request
 			slog.String("recipient_peer_id", req.RecipientPeerID),
 		)
 		return
-	case errors.Is(err, files.ErrTokenInvalidated):
-
-		if row.RecipientPeerID != req.RecipientPeerID {
-
-			http.Error(w, "recipient mismatch", http.StatusForbidden)
-			slog.Warn("/files/receipts recipient mismatch on invalidated token",
-				slog.String("token", req.Token),
-				slog.String("claimed_recipient", req.RecipientPeerID),
-				slog.String("bound_recipient", row.RecipientPeerID),
-			)
-			return
-		}
-		writeJSON(w, http.StatusOK, receiveReceiptResponse{
-			Token:             req.Token,
-			ReceiptsRemaining: 0,
-		})
-		return
 	case err != nil:
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -354,24 +328,12 @@ func (d *daemon) handleReceiveFileReceipt(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := d.files.DecrementReceipts(req.Token); err != nil {
-
-		if errors.Is(err, files.ErrTokenNotFound) {
-			http.Error(w, "unknown token", http.StatusNotFound)
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
 	slog.Info("file receipt acked",
 		slog.String("token", req.Token),
 		slog.String("recipient_peer_id", req.RecipientPeerID),
 		slog.String("msg_id", row.MsgID),
 	)
-	writeJSON(w, http.StatusOK, receiveReceiptResponse{
-		Token:             req.Token,
-		ReceiptsRemaining: row.ReceiptsRemaining - 1,
-	})
+	writeJSON(w, http.StatusOK, receiveReceiptResponse{Token: req.Token})
 }
 
 func (d *daemon) handleStagingDelete(w http.ResponseWriter, r *http.Request) {

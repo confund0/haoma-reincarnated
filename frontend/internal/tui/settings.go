@@ -66,6 +66,9 @@ type settingsPage struct {
 
 	initialNick string
 
+	initialRetention uint64
+	initialReceipts  bool
+
 	dirty map[string]bool
 
 	saveHandlers map[string]func() error
@@ -86,7 +89,9 @@ func (a *App) cmdSettings() {
 	}
 	initial := a.VaultCtl.Settings()
 	initialNick := a.selfNick
-	sp := newSettingsPage(a, initial, initialNick)
+	initialRetention := a.defaultRetentionSec
+	initialReceipts := a.defaultSendReceipts
+	sp := newSettingsPage(a, initial, initialNick, initialRetention, initialReceipts)
 	a.settings = sp
 	a.winOrder = append(a.winOrder, pageNameSettings)
 	a.winMu.Unlock()
@@ -191,13 +196,15 @@ func (a *App) pushSettingsSync() {
 	a.sendRequest(ipc.FrameSyncSettings, ipc.SyncSettingsRequest{Settings: settings}, nil)
 }
 
-func newSettingsPage(a *App, initial ipc.Settings, initialNick string) *settingsPage {
+func newSettingsPage(a *App, initial ipc.Settings, initialNick string, initialRetention uint64, initialReceipts bool) *settingsPage {
 	sp := &settingsPage{
-		initial:      initial,
-		initialNick:  initialNick,
-		dirty:        map[string]bool{},
-		saveHandlers: map[string]func() error{},
-		activePage:   settingsDomainsOrder[0],
+		initial:          initial,
+		initialNick:      initialNick,
+		initialRetention: initialRetention,
+		initialReceipts:  initialReceipts,
+		dirty:            map[string]bool{},
+		saveHandlers:     map[string]func() error{},
+		activePage:       settingsDomainsOrder[0],
 	}
 
 	sp.list = tview.NewList().ShowSecondaryText(false)
@@ -362,10 +369,10 @@ func buildDefaultsForm(a *App, sp *settingsPage) *tview.Form {
 		SetLabel("Default disappearing messages").
 		SetOptions(retentionLabels(), nil)
 	form.AddFormItem(dropdown)
-	dropdown.SetCurrentOption(retentionOptionIndex(uint32(sp.initial.DefaultRetentionSec)))
+	dropdown.SetCurrentOption(retentionOptionIndex(uint32(sp.initialRetention)))
 	dropdown.SetSelectedFunc(func(_ string, _ int) { sp.markDirty(settingsDomainDefaults) })
 
-	receiptsBox := newBracketCheckbox("Send read receipts by default", sp.initial.DefaultSendReceipts, func(_ bool) {
+	receiptsBox := newBracketCheckbox("Send read receipts by default", sp.initialReceipts, func(_ bool) {
 		sp.markDirty(settingsDomainDefaults)
 	})
 	form.AddFormItem(receiptsBox)
@@ -377,18 +384,19 @@ func buildDefaultsForm(a *App, sp *settingsPage) *tview.Form {
 			ttl = uint64(retentionLevels[idx].seconds)
 		}
 		receipts := receiptsBox.Checked()
-		if err := a.VaultCtl.Mutate("defaults", func(p *vault.Payload) error {
-			p.DefaultRetentionSec = ttl
-			p.DefaultSendReceipts = receipts
-			return nil
-		}); err != nil {
-			return err
-		}
-		sp.initial.DefaultRetentionSec = ttl
-		sp.initial.DefaultSendReceipts = receipts
+		a.sendRequest(ipc.FrameSetChatDefaults, ipc.SetChatDefaultsRequest{
+			RetentionSec: ttl,
+			SendReceipts: receipts,
+		}, func(f ipc.Frame) {
+			if f.Type == ipc.FrameError {
+				a.renderError(f)
+				return
+			}
+			a.log("[green]chat defaults saved[white]")
+		})
+		sp.initialRetention = ttl
+		sp.initialReceipts = receipts
 		sp.markClean(settingsDomainDefaults)
-		a.pushSettingsSync()
-		a.log("[green]chat defaults saved[white]")
 		return nil
 	}
 	sp.registerSave(settingsDomainDefaults, save)

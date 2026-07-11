@@ -25,6 +25,8 @@ const (
 	KindFileReceipt Kind = "file_receipt"
 	KindFileKey     Kind = "file_key"
 
+	KindFileDelivered Kind = "file_delivered"
+
 	KindCallOffer   Kind = "call_offer"
 	KindCallAccept  Kind = "call_accept"
 	KindCallReject  Kind = "call_reject"
@@ -91,6 +93,7 @@ type FileOfferBody struct {
 	Size             uint64 `json:"size"`
 	Mime             string `json:"mime"`
 	Sha256Ciphertext string `json:"sha256_ciphertext"`
+	Caption          string `json:"caption,omitempty"`
 }
 
 type FileReceiptBody struct {
@@ -101,6 +104,10 @@ type FileKeyBody struct {
 	Token    string `json:"token"`
 	KeyBytes string `json:"key"`
 	Nonce    string `json:"nonce"`
+}
+
+type FileDeliveredBody struct {
+	Target string `json:"target"`
 }
 
 type ReactionBody struct {
@@ -405,7 +412,7 @@ func (w *Wrapper) Presence() (*PresenceBody, error) {
 	return &b, nil
 }
 
-func BuildFileOffer(seq uint64, ts int64, msgID, token, urlPath, name string, size uint64, mime, sha256Ciphertext string, expireSeconds uint32) (*Wrapper, error) {
+func BuildFileOffer(seq uint64, ts int64, msgID, token, urlPath, name string, size uint64, mime, sha256Ciphertext, caption string, expireSeconds uint32) (*Wrapper, error) {
 	if seq == 0 {
 		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
 	}
@@ -434,6 +441,7 @@ func BuildFileOffer(seq uint64, ts int64, msgID, token, urlPath, name string, si
 		Size:             size,
 		Mime:             mime,
 		Sha256Ciphertext: sha256Ciphertext,
+		Caption:          caption,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("msg: marshal file_offer body: %w", err)
@@ -513,6 +521,48 @@ func BuildFileKey(seq uint64, ts int64, msgID, token string, keyBytes, nonce []b
 		ExpireSeconds: expireSeconds,
 		Body:          body,
 	}, nil
+}
+
+func BuildFileDelivered(seq uint64, ts int64, msgID, targetMsgID string, expireSeconds uint32) (*Wrapper, error) {
+	if seq == 0 {
+		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
+	}
+	if ts <= 0 {
+		return nil, fmt.Errorf("%w: ts must be > 0", ErrMissingField)
+	}
+	if msgID == "" {
+		return nil, fmt.Errorf("%w: msg_id required", ErrMissingField)
+	}
+	if targetMsgID == "" {
+		return nil, fmt.Errorf("%w: target required", ErrMissingField)
+	}
+	body, err := json.Marshal(FileDeliveredBody{Target: targetMsgID})
+	if err != nil {
+		return nil, fmt.Errorf("msg: marshal file_delivered body: %w", err)
+	}
+	return &Wrapper{
+		V:             Version,
+		Seq:           seq,
+		Ts:            ts,
+		MsgID:         msgID,
+		Kind:          KindFileDelivered,
+		ExpireSeconds: expireSeconds,
+		Body:          body,
+	}, nil
+}
+
+func (w *Wrapper) FileDelivered() (*FileDeliveredBody, error) {
+	if w.Kind != KindFileDelivered {
+		return nil, fmt.Errorf("msg: wrapper kind is %q, not %q", w.Kind, KindFileDelivered)
+	}
+	var b FileDeliveredBody
+	if err := json.Unmarshal(w.Body, &b); err != nil {
+		return nil, fmt.Errorf("msg: decode file_delivered body: %w", err)
+	}
+	if b.Target == "" {
+		return nil, fmt.Errorf("%w: target", ErrMissingField)
+	}
+	return &b, nil
 }
 
 func (w *Wrapper) FileOffer() (*FileOfferBody, error) {

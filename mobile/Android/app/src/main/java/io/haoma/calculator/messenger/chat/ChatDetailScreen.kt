@@ -71,7 +71,7 @@ fun ChatDetailScreen(
 ) {
     val health by store.health.collectAsStateWithLifecycle()
     val typography = remember(health.chatFontScale) { HaomaTypography(health.chatFontScale) }
-    val cache by store.timelineFor(chatId).collectAsStateWithLifecycle()
+    val cache by remember(chatId) { store.timelineFor(chatId) }.collectAsStateWithLifecycle()
     val chats by store.chats.collectAsStateWithLifecycle()
     val presenceMap by store.presence.collectAsStateWithLifecycle()
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
@@ -317,8 +317,8 @@ fun ChatDetailScreen(
                 pendingAttachUri = null
                 attachLauncher.launch(arrayOf("*/*"))
             },
-            onSend = { compressed ->
-                store.attachFromUri(chatId, uri, compressed)
+            onSend = { compressed, caption ->
+                store.attachFromUri(chatId, uri, compressed, caption)
                 pendingAttachUri = null
             },
         )

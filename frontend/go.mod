@@ -9,6 +9,7 @@ require (
 	github.com/h2non/filetype v1.1.3
 	github.com/klauspost/compress v1.18.0
 	github.com/rivo/tview v0.42.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/libsignal v0.2.1
 	golang.org/x/crypto v0.42.0
 	golang.org/x/image v0.42.0

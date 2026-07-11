@@ -13,7 +13,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 
-fun MessengerStore.attachFromUri(chatId: String, uri: Uri, compressed: Boolean = true) {
+fun MessengerStore.attachFromUri(
+    chatId: String,
+    uri: Uri,
+    compressed: Boolean = true,
+    caption: String = "",
+) {
     if (chatId.isEmpty()) return
     val ctx = appContext ?: run {
         appendStatus("attach: no app context", level = StatusLevel.WARN)
@@ -39,7 +44,7 @@ fun MessengerStore.attachFromUri(chatId: String, uri: Uri, compressed: Boolean =
             val mode = if (compressed) "compressed" else "original"
             val reply = c.request(
                 type = FrameType.SendFile,
-                payload = SendFileRequest(peerId, copied.path, mode).toJson(),
+                payload = SendFileRequest(peerId, copied.path, mode, caption).toJson(),
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)

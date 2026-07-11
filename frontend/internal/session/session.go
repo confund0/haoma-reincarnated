@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"go.mau.fi/libsignal/protocol"
 	"go.mau.fi/libsignal/serialize"
@@ -23,16 +24,39 @@ var ErrNoSession = errors.New("session: no session record for peer")
 type Cipher struct {
 	stores *signal.Stores
 	ser    *serialize.Serializer
+
+	muPeers sync.Mutex
+	perPeer map[string]*sync.Mutex
 }
 
 func New(stores *signal.Stores) *Cipher {
 	return &Cipher{
-		stores: stores,
-		ser:    serialize.NewJSONSerializer(),
+		stores:  stores,
+		ser:     serialize.NewJSONSerializer(),
+		perPeer: make(map[string]*sync.Mutex),
 	}
 }
 
+func (c *Cipher) peerGate(peerID string) *sync.Mutex {
+	c.muPeers.Lock()
+	defer c.muPeers.Unlock()
+	if c.perPeer == nil {
+		c.perPeer = make(map[string]*sync.Mutex)
+	}
+	m, ok := c.perPeer[peerID]
+	if !ok {
+		m = &sync.Mutex{}
+		c.perPeer[peerID] = m
+	}
+	return m
+}
+
 func (c *Cipher) Encrypt(ctx context.Context, peerID string, plaintext []byte) ([]byte, error) {
+
+	gate := c.peerGate(peerID)
+	gate.Lock()
+	defer gate.Unlock()
+
 	addr := protocol.NewSignalAddress(peerID, DeviceID)
 
 	contains, err := c.stores.ContainsSession(ctx, addr)
@@ -44,7 +68,9 @@ func (c *Cipher) Encrypt(ctx context.Context, peerID string, plaintext []byte) (
 	}
 	cipher := c.cipherFor(addr)
 
+	before := c.snapshot(ctx, addr)
 	msg, err := cipher.Encrypt(ctx, plaintext)
+	c.logRatchetOp(ctx, "encrypt", peerID, peekKind(plaintext), 0, before, c.snapshot(ctx, addr), err)
 	if err != nil {
 		return nil, fmt.Errorf("session: encrypt to %s: %w", peerID, err)
 	}
@@ -59,11 +85,17 @@ func (c *Cipher) Decrypt(ctx context.Context, peerID string, blob []byte) ([]byt
 	if len(blob) < 1 {
 		return nil, ErrShortBlob
 	}
+
+	gate := c.peerGate(peerID)
+	gate.Lock()
+	defer gate.Unlock()
+
 	addr := protocol.NewSignalAddress(peerID, DeviceID)
 	cipher := c.cipherFor(addr)
 
 	tag := blob[0]
 	body := blob[1:]
+	before := c.snapshot(ctx, addr)
 	switch tag {
 	case protocol.WHISPER_TYPE:
 		msg, err := protocol.NewSignalMessageFromBytes(body, c.ser.SignalMessage)
@@ -71,6 +103,7 @@ func (c *Cipher) Decrypt(ctx context.Context, peerID string, blob []byte) ([]byt
 			return nil, fmt.Errorf("session: parse SignalMessage from %s: %w", peerID, err)
 		}
 		plain, err := cipher.Decrypt(ctx, msg)
+		c.logRatchetOp(ctx, "decrypt", peerID, peekKind(plain), tag, before, c.snapshot(ctx, addr), err)
 		if err != nil {
 			return nil, fmt.Errorf("session: decrypt SignalMessage from %s: %w", peerID, err)
 		}
@@ -81,6 +114,7 @@ func (c *Cipher) Decrypt(ctx context.Context, peerID string, blob []byte) ([]byt
 			return nil, fmt.Errorf("session: parse PreKeySignalMessage from %s: %w", peerID, err)
 		}
 		plain, err := cipher.DecryptMessage(ctx, msg)
+		c.logRatchetOp(ctx, "decrypt", peerID, peekKind(plain), tag, before, c.snapshot(ctx, addr), err)
 		if err != nil {
 			return nil, fmt.Errorf("session: decrypt PreKeySignalMessage from %s: %w", peerID, err)
 		}

@@ -15,8 +15,6 @@ fun MessengerStore.pushSettingsSync() {
     val session = vaultSessionProvider() ?: return
     val snap = session.snapshot()
     val payload = SettingsSnapshot(
-        defaultRetentionSec = snap.optLong("default_retention_sec", 0L),
-        defaultSendReceipts = snap.optBoolean("default_send_receipts", true),
         idleAction = snap.optString("idle_action", ""),
         idleTimeoutSeconds = snap.optInt("idle_timeout_seconds", 0),
         pinValiditySec = snap.optInt("pin_validity_sec", 0),
@@ -174,20 +172,33 @@ suspend fun MessengerStore.saveNotificationSettings(settings: NotificationSettin
 
 
 fun MessengerStore.loadChatDefaults(): ChatDefaultsSettings? {
-    val session = vaultSessionProvider() ?: return null
-    val snap = session.snapshot()
+    if (ipc == null) return null
+    val h = _health.value
     return ChatDefaultsSettings(
-        retentionSeconds = snap.optLong("default_retention_sec", 0L),
-        sendReceipts = snap.optBoolean("default_send_receipts", true),
+        retentionSeconds = h.defaultRetentionSec,
+        sendReceipts = h.defaultSendReceipts,
     )
 }
 
 
-suspend fun MessengerStore.saveChatDefaults(settings: ChatDefaultsSettings): Result<Unit> =
-    resealVault("defaults", successMsg = "chat defaults saved", failLabel = "chat defaults") { p ->
-        p.put("default_retention_sec", settings.retentionSeconds)
-        p.put("default_send_receipts", settings.sendReceipts)
+suspend fun MessengerStore.saveChatDefaults(settings: ChatDefaultsSettings): Result<Unit> {
+    val c = ipc ?: return Result.failure(IllegalStateException("daemon not connected"))
+    return try {
+        val reply = c.request(
+            type = FrameType.SetChatDefaults,
+            payload = SetChatDefaultsRequest(settings.retentionSeconds, settings.sendReceipts).toJson(),
+        )
+        if (reply.type == FrameType.Error) {
+            val err = reply.payload?.let(ErrorPayload::fromJson)
+            Result.failure(IllegalStateException(err?.message ?: "chat defaults save rejected"))
+        } else {
+            appendStatus("chat defaults saved")
+            Result.success(Unit)
+        }
+    } catch (t: Throwable) {
+        Result.failure(t)
     }
+}
 
 
 fun MessengerStore.loadTorSettings(): TorSettings? {

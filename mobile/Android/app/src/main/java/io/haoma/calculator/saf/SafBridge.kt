@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.ExifInterface
 import android.net.Uri
+import io.haoma.calculator.core.ImageOrient
 import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
 import io.haoma.calculator.log.Logger
@@ -58,6 +60,11 @@ object SafBridge {
                 Logger.w("saf", "heic-normalize: decodeStream returned null for $uri; sending raw")
                 false
             }
+            
+            
+            val orientation = resolver.openInputStream(uri)?.use { ImageOrient.read(it) }
+                ?: ExifInterface.ORIENTATION_NORMAL
+            bitmap = ImageOrient.apply(bitmap, orientation)
             FileOutputStream(dest).use { out ->
                 if (!bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)) {
                     Logger.w("saf", "heic-normalize: compress returned false for $uri; sending raw")

@@ -54,6 +54,9 @@ const (
 	FrameSetAlias     FrameType = "set_alias"
 	FrameAliasUpdated FrameType = "alias_updated"
 
+	FrameSetPeerVerified FrameType = "set_peer_verified"
+	FramePeerVerified    FrameType = "peer_verified"
+
 	FramePeerUpdated FrameType = "peer.updated"
 	FrameChatUpdated FrameType = "chat.updated"
 
@@ -122,6 +125,9 @@ const (
 
 	FrameSetChatFontScale FrameType = "set_chat_font_scale"
 	FrameChatFontScale    FrameType = "system.chat-font-scale-changed"
+
+	FrameSetChatDefaults     FrameType = "set_chat_defaults"
+	FrameChatDefaultsChanged FrameType = "system.chat-defaults-changed"
 
 	FramePeerPaired FrameType = "pair.completed"
 
@@ -248,9 +254,12 @@ type WelcomePayload struct {
 	SelfNick          string  `json:"self_nick,omitempty"`
 	SelfNickIsDefault bool    `json:"self_nick_is_default,omitempty"`
 	ChatFontScale     float64 `json:"chat_font_scale,omitempty"`
+
+	DefaultRetentionSec uint64 `json:"default_retention_sec"`
+	DefaultSendReceipts bool   `json:"default_send_receipts"`
 }
 
-const ProtocolVersion = 44
+const ProtocolVersion = 46
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
@@ -302,6 +311,7 @@ type SendFileRequest struct {
 	PeerID    string `json:"peer_id"`
 	Path      string `json:"path"`
 	ImageMode string `json:"image_mode,omitempty"`
+	Caption   string `json:"caption,omitempty"`
 }
 
 type SendFileResponse struct {
@@ -411,6 +421,9 @@ type PeerEntry struct {
 	Accepting     bool   `json:"accepting,omitempty"`
 	Chatty        string `json:"chatty,omitempty"`
 	Effective     string `json:"effective,omitempty"`
+
+	Verified bool `json:"verified,omitempty"`
+	Blocked  bool `json:"blocked,omitempty"`
 }
 
 type PeersListedResponse struct {
@@ -423,6 +436,15 @@ type SetAliasRequest struct {
 }
 
 type AliasUpdatedResponse struct {
+	Peer PeerEntry `json:"peer"`
+}
+
+type SetPeerVerifiedRequest struct {
+	PeerID   string `json:"peer_id"`
+	Verified bool   `json:"verified"`
+}
+
+type PeerVerifiedResponse struct {
 	Peer PeerEntry `json:"peer"`
 }
 
@@ -609,6 +631,7 @@ type ChatEntry struct {
 	CreatedAt           int64    `json:"created_at"`
 	LastActivityAt      int64    `json:"last_activity_at,omitempty"`
 	UnreadCount         uint32   `json:"unread_count,omitempty"`
+	LastReadAt          int64    `json:"last_read_at,omitempty"`
 	LastTimerChangeTs   int64    `json:"last_timer_change_ts,omitempty"`
 
 	Accepting bool   `json:"accepting,omitempty"`
@@ -733,6 +756,16 @@ type ChatFontScalePayload struct {
 	Scale float64 `json:"scale"`
 }
 
+type SetChatDefaultsRequest struct {
+	RetentionSec uint64 `json:"retention_sec"`
+	SendReceipts bool   `json:"send_receipts"`
+}
+
+type ChatDefaultsPayload struct {
+	RetentionSec uint64 `json:"retention_sec"`
+	SendReceipts bool   `json:"send_receipts"`
+}
+
 type FileProgressPayload struct {
 	ChatID        string `json:"chat_id"`
 	MsgID         string `json:"msg_id"`
@@ -805,9 +838,6 @@ type SetTorPasswordRequest struct {
 }
 
 type Settings struct {
-	DefaultRetentionSec uint64 `json:"default_retention_sec"`
-	DefaultSendReceipts bool   `json:"default_send_receipts"`
-
 	IdleAction         string `json:"idle_action,omitempty"`
 	IdleTimeoutSeconds int    `json:"idle_timeout_seconds,omitempty"`
 	PinValiditySec     int    `json:"pin_validity_sec"`

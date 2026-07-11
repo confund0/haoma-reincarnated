@@ -419,3 +419,49 @@ func TestDeleteByChat_RemovesPrimaryAndIndex(t *testing.T) {
 		t.Errorf("after Delete, GetByDirectPeer err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestClearUnread_AdvancesLastReadCursor(t *testing.T) {
+	s := chat.NewStore(newStore(t))
+	c, err := s.CreateDirect("peer-alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const t1 int64 = 9_000_000_000
+	if _, err := s.BumpActivity(c.ID, t1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.IncrementUnread(c.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.ClearUnread(c.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(c.ID)
+	dc := got.(*chat.DirectChat)
+	if dc.UnreadCount != 0 {
+		t.Errorf("UnreadCount = %d, want 0", dc.UnreadCount)
+	}
+	if dc.LastReadAt != t1 {
+		t.Fatalf("LastReadAt = %d, want %d (advanced to LastActivityAt)", dc.LastReadAt, t1)
+	}
+
+	if _, err := s.ClearUnread(c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(c.ID); got.(*chat.DirectChat).LastReadAt != t1 {
+		t.Errorf("LastReadAt moved without new activity, want %d", t1)
+	}
+
+	const t2 int64 = 9_000_000_500
+	if _, err := s.BumpActivity(c.ID, t2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClearUnread(c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(c.ID); got.(*chat.DirectChat).LastReadAt != t2 {
+		t.Errorf("LastReadAt after new activity+read = %d, want %d", got.(*chat.DirectChat).LastReadAt, t2)
+	}
+}

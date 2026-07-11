@@ -218,7 +218,7 @@ func TestEmitInbound_PrivacyMatrix_BothOn(t *testing.T) {
 		NotificationsOnLock: true,
 	})
 	chatID := makeChat(t, d, "peer1")
-	if _, err := d.peerMeta.SetAlias("peer1", "Alice"); err != nil {
+	if _, err := d.peerMeta.SetAlias("peer1", "Alice", 0); err != nil {
 		t.Fatal(err)
 	}
 	emitInboundNotification(context.Background(), d, chatID, "peer1", "hello world")

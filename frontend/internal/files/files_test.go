@@ -309,6 +309,33 @@ func TestListByChat_EmptyChat(t *testing.T) {
 	}
 }
 
+func TestListInboundInFlight_FiltersByDirectionAndState(t *testing.T) {
+	mgr, _, _ := newManager(t)
+	rows := []files.Metadata{
+		{MsgID: "1111111111111111111111111111aaaa", ChatID: testChatID, Direction: files.DirIn, Token: "t-dl", State: files.StateDownloading},
+		{MsgID: "2222222222222222222222222222bbbb", ChatID: testChatID, Direction: files.DirIn, Token: "t-pend", State: files.StatePending},
+		{MsgID: "3333333333333333333333333333cccc", ChatID: testChatID, Direction: files.DirIn, Token: "t-ready", State: files.StateReady},
+		{MsgID: "4444444444444444444444444444dddd", ChatID: testChatID, Direction: files.DirIn, Token: "t-fail", State: files.StateFailedTransient},
+		{MsgID: "5555555555555555555555555555eeee", ChatID: testChatID, Direction: files.DirOut, Token: "t-out", State: files.StateDownloading},
+	}
+	for _, m := range rows {
+		if err := mgr.PutMeta(m); err != nil {
+			t.Fatalf("PutMeta(%s): %v", m.MsgID, err)
+		}
+	}
+	got, err := mgr.ListInboundInFlight()
+	if err != nil {
+		t.Fatalf("ListInboundInFlight: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, m := range got {
+		seen[m.MsgID] = true
+	}
+	if len(got) != 2 || !seen["1111111111111111111111111111aaaa"] || !seen["2222222222222222222222222222bbbb"] {
+		t.Fatalf("want exactly the DirIn downloading+pending rows, got %d: %+v", len(got), seen)
+	}
+}
+
 func TestGetMetaByToken_PrimaryAndRecipientTokens(t *testing.T) {
 	mgr, _, _ := newManager(t)
 	const (

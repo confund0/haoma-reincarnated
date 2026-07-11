@@ -103,6 +103,15 @@ type MetaRecord struct {
 	Alias string `json:"alias,omitempty"`
 
 	NickAt int64 `json:"nick_at,omitempty"`
+
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	AliasAt int64 `json:"alias_at,omitempty"`
+
+	Verified   bool  `json:"verified,omitempty"`
+	VerifiedAt int64 `json:"verified_at,omitempty"`
+	Blocked    bool  `json:"blocked,omitempty"`
+	BlockedAt  int64 `json:"blocked_at,omitempty"`
 }
 
 type Meta struct {
@@ -127,15 +136,56 @@ func (m *Meta) Get(peerID string) (MetaRecord, error) {
 	return rec, nil
 }
 
-func (m *Meta) SetAlias(peerID, alias string) (changed bool, err error) {
+func (m *Meta) SetAlias(peerID, alias string, ts int64) (changed bool, err error) {
 	if peerID == "" {
 		return false, errors.New("peerstate: empty peer id")
 	}
 	return m.mutate(peerID, func(rec *MetaRecord) bool {
+		if ts > rec.AliasAt {
+			rec.AliasAt = ts
+		}
 		if rec.Alias == alias {
 			return false
 		}
 		rec.Alias = alias
+		return true
+	})
+}
+
+func (m *Meta) SetVerified(peerID string, verified bool, ts int64) (changed bool, err error) {
+	if peerID == "" {
+		return false, errors.New("peerstate: empty peer id")
+	}
+	return m.mutate(peerID, func(rec *MetaRecord) bool {
+		if ts != 0 && ts < rec.VerifiedAt {
+			return false
+		}
+		if ts != 0 {
+			rec.VerifiedAt = ts
+		}
+		if rec.Verified == verified {
+			return false
+		}
+		rec.Verified = verified
+		return true
+	})
+}
+
+func (m *Meta) SetBlocked(peerID string, blocked bool, ts int64) (changed bool, err error) {
+	if peerID == "" {
+		return false, errors.New("peerstate: empty peer id")
+	}
+	return m.mutate(peerID, func(rec *MetaRecord) bool {
+		if ts != 0 && ts < rec.BlockedAt {
+			return false
+		}
+		if ts != 0 {
+			rec.BlockedAt = ts
+		}
+		if rec.Blocked == blocked {
+			return false
+		}
+		rec.Blocked = blocked
 		return true
 	})
 }
@@ -161,6 +211,24 @@ func (m *Meta) SetNick(peerID, nick string, ts int64) (changed bool, err error) 
 		}
 		return true
 	})
+}
+
+func (m *Meta) SetFingerprint(peerID, fingerprint string) (changed bool, prev string, err error) {
+	if peerID == "" {
+		return false, "", errors.New("peerstate: empty peer id")
+	}
+	if fingerprint == "" {
+		return false, "", nil
+	}
+	changed, err = m.mutate(peerID, func(rec *MetaRecord) bool {
+		prev = rec.Fingerprint
+		if rec.Fingerprint == fingerprint {
+			return false
+		}
+		rec.Fingerprint = fingerprint
+		return true
+	})
+	return changed, prev, err
 }
 
 func (m *Meta) mutate(peerID string, fn func(*MetaRecord) bool) (bool, error) {

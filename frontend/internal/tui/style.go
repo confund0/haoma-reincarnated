@@ -6,6 +6,8 @@ const (
 	StyleBreadcrumbBody = "[#8a8a8a]"
 	StyleBreadcrumbNick = "[#5f0087]"
 
+	StyleCommandHint = "[#83a598]"
+
 	StyleCallSummaryOK  = "[#98971a]"
 	StyleCallSummaryBad = "[#cc241d]"
 

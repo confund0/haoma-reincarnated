@@ -342,6 +342,117 @@ func TestFileFetchStateHandler_Ready_PullsAndStages(t *testing.T) {
 	}
 }
 
+func TestSweepStagedFetches_RecoversOrphan(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+
+	const peerID = "0000000000000000000000000000dddd"
+	dc, _, err := d.createDirectWithDefaults(peerID)
+	if err != nil {
+		t.Fatalf("createDirectWithDefaults: %v", err)
+	}
+	chatID := dc.ID
+	msgID, err := msg.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	feBody := FileEventBody{Token: "tok-orphan", UrlPath: "/files/tok-orphan", Name: "doc.pdf", Size: 2048, Sha256Ciphertext: strings.Repeat("c", 64), State: string(files.StateDownloading)}
+	bodyRaw, _ := json.Marshal(feBody)
+	if _, err := d.events.AppendInbound(events.InboundParams{
+		ChatID: chatID, Kind: events.KindFile, SenderTs: time.Now().Unix(),
+		EnvelopeID: "env-orphan", MsgID: msgID, Status: events.DecryptOK, Body: bodyRaw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.files.PutMeta(files.Metadata{
+		MsgID: msgID, ChatID: chatID, Direction: files.DirIn, Token: "tok-orphan",
+		OriginalName: "doc.pdf", Size: 2048, Sha256Ciphertext: strings.Repeat("c", 64),
+		State: files.StateDownloading, CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []byte("staged-ciphertext-waiting-for-haoma")
+	stub.mu.Lock()
+	stub.stagingBody = want
+	stub.mu.Unlock()
+
+	sweepStagedFetches(context.Background(), d)
+
+	stagingPath, err := d.files.StagingPath(msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitFile(stagingPath, 2*time.Second) {
+		t.Fatalf("staging file %s did not appear — orphan not recovered", stagingPath)
+	}
+	meta, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.State != files.StateAwaitingKey {
+		t.Fatalf("meta.State = %q, want awaiting_key (recovered)", meta.State)
+	}
+
+	stub.mu.Lock()
+	dropCalls := stub.dropCalls
+	stub.mu.Unlock()
+	if dropCalls != 1 {
+		t.Fatalf("dropCalls = %d, want 1", dropCalls)
+	}
+}
+
+func TestSweepStagedFetches_NotStagedLeavesRow(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+
+	const peerID = "0000000000000000000000000000eeee"
+	dc, _, err := d.createDirectWithDefaults(peerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatID := dc.ID
+	msgID, err := msg.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	feBody := FileEventBody{Token: "tok-inflight", UrlPath: "/files/tok-inflight", Name: "big.bin", Size: 999, Sha256Ciphertext: strings.Repeat("d", 64), State: string(files.StateDownloading)}
+	bodyRaw, _ := json.Marshal(feBody)
+	if _, err := d.events.AppendInbound(events.InboundParams{
+		ChatID: chatID, Kind: events.KindFile, SenderTs: time.Now().Unix(),
+		EnvelopeID: "env-inflight", MsgID: msgID, Status: events.DecryptOK, Body: bodyRaw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.files.PutMeta(files.Metadata{
+		MsgID: msgID, ChatID: chatID, Direction: files.DirIn, Token: "tok-inflight",
+		Size: 999, Sha256Ciphertext: strings.Repeat("d", 64),
+		State: files.StateDownloading, CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stub.mu.Lock()
+	stub.stagingStatus = http.StatusNotFound
+	stub.mu.Unlock()
+
+	sweepStagedFetches(context.Background(), d)
+
+	meta, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.State != files.StateDownloading {
+		t.Fatalf("meta.State = %q, want downloading (must not fail an in-flight row)", meta.State)
+	}
+	stub.mu.Lock()
+	sendCalls := stub.sendCalls
+	stub.mu.Unlock()
+	if sendCalls != 0 {
+		t.Fatalf("receipt sendCalls = %d, want 0 (nothing to receipt yet)", sendCalls)
+	}
+}
+
 func TestFileFetchStateHandler_FailedPermanent_StampsRow(t *testing.T) {
 	stub := startFilesStub(t)
 	d := newFilesTestDaemon(t, stub)

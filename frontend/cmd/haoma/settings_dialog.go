@@ -11,8 +11,6 @@ import (
 func defaultSettings() *ipc.Settings {
 	return &ipc.Settings{
 
-		DefaultRetentionSec: 0,
-		DefaultSendReceipts: true,
 		IdleAction:          "safe-lock",
 		IdleTimeoutSeconds:  1800,
 		PinValiditySec:      0,
@@ -28,10 +26,8 @@ func scopeSettings(full ipc.Settings, domain ipc.SettingsDomain) (ipc.Settings, 
 	case ipc.SettingsDomainAll:
 		return full, nil
 	case ipc.SettingsDomainIdentity:
-		return ipc.Settings{
-			DefaultRetentionSec: full.DefaultRetentionSec,
-			DefaultSendReceipts: full.DefaultSendReceipts,
-		}, nil
+
+		return ipc.Settings{}, nil
 	case ipc.SettingsDomainLock:
 		return ipc.Settings{
 			IdleAction:         full.IdleAction,
@@ -111,8 +107,6 @@ func (sd *sessionDispatcher) handleSyncSettings(sess *ipc.Session, f ipc.Frame) 
 		slog.Bool("notify_shell_enabled", settings.NotifyShellEnabled),
 		slog.Bool("notify_show_sender", settings.NotifyShowSender),
 		slog.Bool("notify_show_body", settings.NotifyShowBody),
-		slog.Uint64("default_retention_sec", settings.DefaultRetentionSec),
-		slog.Bool("default_send_receipts", settings.DefaultSendReceipts),
 		slog.String("idle_action", settings.IdleAction),
 		slog.String("threat_profile", settings.ThreatProfile),
 		slog.Bool("has_tor_password", settings.HasTorPassword),

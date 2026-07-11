@@ -31,7 +31,7 @@ type rotationView struct {
 func (a *App) cmdRotateTor() {
 	front, _ := a.pages.GetFrontPage()
 	if !strings.HasPrefix(front, "chat:") {
-		a.log("[red]/rotate-tor[white] only works inside a chat window")
+		a.log("[red]/rotate-tor[white] must be used inside a chat window")
 		return
 	}
 	peerID := a.activeChat()
@@ -244,7 +244,7 @@ func (a *App) refreshAfterRotationChange() {
 func (a *App) cmdNewCircuit() {
 	front, _ := a.pages.GetFrontPage()
 	if !strings.HasPrefix(front, "chat:") {
-		a.log("[red]/new-circuit[white] only works inside a chat window")
+		a.log("[red]/new-circuit[white] must be used inside a chat window")
 		return
 	}
 	peerID := a.activeChat()

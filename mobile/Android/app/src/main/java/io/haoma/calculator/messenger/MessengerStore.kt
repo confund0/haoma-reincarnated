@@ -696,6 +696,10 @@ data class SystemHealth(
     
 
     val chatFontScale: Float = 1.0f,
+    
+
+    val defaultRetentionSec: Long = 28L * 24 * 3600,
+    val defaultSendReceipts: Boolean = true,
 ) {
     companion object {
         val INITIAL = SystemHealth(

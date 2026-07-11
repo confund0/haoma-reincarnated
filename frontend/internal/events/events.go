@@ -135,16 +135,18 @@ const (
 )
 
 type Event struct {
-	RecvSeq       uint64            `json:"recv_seq"`
-	ChatID        chat.ChatID       `json:"chat_id"`
-	Direction     Direction         `json:"direction"`
-	Kind          Kind              `json:"kind"`
-	DisplayTs     int64             `json:"display_ts"`
-	SenderTs      int64             `json:"sender_ts,omitempty"`
-	RecvTs        int64             `json:"recv_ts"`
-	SenderSeq     uint64            `json:"sender_seq,omitempty"`
-	SenderPeerID  string            `json:"sender_peer_id,omitempty"`
-	EnvelopeID    string            `json:"envelope_id,omitempty"`
+	RecvSeq      uint64      `json:"recv_seq"`
+	ChatID       chat.ChatID `json:"chat_id"`
+	Direction    Direction   `json:"direction"`
+	Kind         Kind        `json:"kind"`
+	DisplayTs    int64       `json:"display_ts"`
+	SenderTs     int64       `json:"sender_ts,omitempty"`
+	RecvTs       int64       `json:"recv_ts"`
+	SenderSeq    uint64      `json:"sender_seq,omitempty"`
+	SenderPeerID string      `json:"sender_peer_id,omitempty"`
+	EnvelopeID   string      `json:"envelope_id,omitempty"`
+
+	EnvelopeIDs   []string          `json:"envelope_ids,omitempty"`
 	MsgID         string            `json:"msg_id,omitempty"`
 	DecryptStatus DecryptStatus     `json:"decrypt_status,omitempty"`
 	FailReason    DecryptFailReason `json:"fail_reason,omitempty"`
@@ -178,6 +180,19 @@ func (e Event) Deletable(now int64) bool {
 		return false
 	}
 	return true
+}
+
+func (e Event) fileReceiptReady() bool {
+	if len(e.Body) == 0 {
+		return false
+	}
+	var b struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(e.Body, &b); err != nil {
+		return false
+	}
+	return b.State == "ready"
 }
 
 type ReplyToSnapshot struct {
@@ -322,6 +337,15 @@ func (l *Log) AppendInbound(in InboundParams) (Event, error) {
 
 func (l *Log) AppendOutbound(out OutboundParams) (Event, error) {
 	now := l.now()
+
+	envIDs := out.EnvelopeIDs
+	if len(envIDs) == 0 && out.EnvelopeID != "" {
+		envIDs = []string{out.EnvelopeID}
+	}
+	var primaryEnvID string
+	if len(envIDs) > 0 {
+		primaryEnvID = envIDs[0]
+	}
 	ev := Event{
 		ChatID:        out.ChatID,
 		Direction:     DirOut,
@@ -330,7 +354,8 @@ func (l *Log) AppendOutbound(out OutboundParams) (Event, error) {
 		SenderTs:      now.Unix(),
 		RecvTs:        now.Unix(),
 		SenderSeq:     out.SenderSeq,
-		EnvelopeID:    out.EnvelopeID,
+		EnvelopeID:    primaryEnvID,
+		EnvelopeIDs:   envIDs,
 		MsgID:         out.MsgID,
 		ExpireSeconds: out.ExpireSeconds,
 		Body:          out.Body,
@@ -365,9 +390,11 @@ type LocalParams struct {
 }
 
 type OutboundParams struct {
-	ChatID        chat.ChatID
-	Kind          Kind
-	SenderSeq     uint64
+	ChatID    chat.ChatID
+	Kind      Kind
+	SenderSeq uint64
+
+	EnvelopeIDs   []string
 	EnvelopeID    string
 	MsgID         string
 	ExpireSeconds uint32
@@ -416,9 +443,18 @@ func (l *Log) append(ev Event) (Event, error) {
 			return err
 		}
 
-		if ev.Direction == DirOut && ev.EnvelopeID != "" {
-			if err := txn.Set([]byte(envIDPrefix+ev.EnvelopeID), key); err != nil {
-				return err
+		if ev.Direction == DirOut {
+			envIDs := ev.EnvelopeIDs
+			if len(envIDs) == 0 && ev.EnvelopeID != "" {
+				envIDs = []string{ev.EnvelopeID}
+			}
+			for _, eid := range envIDs {
+				if eid == "" {
+					continue
+				}
+				if err := txn.Set([]byte(envIDPrefix+eid), key); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -472,6 +508,16 @@ func (l *Log) PeekNextRecvSeq() (uint64, error) {
 		return 0, err
 	}
 	return v + 1, nil
+}
+
+func Less(a, b Event) bool {
+	if a.DisplayTs != b.DisplayTs {
+		return a.DisplayTs < b.DisplayTs
+	}
+	if a.MsgID != b.MsgID {
+		return a.MsgID < b.MsgID
+	}
+	return a.RecvSeq < b.RecvSeq
 }
 
 func (l *Log) List(chatID chat.ChatID, sinceDisplayTs int64, limit int) ([]Event, error) {
@@ -1110,7 +1156,9 @@ func (l *Log) MarkRead(chatID chat.ChatID) (mutated int, pendingReceipt []string
 					continue
 				}
 				stampReadAt := ev.ReadAt == 0
-				receiptPending := ev.Kind == KindText && ev.MsgID != "" && ev.ReadReceiptSentAt == 0
+
+				receiptPending := ev.MsgID != "" && ev.ReadReceiptSentAt == 0 &&
+					(ev.Kind == KindText || (ev.Kind == KindFile && ev.fileReceiptReady()))
 				if !stampReadAt && !receiptPending {
 					continue
 				}
@@ -1151,7 +1199,8 @@ func (l *Log) MarkRead(chatID chat.ChatID) (mutated int, pendingReceipt []string
 			if batch[i].stamp {
 				mutated++
 			}
-			if batch[i].ev.Kind == KindText && batch[i].ev.MsgID != "" && batch[i].ev.ReadReceiptSentAt == 0 {
+			if batch[i].ev.MsgID != "" && batch[i].ev.ReadReceiptSentAt == 0 &&
+				(batch[i].ev.Kind == KindText || (batch[i].ev.Kind == KindFile && batch[i].ev.fileReceiptReady())) {
 				pendingReceipt = append(pendingReceipt, batch[i].ev.MsgID)
 			}
 		}
@@ -1335,7 +1384,8 @@ func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID 
 		if updated.Direction != DirOut {
 			return ErrReaderNotPeer
 		}
-		if updated.Kind != KindText {
+
+		if updated.Kind != KindText && updated.Kind != KindFile {
 			return ErrReadUnsupportedKind
 		}
 
@@ -1353,6 +1403,70 @@ func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID 
 		return Event{}, err
 	}
 	if l.bus != nil {
+		l.bus.publish(updated)
+	}
+	return updated, nil
+}
+
+func (l *Log) ApplyDeliveredReceipt(targetMsgID string, expectedChatID chat.ChatID) (Event, error) {
+	if targetMsgID == "" {
+		return Event{}, ErrEventNotFound
+	}
+	var updated Event
+	changed := false
+	err := l.st.Update(func(txn *badger.Txn) error {
+		idxItem, err := txn.Get([]byte(msgIDPrefix + targetMsgID))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var key []byte
+		if err := idxItem.Value(func(v []byte) error {
+			key = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			return err
+		}
+		rowItem, err := txn.Get(key)
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			_ = txn.Delete([]byte(msgIDPrefix + targetMsgID))
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := rowItem.Value(func(v []byte) error {
+			return json.Unmarshal(v, &updated)
+		}); err != nil {
+			return err
+		}
+		if updated.ChatID != expectedChatID {
+			return ErrReaderNotPeer
+		}
+		if updated.Direction != DirOut {
+			return ErrReaderNotPeer
+		}
+		if updated.Kind != KindFile {
+			return ErrReadUnsupportedKind
+		}
+
+		if updated.DeliveryState == "read" || updated.DeliveryState == "delivered" {
+			return nil
+		}
+		updated.DeliveryState = "delivered"
+		changed = true
+		raw, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		return txn.Set(key, raw)
+	})
+	if err != nil {
+		return Event{}, err
+	}
+	if changed && l.bus != nil {
 		l.bus.publish(updated)
 	}
 	return updated, nil

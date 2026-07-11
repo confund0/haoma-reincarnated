@@ -18,6 +18,8 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                     daemonVersion = w.daemonVersion,
                     protocolVersion = w.protocolVersion,
                     chatFontScale = w.chatFontScale,
+                    defaultRetentionSec = w.defaultRetentionSec,
+                    defaultSendReceipts = w.defaultSendReceipts,
                 )
             }
             appendStatus("welcome — daemon ${w.daemonVersion} (protocol v${w.protocolVersion})")
@@ -37,6 +39,16 @@ internal fun MessengerStore.dispatch(frame: Frame) {
         FrameType.ChatFontScale -> if (payload != null) {
             val p = ChatFontScalePayload.fromJson(payload)
             _health.update { it.copy(chatFontScale = p.scale) }
+        }
+
+        FrameType.ChatDefaultsChanged -> if (payload != null) {
+            val p = ChatDefaultsPayload.fromJson(payload)
+            _health.update {
+                it.copy(
+                    defaultRetentionSec = p.retentionSec,
+                    defaultSendReceipts = p.sendReceipts,
+                )
+            }
         }
 
         FrameType.BackendStatus -> if (payload != null) {

@@ -46,7 +46,7 @@ internal fun ChatCallHistoryScreen(
     chatId: String,
     onBack: () -> Unit,
 ) {
-    val cache by store.timelineFor(chatId).collectAsStateWithLifecycle()
+    val cache by remember(chatId) { store.timelineFor(chatId) }.collectAsStateWithLifecycle()
     val chats by store.chats.collectAsStateWithLifecycle()
     val peerLabel = run {
         val pid = chats.firstOrNull { it.chatId == chatId }?.peerId.orEmpty()

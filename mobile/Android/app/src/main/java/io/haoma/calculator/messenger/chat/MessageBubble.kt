@@ -231,13 +231,20 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
         }
         event.kind == EventKind.FILE -> {
             val body = FileEventBody.fromJson(event.body)
-            when {
-                body.isImage && body.state == FileState.READY ->
-                    ImageBody(event = event, body = body)
-                body.isVideo && body.state == FileState.READY ->
-                    VideoBody(event = event, body = body)
-                else ->
-                    FileCaption(body = body, textColor = textColor)
+            
+            
+            Column {
+                when {
+                    body.isImage && body.state == FileState.READY ->
+                        ImageBody(event = event, body = body)
+                    body.isVideo && body.state == FileState.READY ->
+                        VideoBody(event = event, body = body)
+                    else ->
+                        FileCaption(body = body, textColor = textColor)
+                }
+                if (body.caption.isNotEmpty()) {
+                    AttachmentCaption(text = body.caption, color = textColor)
+                }
             }
         }
         else -> {
@@ -262,8 +269,8 @@ private fun MessageBody(event: TimelineEvent, textColor: androidx.compose.ui.gra
                     Unit
                 }
             }
-            val rendered = remember(raw) { linkifyChatText(raw, onUrl) }
-            val jumboMult = remember(raw) { emojiOnlyJumboScale(raw) }
+            val rendered = remember(raw) { styleChatText(raw, onUrl) }
+            val jumboMult = remember(raw) { emojiOnlyJumboScale(parseMessageStyling(raw).text) }
             val bodyFontSize = if (jumboMult != null) {
                 (type.bubbleBody.value * jumboMult).sp
             } else {
@@ -339,40 +346,60 @@ private fun isEmojiBaseCodepoint(cp: Int): Boolean = when {
 private val URL_REGEX = Regex("""https?://[^\s<>"'`)\]]+""")
 
 
-private fun linkifyChatText(text: String, onUrl: (String) -> Unit): AnnotatedString =
-    buildAnnotatedString {
-        var i = 0
-        for (match in URL_REGEX.findAll(text)) {
-            if (match.range.first > i) append(text.substring(i, match.range.first))
-            var url = match.value
-            var trailing = ""
-            while (url.isNotEmpty() && url.last() in ".,;:!?)") {
-                trailing = url.last() + trailing
-                url = url.dropLast(1)
-            }
-            if (url.isEmpty()) {
-                append(match.value)
-            } else {
-                withLink(
-                    LinkAnnotation.Url(
-                        url = url,
-                        styles = TextLinkStyles(
-                            style = SpanStyle(
-                                color = ChatPalette.Link,
-                                textDecoration = TextDecoration.Underline,
-                            ),
-                        ),
-                        linkInteractionListener = { onUrl(url) },
-                    ),
-                ) {
-                    append(url)
-                }
-                if (trailing.isNotEmpty()) append(trailing)
-            }
-            i = match.range.last + 1
-        }
-        if (i < text.length) append(text.substring(i))
+private fun spanStyleFor(mark: TextStyleMark): SpanStyle = when (mark) {
+    TextStyleMark.BOLD -> SpanStyle(fontWeight = FontWeight.Bold)
+    TextStyleMark.ITALIC -> SpanStyle(fontStyle = FontStyle.Italic)
+    TextStyleMark.UNDERLINE -> SpanStyle(textDecoration = TextDecoration.Underline)
+    TextStyleMark.STRIKE -> SpanStyle(textDecoration = TextDecoration.LineThrough)
+}
+
+
+private fun styleChatText(raw: String, onUrl: (String) -> Unit): AnnotatedString {
+    val styled = parseMessageStyling(raw)
+    return buildAnnotatedString {
+        linkifyInto(this, styled.text, onUrl)
+        for (s in styled.spans) addStyle(spanStyleFor(s.mark), s.start, s.end)
     }
+}
+
+
+private fun linkifyInto(
+    builder: AnnotatedString.Builder,
+    text: String,
+    onUrl: (String) -> Unit,
+) = with(builder) {
+    var i = 0
+    for (match in URL_REGEX.findAll(text)) {
+        if (match.range.first > i) append(text.substring(i, match.range.first))
+        var url = match.value
+        var trailing = ""
+        while (url.isNotEmpty() && url.last() in ".,;:!?)") {
+            trailing = url.last() + trailing
+            url = url.dropLast(1)
+        }
+        if (url.isEmpty()) {
+            append(match.value)
+        } else {
+            withLink(
+                LinkAnnotation.Url(
+                    url = url,
+                    styles = TextLinkStyles(
+                        style = SpanStyle(
+                            color = ChatPalette.Link,
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                    ),
+                    linkInteractionListener = { onUrl(url) },
+                ),
+            ) {
+                append(url)
+            }
+            if (trailing.isNotEmpty()) append(trailing)
+        }
+        i = match.range.last + 1
+    }
+    if (i < text.length) append(text.substring(i))
+}
 
 
 @Composable
@@ -545,6 +572,18 @@ private fun FileCaption(body: FileEventBody, textColor: androidx.compose.ui.grap
     }
 }
 
+
+@Composable
+private fun AttachmentCaption(text: String, color: androidx.compose.ui.graphics.Color) {
+    val type = LocalHaomaTypography.current
+    Text(
+        text = text,
+        color = color,
+        fontSize = type.bubbleBody,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
 private fun renderStateLabel(body: FileEventBody): String = when (body.state) {
     FileState.READY -> "ready"
     FileState.DOWNLOADING -> {
@@ -593,7 +632,7 @@ private fun MessageFooter(event: TimelineEvent) {
             )
         }
         if (event.isOutbound) {
-            DeliveryGlyph(state = event.deliveryState)
+            DeliveryGlyph(state = event.deliveryState, isFile = event.kind == EventKind.FILE)
         }
     }
 }

@@ -18,8 +18,6 @@ type VaultController interface {
 	IsInsecureDefaultPassphrase() bool
 	IsInsecureDefaultPIN() bool
 
-	SetDefaultRetentionSec(n uint64) error
-	SetDefaultSendReceipts(b bool) error
 	SetNotifyShellEnabled(b bool) error
 	SetNotifyShowSender(b bool) error
 	SetNotifyShowBody(b bool) error

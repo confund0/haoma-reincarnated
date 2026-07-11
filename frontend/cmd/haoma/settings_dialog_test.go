@@ -12,8 +12,6 @@ import (
 
 func TestScopeSettings_Domains(t *testing.T) {
 	full := ipc.Settings{
-		DefaultRetentionSec: 86400,
-		DefaultSendReceipts: true,
 		IdleAction:          "soft-lock",
 		IdleTimeoutSeconds:  900,
 		PinValiditySec:      300,
@@ -45,11 +43,9 @@ func TestScopeSettings_Domains(t *testing.T) {
 			name:   "identity",
 			domain: ipc.SettingsDomainIdentity,
 			check: func(t *testing.T, got ipc.Settings) {
-				if got.DefaultRetentionSec != 86400 || got.DefaultSendReceipts != true {
-					t.Errorf("identity: missing expected fields: %+v", got)
-				}
-				if got.IdleAction != "" || got.PanicAction != "" || got.NotifyShellEnabled {
-					t.Errorf("identity: bled across domains: %+v", got)
+
+				if got.IdleAction != "" || got.PanicAction != "" || got.NotifyShellEnabled || got.HasTorPassword {
+					t.Errorf("identity domain should scope nothing post-C0: %+v", got)
 				}
 			},
 		},
@@ -60,7 +56,7 @@ func TestScopeSettings_Domains(t *testing.T) {
 				if got.IdleAction != "soft-lock" || got.IdleTimeoutSeconds != 900 || got.PinValiditySec != 300 {
 					t.Errorf("lock: missing: %+v", got)
 				}
-				if got.DefaultRetentionSec != 0 || got.NotifyShellEnabled {
+				if got.HasTorPassword || got.NotifyShellEnabled {
 					t.Errorf("lock: bled: %+v", got)
 				}
 			},
@@ -139,10 +135,6 @@ func TestDispatch_GetSettings_ReturnsDefaults(t *testing.T) {
 	if err := json.Unmarshal(resp.Payload, &p); err != nil {
 		t.Fatal(err)
 	}
-	want := defaultSettings()
-	if p.Settings.DefaultSendReceipts != want.DefaultSendReceipts {
-		t.Errorf("DefaultSendReceipts = %v, want %v (defaults)", p.Settings.DefaultSendReceipts, want.DefaultSendReceipts)
-	}
 	if !p.Settings.NotifyShellEnabled {
 		t.Error("NotifyShellEnabled should default ON (banner stays anonymous via the two ShowSender / ShowBody flags)")
 	}
@@ -166,8 +158,6 @@ func TestDispatch_SyncSettings_UpdatesSnapshotAndBroadcasts(t *testing.T) {
 	conn := dialTest(t, ctx, addr, certPath, token)
 
 	want := ipc.Settings{
-		DefaultRetentionSec: 3600,
-		DefaultSendReceipts: false,
 		IdleAction:          "soft-lock",
 		IdleTimeoutSeconds:  600,
 		PinValiditySec:      120,
@@ -201,9 +191,6 @@ func TestDispatch_SyncSettings_UpdatesSnapshotAndBroadcasts(t *testing.T) {
 	}
 	if p.Settings.PanicAction != "hard-lock" {
 		t.Errorf("PanicAction after sync = %q, want hard-lock", p.Settings.PanicAction)
-	}
-	if p.Settings.DefaultRetentionSec != 3600 {
-		t.Errorf("DefaultRetentionSec after sync = %d, want 3600", p.Settings.DefaultRetentionSec)
 	}
 	if !p.Settings.HasTorPassword {
 		t.Error("HasTorPassword should round-trip")

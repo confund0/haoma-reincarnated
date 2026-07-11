@@ -134,6 +134,38 @@ func TestImport_HappyPath_PostsPeer_SavesIdentity_EstablishesSession(t *testing.
 	}
 }
 
+func TestImportResponder_RegistersButLeavesNoSession(t *testing.T) {
+	stores := newLocalStores(t)
+	var cap captured
+	backendURL := stubBackend(t, http.StatusCreated, &cap)
+
+	inv, _ := buildFullInvite(t)
+	mine := freshLocalKeys(t)
+
+	err := ImportResponder(context.Background(), stores, backendapi.New(backendURL, "", nil), inv, mine, fakeMintedOnion())
+	if err != nil {
+		t.Fatalf("ImportResponder: %v", err)
+	}
+
+	if cap.called != 1 {
+		t.Errorf("backend called %d times, want 1", cap.called)
+	}
+
+	addr := protocol.NewSignalAddress(inv.PeerID, DeviceID)
+
+	if _, err := stores.GetRemoteIdentity(addr); err != nil {
+		t.Fatalf("GetRemoteIdentity after ImportResponder: %v", err)
+	}
+
+	contains, err := stores.ContainsSession(context.Background(), addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains {
+		t.Error("ImportResponder created a session; responder must not run ProcessBundle (A0 fork)")
+	}
+}
+
 func TestImport_ValidateFails_NoBackendCall(t *testing.T) {
 	stores := newLocalStores(t)
 	var cap captured

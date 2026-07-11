@@ -68,6 +68,9 @@ type App struct {
 	selfNick          string
 	selfNickIsDefault bool
 
+	defaultRetentionSec uint64
+	defaultSendReceipts bool
+
 	pendingOnionInvites map[string]pendingOnionInvite
 
 	activeCalls map[string]ipc.CallEntry
@@ -207,6 +210,10 @@ func New(client *ipcclient.Client) *App {
 			return nil
 		case tcell.KeyDown:
 			a.historyStep(+1)
+			return nil
+		case tcell.KeyTab:
+
+			a.completeCommand()
 			return nil
 		default:
 
@@ -824,6 +831,8 @@ func (a *App) routeFrame(f ipc.Frame) {
 		a.winMu.Lock()
 		a.selfNick = p.SelfNick
 		a.selfNickIsDefault = p.SelfNickIsDefault
+		a.defaultRetentionSec = p.DefaultRetentionSec
+		a.defaultSendReceipts = p.DefaultSendReceipts
 		a.winMu.Unlock()
 		a.app.QueueUpdateDraw(func() {
 			appendStatus(a.statusView, "[green]connected[white] — daemon %s (protocol v%d)", p.DaemonVersion, p.ProtocolVersion)
@@ -847,6 +856,16 @@ func (a *App) routeFrame(f ipc.Frame) {
 				appendStatus(a.statusView, "[green]nick set:[white] [yellow]%s[white]", p.Nick)
 				a.sysBar.SetText(a.sysBarText())
 			})
+		}
+
+	case ipc.FrameChatDefaultsChanged:
+
+		var p ipc.ChatDefaultsPayload
+		if err := json.Unmarshal(f.Payload, &p); err == nil {
+			a.winMu.Lock()
+			a.defaultRetentionSec = p.RetentionSec
+			a.defaultSendReceipts = p.SendReceipts
+			a.winMu.Unlock()
 		}
 
 	case ipc.FramePairOnionProbe:

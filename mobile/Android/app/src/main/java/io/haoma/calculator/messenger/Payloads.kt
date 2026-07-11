@@ -26,6 +26,9 @@ data class WelcomePayload(
     val selfNick: String,
     val selfNickIsDefault: Boolean,
     val chatFontScale: Float,
+    
+    val defaultRetentionSec: Long,
+    val defaultSendReceipts: Boolean,
 ) {
     companion object {
         fun fromJson(o: JSONObject): WelcomePayload = WelcomePayload(
@@ -36,9 +39,16 @@ data class WelcomePayload(
             
             
             chatFontScale = o.optDouble("chat_font_scale", 1.0).toFloat(),
+            
+            
+            defaultRetentionSec = o.optLong("default_retention_sec", DEFAULT_RETENTION_SEC_FALLBACK),
+            defaultSendReceipts = o.optBoolean("default_send_receipts", true),
         )
     }
 }
+
+
+const val DEFAULT_RETENTION_SEC_FALLBACK: Long = 28L * 24 * 3600
 
 data class ErrorPayload(
     val code: String,
@@ -419,6 +429,23 @@ data class ChatFontScalePayload(val scale: Float) {
 }
 
 
+data class SetChatDefaultsRequest(val retentionSec: Long, val sendReceipts: Boolean) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("retention_sec", retentionSec)
+        put("send_receipts", sendReceipts)
+    }
+}
+
+data class ChatDefaultsPayload(val retentionSec: Long, val sendReceipts: Boolean) {
+    companion object {
+        fun fromJson(o: JSONObject): ChatDefaultsPayload = ChatDefaultsPayload(
+            retentionSec = o.optLong("retention_sec", DEFAULT_RETENTION_SEC_FALLBACK),
+            sendReceipts = o.optBoolean("send_receipts", true),
+        )
+    }
+}
+
+
 data class SetAliasRequest(val peerId: String, val alias: String) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("peer_id", peerId)
@@ -703,7 +730,9 @@ data class ListTimelineRequest(
     }
 
     companion object {
-        const val DEFAULT_LIMIT = 50
+        
+        
+        const val DEFAULT_LIMIT = 500
     }
 }
 
@@ -1392,8 +1421,8 @@ data class ClientLockStateRequest(
 
 
 data class SettingsSnapshot(
-    val defaultRetentionSec: Long,
-    val defaultSendReceipts: Boolean,
+    
+    
     val idleAction: String,
     val idleTimeoutSeconds: Int,
     val pinValiditySec: Int,
@@ -1411,8 +1440,6 @@ data class SettingsSnapshot(
     val defaultAttachStartDir: String,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
-        put("default_retention_sec", defaultRetentionSec)
-        put("default_send_receipts", defaultSendReceipts)
         if (idleAction.isNotEmpty()) put("idle_action", idleAction)
         if (idleTimeoutSeconds > 0) put("idle_timeout_seconds", idleTimeoutSeconds)
         put("pin_validity_sec", pinValiditySec)
@@ -1439,11 +1466,17 @@ data class SyncSettingsRequest(
 }
 
 
-data class SendFileRequest(val peerId: String, val path: String, val imageMode: String = "") {
+data class SendFileRequest(
+    val peerId: String,
+    val path: String,
+    val imageMode: String = "",
+    val caption: String = "",
+) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("peer_id", peerId)
         put("path", path)
         if (imageMode.isNotEmpty()) put("image_mode", imageMode)
+        if (caption.isNotEmpty()) put("caption", caption)
     }
 }
 
@@ -1627,6 +1660,7 @@ data class FileEventBody(
     val state: String,
     val bytesReceived: Long,
     val lastError: String,
+    val caption: String,
 ) {
     val isImage: Boolean get() = mime.startsWith("image/", ignoreCase = true)
     val isVideo: Boolean get() = mime.startsWith("video/", ignoreCase = true)
@@ -1639,6 +1673,7 @@ data class FileEventBody(
             state = "",
             bytesReceived = 0L,
             lastError = "",
+            caption = "",
         )
 
         fun fromJson(o: JSONObject?): FileEventBody {
@@ -1650,6 +1685,7 @@ data class FileEventBody(
                 state = o.optStringOrEmpty("state"),
                 bytesReceived = o.optLong("bytes_received", 0L),
                 lastError = o.optStringOrEmpty("last_error"),
+                caption = o.optStringOrEmpty("caption"),
             )
         }
     }

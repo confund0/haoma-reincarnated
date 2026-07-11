@@ -197,6 +197,32 @@ func (mgr *Manager) ListByChat(chatID chat.ChatID) ([]Metadata, error) {
 	return out, nil
 }
 
+func (mgr *Manager) ListInboundInFlight() ([]Metadata, error) {
+	var out []Metadata
+	err := mgr.st.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(prefixMeta)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			var m Metadata
+			if err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &m)
+			}); err != nil {
+				return err
+			}
+			if m.Direction == DirIn && (m.State == StatePending || m.State == StateDownloading) {
+				out = append(out, m)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("files: list inbound in-flight: %w", err)
+	}
+	return out, nil
+}
+
 func (mgr *Manager) GetMetaByToken(token string) (Metadata, error) {
 	if token == "" {
 		return Metadata{}, ErrMetaNotFound

@@ -28,6 +28,7 @@ type FileEventBody struct {
 	State            string `json:"state"`
 	BytesReceived    uint64 `json:"bytes_received,omitempty"`
 	LastError        string `json:"last_error,omitempty"`
+	Caption          string `json:"caption,omitempty"`
 }
 
 func ingestFileOffer(ctx context.Context, d *daemon, chatID chat.ChatID, entry backendapi.InboxEntry, wrapper *msg.Wrapper, body *msg.FileOfferBody) {
@@ -52,6 +53,7 @@ func ingestFileOffer(ctx context.Context, d *daemon, chatID chat.ChatID, entry b
 		Mime:             body.Mime,
 		Sha256Ciphertext: body.Sha256Ciphertext,
 		State:            string(files.StateDownloading),
+		Caption:          body.Caption,
 	}
 	bodyRaw, err := json.Marshal(feBody)
 	if err != nil {
@@ -75,10 +77,14 @@ func ingestFileOffer(ctx context.Context, d *daemon, chatID chat.ChatID, entry b
 		return
 	}
 
+	maybeSuppressInboundReceipt(d, chatID, wrapper.MsgID)
+
 	bumpChatActivity(ctx, d, chatID, time.Now().Unix())
 	if !chatIsFocused(d, chatID) {
 		incrementChatUnread(ctx, d, chatID)
 	}
+
+	d.autoMarkOnArrival(context.Background(), chatID)
 
 	if d.files != nil {
 		meta := files.Metadata{
@@ -219,20 +225,55 @@ func fileFetchStateHandler(ctx context.Context, d *daemon) func(backendapi.FileF
 			stampFileEventState(d, "", ev.MsgID, files.StateFailedPermanent, uint64(ev.BytesReceived), ev.LastError)
 		case files.StateReady:
 
-			if err := pullStagedCiphertext(ctx, d, ev.MsgID, ev.Token); err != nil {
-				logger.Warn("pull staging blob failed", slog.Any("err", err))
+			if err := finalizeReadyFetch(ctx, d, ev.MsgID, ev.Token); err != nil {
+				logger.Warn("finalize ready fetch failed", slog.Any("err", err))
 				stampFileEventState(d, "", ev.MsgID, files.StateFailedTransient, uint64(ev.BytesReceived), err.Error())
 				return
 			}
-			if peerID := resolveOfferPeer(d, ev.MsgID); peerID != "" {
-				d.shipFileReceipt(ctx, peerID, ev.Token)
-			} else {
-				logger.Warn("post-pull receipt skipped: peer-id unresolved (sender will retry on next offer)")
-			}
-			convergeFileReady(ctx, d, ev.MsgID)
 			logger.Info("file ciphertext staged locally; receipt shipped; converged")
 		default:
 			logger.Debug("ignoring unknown fetch state")
+		}
+	}
+}
+
+func finalizeReadyFetch(ctx context.Context, d *daemon, msgID, token string) error {
+	if err := pullStagedCiphertext(ctx, d, msgID, token); err != nil {
+		return err
+	}
+	if peerID := resolveOfferPeer(d, msgID); peerID != "" {
+		d.shipFileReceipt(ctx, peerID, token)
+	} else {
+		slog.Warn("post-pull receipt skipped: peer-id unresolved (sender will retry on next offer)",
+			slog.String("msg_id", msgID))
+	}
+	convergeFileReady(ctx, d, msgID)
+	return nil
+}
+
+func sweepStagedFetches(ctx context.Context, d *daemon) {
+	if d.files == nil || d.backendClient == nil {
+		return
+	}
+	rows, err := d.files.ListInboundInFlight()
+	if err != nil {
+		slog.Warn("staged-fetch sweep: list failed", slog.Any("err", err))
+		return
+	}
+	for _, m := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		switch err := finalizeReadyFetch(ctx, d, m.MsgID, m.Token); {
+		case err == nil:
+			slog.Info("staged-fetch sweep: recovered orphaned transfer",
+				slog.String("msg_id", m.MsgID))
+		case errors.Is(err, backendapi.ErrStagingNotFound):
+			slog.Debug("staged-fetch sweep: not staged yet; leaving for live path",
+				slog.String("msg_id", m.MsgID))
+		default:
+			slog.Warn("staged-fetch sweep: finalize failed; leaving row",
+				slog.String("msg_id", m.MsgID), slog.Any("err", err))
 		}
 	}
 }
