@@ -49,6 +49,7 @@ fun MessengerStore.pushSettingsSync() {
 internal fun MessengerStore.refreshVaultDerivedState(session: io.haoma.calculator.core.VaultSession) {
     policyUpdater(IdlePolicy.fromJson(session.snapshot()))
     setPassphraseIsDefault(session.isPassphraseDefault())
+    reconcileShareTarget(session)
 }
 
 
@@ -309,6 +310,9 @@ suspend fun MessengerStore.applyThreatPreset(presetId: String): Result<Unit> {
         p.put("idle_timeout_seconds", bundle.idleTimeoutSeconds)
         p.put("pin_validity_sec", bundle.pinValiditySec)
         p.put("panic_action", bundle.panicAction)
+        
+        
+        p.put("share_target_enabled", false)
     }
     
     

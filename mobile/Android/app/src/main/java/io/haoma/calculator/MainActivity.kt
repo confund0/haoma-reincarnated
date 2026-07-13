@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
         
         consumeDisguiseTipExtras(intent, app)
         consumeDeepLinkExtra(intent, app)
+        consumeShareExtra(intent, app)
 
         setContent {
             MaterialTheme {
@@ -151,6 +152,7 @@ class MainActivity : ComponentActivity() {
         val app = application as HaomaApp
         consumeDisguiseTipExtras(intent, app)
         consumeDeepLinkExtra(intent, app)
+        consumeShareExtra(intent, app)
     }
 
     
@@ -168,6 +170,20 @@ class MainActivity : ComponentActivity() {
         if (chatId.isEmpty()) return
         Logger.i("notifications", "deep-link extra consumed chat=${chatId.take(8)}…")
         app.deepLinkChatId.value = chatId
+    }
+
+    
+    @Suppress("DEPRECATION")
+    private fun consumeShareExtra(src: Intent?, app: HaomaApp) {
+        if (src == null) return
+        val uri: Uri? = when (src.action) {
+            Intent.ACTION_SEND -> src.getParcelableExtra(Intent.EXTRA_STREAM)
+            Intent.ACTION_SEND_MULTIPLE ->
+                src.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
+            else -> null
+        } ?: return
+        Logger.i("share", "share intent consumed action=${src.action} type=${src.type ?: "?"}")
+        app.pendingShareUri.value = uri
     }
 
     private fun consumeDisguiseTipExtras(src: Intent?, app: HaomaApp) {

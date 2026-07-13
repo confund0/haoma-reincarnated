@@ -1,0 +1,36 @@
+<!--
+  Share-target icon for the "Haoma" system-share-sheet entry. Not the
+  calculator disguise (that's the launcher icon); this is an honest mark
+  shown only when the user has explicitly enabled the share target at the
+  no-threat baseline. Motif: a haoma sprig — the sacred plant the app is
+  named for — a stem with two leaves and a bud, light on a deep-moss
+  rounded tile. Hand-rolled to avoid a raster/branding asset dependency.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- deep-moss rounded tile -->
+    <path
+        android:fillColor="#1F3D2E"
+        android:pathData="M9,2 L39,2 A7,7 0 0 1 46,9 L46,39 A7,7 0 0 1 39,46 L9,46 A7,7 0 0 1 2,39 L2,9 A7,7 0 0 1 9,2 Z" />
+    <!-- stem -->
+    <path
+        android:strokeColor="#B8BB26"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M24,41 C24,33 24,26 24,15" />
+    <!-- left leaf -->
+    <path
+        android:fillColor="#B8BB26"
+        android:pathData="M24,31 C17.5,31 13,26.5 13,21 C18.5,22 22.5,25.5 24,31 Z" />
+    <!-- right leaf -->
+    <path
+        android:fillColor="#B8BB26"
+        android:pathData="M24,25 C30.5,25 35,20.5 35,15 C29.5,16 25.5,19.5 24,25 Z" />
+    <!-- top bud -->
+    <path
+        android:fillColor="#D5C4A1"
+        android:pathData="M24,17 C21,14 21,10 24,7 C27,10 27,14 24,17 Z" />
+</vector>

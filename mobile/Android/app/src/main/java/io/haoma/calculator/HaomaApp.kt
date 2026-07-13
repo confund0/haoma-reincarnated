@@ -3,6 +3,7 @@ package io.haoma.calculator
 import android.app.Application
 import android.app.KeyguardManager
 import android.content.Context
+import android.net.Uri
 import android.os.PowerManager
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -49,6 +50,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private const val HARD_LOCK_HANGUP_GRACE_MS = 200L
 
+
+data class ShareAttach(val chatId: String, val uri: Uri)
+
 class HaomaApp : Application(), ImageLoaderFactory {
     companion object {
         
@@ -91,6 +95,12 @@ class HaomaApp : Application(), ImageLoaderFactory {
 
     
     val deepLinkChatId = MutableStateFlow<String?>(null)
+
+    
+    val pendingShareUri = MutableStateFlow<Uri?>(null)
+
+    
+    val pendingShareAttach = MutableStateFlow<ShareAttach?>(null)
 
     
     lateinit var proximityController: io.haoma.calculator.messenger.calls.ProximityController
@@ -265,6 +275,9 @@ class HaomaApp : Application(), ImageLoaderFactory {
                 
                 if (this::messengerStore.isInitialized && session != null) {
                     messengerStore.loadNoticeSnoozeFromVault()
+                    
+                    
+                    messengerStore.reconcileShareTarget(session)
                 }
             },
             passphraseDefaultSink = { isDefault ->
@@ -442,6 +455,10 @@ class HaomaApp : Application(), ImageLoaderFactory {
             
             
             deepLinkChatId.value = null
+            
+            
+            pendingShareUri.value = null
+            pendingShareAttach.value = null
             
             
             messengerStore.pauseFocusOnBackground()

@@ -59,6 +59,8 @@ import io.haoma.calculator.messenger.changePassphrase
 import io.haoma.calculator.messenger.changeUnlockPattern
 import io.haoma.calculator.messenger.loadCurrentPin
 import io.haoma.calculator.messenger.loadLockSettings
+import io.haoma.calculator.messenger.loadShareTargetEnabled
+import io.haoma.calculator.messenger.setShareTargetEnabled
 import io.haoma.calculator.messenger.loadUnlockKeys
 import io.haoma.calculator.messenger.saveLock
 import io.haoma.calculator.messenger.saveUnlockKeys
@@ -99,6 +101,10 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     var showPatternDialog by remember { mutableStateOf(false) }
     var showPassphraseDialog by remember { mutableStateOf(false) }
     var showUnlockKeysDialog by remember { mutableStateOf(false) }
+    
+    
+    var shareTarget by remember(snapshot) { mutableStateOf(store.loadShareTargetEnabled()) }
+    var shareSaving by remember { mutableStateOf(false) }
 
     val current by remember(idleIndex, idleTimeoutText, pinValidityText, panicIndex) {
         derivedStateOf {
@@ -160,6 +166,33 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
                     text = "Activist — coming when the data-destruction primitives ship.",
                     color = HaomaPalette.FG_SECONDARY,
                     fontSize = 12.sp,
+                )
+            }
+
+            Section(label = "Sharing") {
+                val shareAllowed = snapshot.threatProfile.isEmpty()
+                ToggleRow(
+                    label = "Show “Haoma” in the system share sheet",
+                    hint = if (shareAllowed) {
+                        "Lets other apps share photos and videos into Haoma. Off by " +
+                            "default — turning it on makes an entry named “Haoma” " +
+                            "visible to anyone who opens a share sheet on this device."
+                    } else {
+                        "Unavailable while a threat model is set — a share-sheet entry " +
+                            "would reveal the app’s presence."
+                    },
+                    checked = shareTarget,
+                    enabled = shareAllowed && !shareSaving,
+                    onCheckedChange = { want ->
+                        shareSaving = true
+                        if (error != null) error = null
+                        coroutineScope.launch {
+                            val r = store.setShareTargetEnabled(want)
+                            shareSaving = false
+                            r.onSuccess { shareTarget = store.loadShareTargetEnabled() }
+                            r.onFailure { t -> error = t.message ?: "save failed" }
+                        }
+                    },
                 )
             }
 

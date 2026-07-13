@@ -41,6 +41,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -62,10 +64,18 @@ import kotlin.math.max
 internal fun AttachPreviewScreen(
     uri: Uri,
     peerLabel: String,
-    onPickAgain: () -> Unit,
+    onClose: () -> Unit,
     onSend: (compressed: Boolean, caption: String) -> Unit,
 ) {
     val context = LocalContext.current
+    
+    
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        focusManager.clearFocus(force = true)
+        keyboard?.hide()
+    }
     var meta by remember(uri) { mutableStateOf<UriMetadata?>(null) }
     var dims by remember(uri) { mutableStateOf<ImageDims?>(null) }
     
@@ -88,11 +98,11 @@ internal fun AttachPreviewScreen(
         estimateCompressedBytes(sizeBytes, dims) else null
 
     FullScreenOverlay(
-        onDismiss = onPickAgain,
+        onDismiss = onClose,
         background = ChatPalette.Surface,
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            HeaderRow(peerLabel = peerLabel, onPickAgain = onPickAgain)
+            HeaderRow(peerLabel = peerLabel, onClose = onClose)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -115,7 +125,7 @@ internal fun AttachPreviewScreen(
 }
 
 @Composable
-private fun HeaderRow(peerLabel: String, onPickAgain: () -> Unit) {
+private fun HeaderRow(peerLabel: String, onClose: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -124,10 +134,10 @@ private fun HeaderRow(peerLabel: String, onPickAgain: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        IconButton(onClick = onPickAgain) {
+        IconButton(onClick = onClose) {
             Icon(
                 imageVector = Icons.Filled.Close,
-                contentDescription = "Pick a different file",
+                contentDescription = "Cancel",
                 tint = ChatPalette.Accent,
             )
         }

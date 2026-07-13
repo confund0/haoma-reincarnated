@@ -33,8 +33,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.messenger.calls.ChatCallHistoryScreen
+import io.haoma.calculator.ShareAttach
 import io.haoma.calculator.messenger.chat.ChatDetailScreen
 import io.haoma.calculator.messenger.chat.ChatSettingsScreen
+import io.haoma.calculator.messenger.chat.ShareTargetPicker
 import io.haoma.calculator.messenger.chats.ChatsTab
 import io.haoma.calculator.messenger.contacts.ContactDetailScreen
 import io.haoma.calculator.messenger.contacts.ContactsTab
@@ -75,6 +77,10 @@ fun MessengerScaffold(store: MessengerStore) {
         app.deepLinkChatId.value = null
     }
 
+    
+    val pendingShareUri by app.pendingShareUri.collectAsStateWithLifecycle()
+    val chats by store.chats.collectAsStateWithLifecycle()
+
     KeepScreenOnDuringCalls(store = store)
 
     Scaffold(
@@ -114,6 +120,19 @@ fun MessengerScaffold(store: MessengerStore) {
             
             
             RingerDialogHost(store = store)
+
+            
+            pendingShareUri?.let { uri ->
+                ShareTargetPicker(
+                    chats = chats,
+                    onPick = { chatId ->
+                        app.pendingShareAttach.value = ShareAttach(chatId, uri)
+                        store.openChatDetail(chatId)
+                        app.pendingShareUri.value = null
+                    },
+                    onCancel = { app.pendingShareUri.value = null },
+                )
+            }
         }
     }
 }

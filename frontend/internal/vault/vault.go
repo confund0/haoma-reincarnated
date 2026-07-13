@@ -140,6 +140,8 @@ type Payload struct {
 
 	URLForceChooser bool `json:"url_force_chooser"`
 
+	ShareTargetEnabled bool `json:"share_target_enabled,omitempty"`
+
 	MobileNoticeSnooze map[string]NoticeSnoozeState `json:"mobile_notice_snooze,omitempty"`
 }
 

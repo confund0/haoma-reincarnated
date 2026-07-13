@@ -481,6 +481,7 @@ func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 		"panic_action":              "hard-lock",
 		"threat_profile":            "privacy",
 		"url_force_chooser":         true,
+		"share_target_enabled":      true,
 		"mobile_notice_snooze":      {"passphrase_is_default": {"until": 1733600000000, "step": 2}}
 	}`
 

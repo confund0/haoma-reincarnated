@@ -82,6 +82,40 @@
             </intent-filter>
         </activity>
         <!--
+            Share target. A dedicated trampoline activity (NOT an alias or
+            a filter on MainActivity): presence in other apps' share sheets
+            is an OS-level component toggle (ships android:enabled="false",
+            flipped at runtime only when the user opts in AND the threat
+            profile is the no-threat baseline). Own honest label + haoma-
+            sprig icon (the launcher is the calculator disguise); no
+            LAUNCHER category, so it never adds a home-screen icon.
+
+            SECURITY: taskAffinity="" + excludeFromRecents + noHistory keep
+            the share out of the SHARING app's task and out of recents. The
+            trampoline immediately relaunches MainActivity into Haoma's own
+            task (see ShareReceiverActivity) so the lock/disguise gate and
+            swipe-kill lock apply — an alias can't set these task attributes.
+            Translucent theme so the momentary trampoline never flashes UI.
+        -->
+        <activity
+            android:name=".ShareReceiverActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:icon="@drawable/ic_share_haoma"
+            android:label="@string/share_target_label"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
+        <!--
             QR scanner host. Subclasses zxing-android-embedded's
             CaptureActivity solely so we can pin portrait orientation —
             the library default twists the device into landscape mid-pair,

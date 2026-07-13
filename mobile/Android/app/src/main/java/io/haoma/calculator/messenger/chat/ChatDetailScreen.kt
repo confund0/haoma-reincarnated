@@ -2,6 +2,7 @@ package io.haoma.calculator.messenger.chat
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -48,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.*
 import io.haoma.calculator.messenger.calls.InCallBar
@@ -147,10 +149,31 @@ fun ChatDetailScreen(
     
     
     var pendingAttachUri by remember { mutableStateOf<Uri?>(null) }
+    var showAttachSource by remember { mutableStateOf(false) }
+    
+    
     val attachLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         pendingAttachUri = uri
+    }
+    
+    
+    val photoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) pendingAttachUri = uri
+    }
+
+    
+    val hostApp = context.applicationContext as HaomaApp
+    val shareAttach by hostApp.pendingShareAttach.collectAsStateWithLifecycle()
+    LaunchedEffect(shareAttach, chatId) {
+        val sa = shareAttach
+        if (sa != null && sa.chatId == chatId) {
+            pendingAttachUri = sa.uri
+            hostApp.pendingShareAttach.value = null
+        }
     }
 
     LaunchedEffect(chatId) {
@@ -302,8 +325,24 @@ fun ChatDetailScreen(
             onCancelReply = { store.clearReplyTarget(chatId) },
             
             
-            onAttach = { attachLauncher.launch(arrayOf("*/*")) },
+            onAttach = { showAttachSource = true },
             fromNick = effectiveNick,
+        )
+    }
+
+    if (showAttachSource) {
+        AttachSourceSheet(
+            onDismiss = { showAttachSource = false },
+            onGallery = {
+                showAttachSource = false
+                photoLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+                )
+            },
+            onFiles = {
+                showAttachSource = false
+                attachLauncher.launch(arrayOf("*/*"))
+            },
         )
     }
 
@@ -313,10 +352,7 @@ fun ChatDetailScreen(
         AttachPreviewScreen(
             uri = uri,
             peerLabel = peerLabel,
-            onPickAgain = {
-                pendingAttachUri = null
-                attachLauncher.launch(arrayOf("*/*"))
-            },
+            onClose = { pendingAttachUri = null },
             onSend = { compressed, caption ->
                 store.attachFromUri(chatId, uri, compressed, caption)
                 pendingAttachUri = null
