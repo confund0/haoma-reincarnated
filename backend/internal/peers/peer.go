@@ -25,6 +25,10 @@ type Peer struct {
 
 	LastPassiveAt int64 `json:"last_passive_at,omitempty"`
 
+	LastDeliveredAt int64 `json:"last_delivered_at,omitempty"`
+
+	UndeliveredQueuedAt int64 `json:"undelivered_queued_at,omitempty"`
+
 	RetiredAt int64 `json:"retired_at,omitempty"`
 
 	RetiredAddrs []RetiredAddr `json:"retired_addrs,omitempty"`
@@ -57,6 +61,13 @@ func NewPeerSecret() ([]byte, error) {
 		return nil, fmt.Errorf("contacts: generate peer secret: %w", err)
 	}
 	return b, nil
+}
+
+func (p *Peer) Unreachable() bool {
+	if p.RetiredAt != 0 || p.UndeliveredQueuedAt == 0 {
+		return false
+	}
+	return p.UndeliveredQueuedAt > p.LastPassiveAt && p.UndeliveredQueuedAt > p.LastDeliveredAt
 }
 
 func (p *Peer) hasAddress(addr string) bool {

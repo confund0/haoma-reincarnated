@@ -1,0 +1,21 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4197,
+      "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+      "direction": "in",
+      "kind": "reaction",
+      "display_ts": 1754902811,
+      "recv_ts": 1754903260,
+      "sender_peer_id": "c95f28d17a604b3e81ca6d0f452937ab",
+      "msg_id": "0e5b83c716df42a9805c1e7b64a3f298",
+      "body": {
+        "target_msg_id": "9c1e4d7a3f80426bb52c8e0f19a73d65",
+        "emoji": "👍",
+        "at": 1754903259
+      },
+      "expire_seconds": 604800
+    }
+  }
+}

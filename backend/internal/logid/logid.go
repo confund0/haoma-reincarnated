@@ -3,6 +3,8 @@ package logid
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"net/url"
 	"regexp"
 )
 
@@ -21,6 +23,12 @@ func RedactOnions(s string) string {
 	return onionRe.ReplaceAllStringFunc(s, func(m string) string {
 		return m[:shortPrefix] + "…" + ".onion"
 	})
+}
+
+const OnionWithheld = "<address>"
+
+func WithholdOnions(s string) string {
+	return onionRe.ReplaceAllString(s, OnionWithheld)
 }
 
 func HasOnion(s string) bool {
@@ -45,4 +53,12 @@ func RedactURLTokens(s string) string {
 		}
 		return m[:shortPrefix] + "…"
 	})
+}
+
+func RedactURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		ue.URL = RedactURLTokens(ue.URL)
+	}
+	return err
 }

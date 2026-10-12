@@ -19,13 +19,14 @@ import (
 
 type fakePublisher struct {
 	mu      sync.Mutex
+	key     string
 	target  string
 	port    int
 	deleted []string
 	addErr  error
 }
 
-func (f *fakePublisher) AddOnion(_ string, ports []control.OnionPort, _ ...string) (*control.Onion, error) {
+func (f *fakePublisher) AddOnion(privateKey string, ports []control.OnionPort, _ ...string) (*control.Onion, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.addErr != nil {
@@ -34,6 +35,7 @@ func (f *fakePublisher) AddOnion(_ string, ports []control.OnionPort, _ ...strin
 	if len(ports) == 0 || ports[0].Target == "" {
 		return nil, errors.New("fakePublisher: missing target")
 	}
+	f.key = privateKey
 	f.target = ports[0].Target
 	f.port = ports[0].VirtPort
 
@@ -57,6 +59,12 @@ func (f *fakePublisher) localTarget() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.target
+}
+
+func (f *fakePublisher) publishedKey() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.key
 }
 
 type directDialer struct{ target string }
@@ -434,5 +442,160 @@ func TestOnionDriver_Server_FirstSuccessOnly(t *testing.T) {
 	}
 	if gotOK != 1 || gotRejected != 1 || gotOther != 0 {
 		t.Errorf("counts: OK=%d rejected=%d other=%d, want 1/1/0", gotOK, gotRejected, gotOther)
+	}
+}
+
+func TestOnionDriver_LongLivedUsesASecretAndHoldsForAWeek(t *testing.T) {
+	t.Parallel()
+	driver := NewOnionDriver(&fakePublisher{}, nil)
+	driver.SkipServiceIDCheckForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pi, err := driver.CreateInvite(ctx, CreateRequest{
+		Payload:   []byte(`{"side":"inviter"}`),
+		LongLived: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pi.Cancel()
+
+	oob := pi.OOB()
+	if len(oob.Words) != 0 {
+		t.Errorf("a long-lived rendezvous handed back a phrase: %v", oob.Words)
+	}
+	if len(oob.Secret) < OnionSecretMinLen {
+		t.Fatalf("secret is %d chars, want at least %d", len(oob.Secret), OnionSecretMinLen)
+	}
+
+	if _, err := OnionDeriveSecret(oob.Secret); err != nil {
+		t.Fatalf("the secret handed back does not derive a rendezvous: %v", err)
+	}
+	if pi.ExpiresAt() == 0 {
+		t.Fatal("a long-lived rendezvous has no deadline at all")
+	}
+	if got := time.Until(time.Unix(pi.ExpiresAt(), 0)); got < 6*24*time.Hour {
+		t.Errorf("holds for %s, want about a week", got)
+	}
+}
+
+func TestOnionDriver_OrdinaryRendezvousStillCappedAtAnHour(t *testing.T) {
+	t.Parallel()
+	driver := NewOnionDriver(&fakePublisher{}, nil)
+	driver.SkipServiceIDCheckForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pi, err := driver.CreateInvite(ctx, CreateRequest{
+		Payload: []byte(`{"side":"inviter"}`),
+		Timeout: 30 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pi.Cancel()
+
+	if len(pi.OOB().Words) != OnionWordCount {
+		t.Error("an ordinary rendezvous is no longer addressed by a phrase")
+	}
+	if pi.OOB().Secret != "" {
+		t.Error("an ordinary rendezvous handed back a generated secret")
+	}
+	if got := time.Until(time.Unix(pi.ExpiresAt(), 0)); got > time.Hour+time.Minute {
+		t.Errorf("holds for %s, want the hour cap to bind", got)
+	}
+}
+
+func TestOnionDriver_SameSecretRepublishesTheSameAddress(t *testing.T) {
+	t.Parallel()
+	pub := &fakePublisher{}
+	driver := NewOnionDriver(pub, nil)
+	driver.SkipServiceIDCheckForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	first, err := driver.CreateInvite(ctx, CreateRequest{
+		Payload:   []byte(`{"side":"inviter"}`),
+		LongLived: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := first.OOB().Secret
+	want, err := OnionDeriveSecret(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Cancel()
+
+	second, err := driver.CreateInvite(ctx, CreateRequest{
+		Payload: []byte(`{"side":"inviter"}`),
+		Secret:  secret,
+		Timeout: 6 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("re-creating the rendezvous from its secret failed: %v", err)
+	}
+	defer second.Cancel()
+
+	if got := second.OOB().Secret; got != secret {
+		t.Error("the secret changed on republish — whoever holds the old one now reaches nothing")
+	}
+
+	if got := pub.publishedKey(); got != want.TorExpandedKeyB64 {
+		t.Error("republished under a different onion key than the secret derives — the advertised address stops answering")
+	}
+}
+
+func TestOnionDriver_SuppliedSecretKeepsTheLongLivedCap(t *testing.T) {
+	t.Parallel()
+	driver := NewOnionDriver(&fakePublisher{}, nil)
+	driver.SkipServiceIDCheckForTest()
+
+	secret, err := GenerateOnionSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pi, err := driver.CreateInvite(context.Background(), CreateRequest{
+		Payload: []byte(`{"side":"inviter"}`),
+		Secret:  secret,
+		Timeout: 5 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pi.Cancel()
+
+	if got := time.Until(time.Unix(pi.ExpiresAt(), 0)); got < 4*24*time.Hour {
+		t.Errorf("holds for %s, want the requested five days — the hour cap must not bind here", got)
+	}
+}
+
+func TestOnionDriver_RefusesASecretItCannotDerive(t *testing.T) {
+	t.Parallel()
+	driver := NewOnionDriver(&fakePublisher{}, nil)
+	driver.SkipServiceIDCheckForTest()
+
+	for _, c := range []struct {
+		name   string
+		secret string
+	}{
+		{"too short", strings.Repeat("a", OnionSecretMinLen-1)},
+		{"too long", strings.Repeat("a", OnionSecretMaxLen+1)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pi, err := driver.CreateInvite(context.Background(), CreateRequest{
+				Payload: []byte(`{}`),
+				Secret:  c.secret,
+			})
+			if err == nil {
+				pi.Cancel()
+				t.Error("published a rendezvous from a secret that derives no address")
+			}
+		})
 	}
 }

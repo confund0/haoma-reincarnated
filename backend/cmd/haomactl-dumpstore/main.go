@@ -127,9 +127,16 @@ func classify(key []byte) (string, string) {
 	case strings.HasPrefix(s, "inbox-envid:"):
 		return "inbox-envid", s
 	case strings.HasPrefix(s, "file-token:"):
-		return "file-token", s
+		return "file-token", "file-token:" + elided(strings.TrimPrefix(s, "file-token:"))
 	case strings.HasPrefix(s, "file-blob:"):
-		return "file-blob", s
+
+		rest := strings.TrimPrefix(s, "file-blob:")
+		if i := strings.LastIndexByte(rest, ':'); i >= 0 {
+			return "file-blob", "file-blob:" + rest[:i+1] + elided(rest[i+1:])
+		}
+		return "file-blob", "file-blob:" + elided(rest)
+	case strings.HasPrefix(s, "fetch:"):
+		return "fetch", "fetch:" + elided(strings.TrimPrefix(s, "fetch:"))
 	case strings.HasPrefix(s, "badger!"):
 		return "badger-internal", s
 	default:
@@ -146,7 +153,9 @@ func asciiOrHex(key []byte) string {
 
 func renderValue(group string, v []byte) string {
 	switch group {
-	case "contact", "outbox", "inbox", "file-token":
+	case "file-token", "fetch":
+		return renderWithoutTokens(v)
+	case "contact", "outbox", "inbox":
 		return prettyJSON(v)
 	case "addr", "outbox-state", "file-blob":
 		return quotedOrHex(v)
@@ -156,6 +165,28 @@ func renderValue(group string, v []byte) string {
 	default:
 		return jsonOrHex(v)
 	}
+}
+
+func elided(token string) string {
+	return fmt.Sprintf("(elided, %d chars)", len(token))
+}
+
+func renderWithoutTokens(v []byte) string {
+	var fields map[string]any
+	if err := json.Unmarshal(v, &fields); err != nil {
+		return fmt.Sprintf("<unreadable row, %d bytes>", len(v))
+	}
+	for _, key := range []string{"token", "url_path"} {
+		if val, held := fields[key]; held {
+			text, _ := val.(string)
+			fields[key] = elided(text)
+		}
+	}
+	b, err := json.MarshalIndent(fields, "     ", "  ")
+	if err != nil {
+		return fmt.Sprintf("<unreadable row, %d bytes>", len(v))
+	}
+	return string(b)
 }
 
 func prettyJSON(v []byte) string {

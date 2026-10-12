@@ -133,7 +133,16 @@ func classify(key []byte) (string, string) {
 		return "evt-envid", s
 	case strings.HasPrefix(s, "evt-msgid:"):
 		return "evt-msgid", s
-	case s == "events:next_recv_seq":
+	case strings.HasPrefix(s, "evt-jrn:"):
+
+		tail := key[len("evt-jrn:"):]
+		if len(tail) != 8 {
+			return "evt-jrn", asciiOrHex(key)
+		}
+		return "evt-jrn", fmt.Sprintf("evt-jrn:%d", binary.BigEndian.Uint64(tail))
+	case strings.HasPrefix(s, "evt-jrnid:"):
+		return "evt-jrnid", s
+	case s == "events:next_recv_seq", s == "events:next_journal_seq":
 		return "events-counter", s
 	case strings.HasPrefix(s, "chat:"):
 		return "chat", s
@@ -158,9 +167,31 @@ func classify(key []byte) (string, string) {
 	case strings.HasPrefix(s, "file-by-chat:"):
 		return "file-by-chat", s
 	case strings.HasPrefix(s, "file-by-token:"):
-		return "file-by-token", s
+
+		return "file-by-token", "file-by-token:" + fmt.Sprintf("(elided, %d chars)", len(s)-len("file-by-token:"))
+	case strings.HasPrefix(s, "sibling-offer:"):
+
+		return "sibling-offer", s
+	case strings.HasPrefix(s, "gap-offer:"):
+
+		return "gap-offer", s
 	case strings.HasPrefix(s, "setting:"):
 		return "setting", s
+	case strings.HasPrefix(s, "linkeddevice:"):
+		return "linkeddevice", s
+	case strings.HasPrefix(s, "invitation-by-chat:"):
+		return "invitation-by-chat", s
+	case strings.HasPrefix(s, "invitation-note:"):
+		return "invitation-note", s
+	case strings.HasPrefix(s, "invitation:"):
+
+		return "invitation", s
+	case strings.HasPrefix(s, "gapfill-wm:"):
+
+		return "gapfill-held", s
+	case strings.HasPrefix(s, "gapfill-ack:"):
+
+		return "gapfill-ack", s
 	case strings.HasPrefix(s, "badger!"):
 		return "badger-internal", s
 	default:
@@ -187,8 +218,19 @@ func renderValue(group string, v []byte) string {
 			return fmt.Sprintf("uint64 BE = %d", binary.BigEndian.Uint64(v))
 		}
 		return quotedOrHex(v)
-	case "chat", "evt", "call", "file":
+	case "chat", "evt", "call", "file", "linkeddevice", "evt-jrn":
 		return prettyJSON(v)
+	case "gapfill-held", "gapfill-ack":
+		if len(v) == 8 {
+			return fmt.Sprintf("seq = %d", binary.BigEndian.Uint64(v))
+		}
+		return hexPreview(v)
+	case "evt-jrnid":
+
+		if len(v) == 8 {
+			return fmt.Sprintf("seq = %d", binary.BigEndian.Uint64(v))
+		}
+		return hexPreview(v)
 	case "chat-by-peer", "evt-envid", "evt-msgid", "call-by-chat", "file-by-chat", "file-by-token":
 
 		if printable(v) {
@@ -197,6 +239,13 @@ func renderValue(group string, v []byte) string {
 		return hexPreview(v)
 	case "pair_secret", "files-master":
 		return hexPreview(v)
+	case "invitation":
+		return renderInvitation(v)
+	case "sibling-offer", "gap-offer":
+		return renderSiblingOffer(v)
+	case "invitation-note":
+
+		return prettyJSON(v)
 	case "pair_mykeys":
 		return jsonOrHex(v)
 	case "signal":
@@ -208,11 +257,88 @@ func renderValue(group string, v []byte) string {
 	}
 }
 
+func renderInvitation(v []byte) string {
+	var fields map[string]any
+	if err := json.Unmarshal(v, &fields); err != nil {
+		return hexPreview(v)
+	}
+	if secret, held := fields["secret"]; held {
+		text, _ := secret.(string)
+		fields["secret"] = fmt.Sprintf("<elided, %d chars>", len(text))
+	}
+	b, err := json.MarshalIndent(fields, "     ", "  ")
+	if err != nil {
+		return hexPreview(v)
+	}
+	return string(b)
+}
+
+func renderSiblingOffer(v []byte) string {
+	var fields map[string]any
+	if err := json.Unmarshal(v, &fields); err != nil {
+		return fmt.Sprintf("<unreadable sibling offer, %d bytes>", len(v))
+	}
+	for _, secret := range []string{"token", "url_path", "key", "nonce"} {
+		if val, held := fields[secret]; held {
+			text, _ := val.(string)
+			fields[secret] = fmt.Sprintf("(elided, %d chars)", len(text))
+		}
+	}
+	b, err := json.MarshalIndent(fields, "     ", "  ")
+	if err != nil {
+		return fmt.Sprintf("<unreadable sibling offer, %d bytes>", len(v))
+	}
+	return string(b)
+}
+
+var secretFields = map[string]bool{
+	"token":     true,
+	"url_path":  true,
+	"key_bytes": true,
+	"key":       true,
+	"nonce":     true,
+}
+
+func redactSecrets(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			switch {
+			case secretFields[k]:
+				t[k] = elidedValue(val)
+			case k == "recipient_tokens":
+				if m, ok := val.(map[string]any); ok {
+					for mk, mv := range m {
+						m[mk] = elidedValue(mv)
+					}
+				} else {
+					t[k] = elidedValue(val)
+				}
+			default:
+				t[k] = redactSecrets(val)
+			}
+		}
+		return t
+	case []any:
+		for i := range t {
+			t[i] = redactSecrets(t[i])
+		}
+		return t
+	}
+	return v
+}
+
+func elidedValue(v any) string {
+	s, _ := v.(string)
+	return fmt.Sprintf("(elided, %d chars)", len(s))
+}
+
 func prettyJSON(v []byte) string {
 	var anyv any
 	if err := json.Unmarshal(v, &anyv); err != nil {
 		return jsonOrHex(v)
 	}
+	anyv = redactSecrets(anyv)
 	b, err := json.MarshalIndent(anyv, "     ", "  ")
 	if err != nil {
 		return jsonOrHex(v)
@@ -226,7 +352,7 @@ func jsonOrHex(v []byte) string {
 	}
 	var anyv any
 	if err := json.Unmarshal(v, &anyv); err == nil {
-		b, _ := json.MarshalIndent(anyv, "     ", "  ")
+		b, _ := json.MarshalIndent(redactSecrets(anyv), "     ", "  ")
 		return string(b)
 	}
 	return hexPreview(v)

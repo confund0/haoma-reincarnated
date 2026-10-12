@@ -65,3 +65,30 @@ func TestSetEvents_EventDelivery(t *testing.T) {
 		t.Fatal("event not delivered within 500ms")
 	}
 }
+
+func TestConn_DoneClosesWhenTheServerDrops(t *testing.T) {
+	c := mockTor(t, func(s net.Conn) {
+		s.Close()
+	})
+	defer c.Close()
+	select {
+	case <-c.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done not closed after the server dropped the connection")
+	}
+}
+
+func TestConn_DoneClosesOnClose(t *testing.T) {
+	c := mockTor(t, func(s net.Conn) {})
+	select {
+	case <-c.Done():
+		t.Fatal("Done closed before Close")
+	default:
+	}
+	c.Close()
+	select {
+	case <-c.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done not closed after Close")
+	}
+}

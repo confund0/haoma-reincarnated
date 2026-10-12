@@ -51,14 +51,21 @@ import io.haoma.calculator.messenger.HaomaPalette
 import io.haoma.calculator.messenger.HaomaTextField
 import io.haoma.calculator.messenger.LockSettings
 import io.haoma.calculator.messenger.MessengerStore
+import io.haoma.calculator.messenger.NotificationSettings
+import io.haoma.calculator.messenger.RETENTION_NOTE_REFUSED
+import io.haoma.calculator.messenger.RETENTION_NOTE_UNKNOWN
 import io.haoma.calculator.messenger.Section
 import io.haoma.calculator.messenger.THREAT_PRESET_BUNDLES
+import io.haoma.calculator.messenger.TIER_DOMESTIC
+import io.haoma.calculator.messenger.TIER_FORCE
+import io.haoma.calculator.messenger.TIER_NOBODY
+import io.haoma.calculator.messenger.TIER_POWER
 import io.haoma.calculator.messenger.UnlockKeySettings
 import io.haoma.calculator.messenger.applyThreatPreset
 import io.haoma.calculator.messenger.changePassphrase
 import io.haoma.calculator.messenger.changeUnlockPattern
-import io.haoma.calculator.messenger.loadCurrentPin
 import io.haoma.calculator.messenger.loadLockSettings
+import io.haoma.calculator.messenger.loadNotificationSettings
 import io.haoma.calculator.messenger.loadShareTargetEnabled
 import io.haoma.calculator.messenger.setShareTargetEnabled
 import io.haoma.calculator.messenger.loadUnlockKeys
@@ -97,6 +104,9 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
 
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    
+    
+    var retentionNote by remember { mutableStateOf("") }
     var confirmPreset by remember { mutableStateOf<String?>(null) }
     var showPatternDialog by remember { mutableStateOf(false) }
     var showPassphraseDialog by remember { mutableStateOf(false) }
@@ -127,8 +137,11 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     }
 
     
-    val driftStatus = remember(current, snapshot.threatProfile) {
-        buildDriftStatus(snapshot.threatProfile, current)
+    val notifCells = remember(snapshot) { store.loadNotificationSettings() }
+
+    
+    val driftStatus = remember(current, snapshot.threatProfile, notifCells) {
+        buildDriftStatus(snapshot.threatProfile, current, notifCells)
     }
 
     Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
@@ -148,7 +161,7 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 EnumDropdown(
-                    label = "Preset",
+                    label = PRESET_QUESTION,
                     options = PRESET_LABELS,
                     currentIndex = presetIndex,
                     onPick = { newIdx ->
@@ -161,28 +174,39 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
                         if (error != null) error = null
                     },
                 )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Activist — coming when the data-destruction primitives ship.",
-                    color = HaomaPalette.FG_SECONDARY,
-                    fontSize = 12.sp,
-                )
+                PRESET_LINES[PRESET_VALUES[presetIndex]]?.let { line ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = line,
+                        color = HaomaPalette.FG_SECONDARY,
+                        fontSize = 12.sp,
+                    )
+                }
+                if (retentionNote.isNotEmpty()) {
+                    
+                    
+                    val nothingLanded = retentionNote == RETENTION_NOTE_REFUSED ||
+                        retentionNote == RETENTION_NOTE_UNKNOWN
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = retentionNote,
+                        color = if (nothingLanded) HaomaPalette.C_DANGER else HaomaPalette.FG_SECONDARY,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
             }
 
             Section(label = "Sharing") {
-                val shareAllowed = snapshot.threatProfile.isEmpty()
                 ToggleRow(
                     label = "Show “Haoma” in the system share sheet",
-                    hint = if (shareAllowed) {
-                        "Lets other apps share photos and videos into Haoma. Off by " +
-                            "default — turning it on makes an entry named “Haoma” " +
-                            "visible to anyone who opens a share sheet on this device."
-                    } else {
-                        "Unavailable while a threat model is set — a share-sheet entry " +
-                            "would reveal the app’s presence."
-                    },
+                    hint = "Lets other apps share photos and videos into Haoma. " +
+                        "Turning it on makes an entry named “Haoma” visible to " +
+                        "anyone who opens a share sheet on this device. Only " +
+                        "the answer “No one” keeps it on; the other three " +
+                        "turn it off.",
                     checked = shareTarget,
-                    enabled = shareAllowed && !shareSaving,
+                    enabled = !shareSaving,
                     onCheckedChange = { want ->
                         shareSaving = true
                         if (error != null) error = null
@@ -327,16 +351,17 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
     confirmPreset?.let { presetId ->
         
         
-        val currentBypass = if (presetId.isNotEmpty()) {
+        val currentBypass = if (presetClearsBypassSlot(presetId)) {
             store.loadUnlockKeys().bypassKey
-        } else ""
-        val pinForWarning = if (currentBypass.isNotEmpty()) {
-            store.loadCurrentPin().orEmpty()
-        } else ""
+        } else {
+            ""
+        }
         ApplyPresetConfirmDialog(
             presetId = presetId,
             bypassWasSet = currentBypass.isNotEmpty(),
-            currentPin = pinForWarning,
+            
+            
+            pinKey = store.loadUnlockKeys().pinKey,
             onDismiss = {
                 
                 
@@ -348,21 +373,28 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
                 saving = true
                 error = null
                 coroutineScope.launch {
-                    val result = if (presetId.isEmpty()) {
+                    
+                    
+                    val result: Result<String> = if (presetId.isEmpty()) {
                         
                         
                         store.saveLock(snapshot.copy(threatProfile = ""), clearThreatProfile = true)
+                            .map { "" }
                     } else {
                         store.applyThreatPreset(presetId)
                     }
                     saving = false
-                    result.onSuccess {
+                    result.onSuccess { note ->
+                        
+                        
+                        retentionNote = note
                         
                         
                         initial = store.loadLockSettings()
                     }
                     result.onFailure { t ->
                         error = t.message ?: "apply failed"
+                        retentionNote = ""
                         
                         presetIndex = presetIndexOf(snapshot.threatProfile)
                     }
@@ -543,7 +575,7 @@ private fun ChangePatternDialog(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = "re-sealing vault (1–3s)…",
+                                text = "Saving…",
                                 color = HaomaPalette.FG_SECONDARY,
                                 fontSize = 12.sp,
                             )
@@ -676,7 +708,7 @@ private fun ChangePassphraseDialog(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = "re-sealing vault (1–3s)…",
+                                text = "Saving…",
                                 color = HaomaPalette.FG_SECONDARY,
                                 fontSize = 12.sp,
                             )
@@ -757,17 +789,18 @@ private fun ChangePassphraseDialog(
 private fun ApplyPresetConfirmDialog(
     presetId: String,
     bypassWasSet: Boolean,
-    currentPin: String,
+    pinKey: String,
     onDismiss: () -> Unit,
     onApply: () -> Unit,
 ) {
     val clearing = presetId.isEmpty()
     val label = if (clearing) "" else PRESET_LABEL_BY_ID[presetId] ?: presetId
-    val title = if (clearing) "Clear preset label?" else "Apply $label preset?"
+    val title = if (clearing) "Clear the answer?" else "Answer “$label”?"
     val body = if (clearing) {
-        "Removes the preset tag. Your idle / PIN / panic values stay as they are — only the bundle label is cleared."
+        "Removes the answer. Every setting stays as it is — only the label is cleared."
     } else {
-        "Your current Lock + Panic settings will be overwritten with the $label bundle."
+        "This writes the lock, panic, notification and message-keeping settings for “$label”. " +
+            "You can change any of them again afterwards."
     }
     val confirmLabel = if (clearing) "Clear" else "Apply"
     MaterialTheme(
@@ -789,32 +822,8 @@ private fun ApplyPresetConfirmDialog(
                         fontSize = 13.sp,
                     )
                     if (bypassWasSet) {
-                        
-                        
-                        val pinShown = currentPin.ifEmpty { "(unset)" }
-                        val annotated = androidx.compose.ui.text.buildAnnotatedString {
-                            append("We are disabling PIN bypass. Your PIN is ")
-                            pushStyle(
-                                androidx.compose.ui.text.SpanStyle(
-                                    color = HaomaPalette.BTN_GIVE,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontFamily = FontFamily.Monospace,
-                                ),
-                            )
-                            append(pinShown)
-                            pop()
-                            append(" — ")
-                            pushStyle(
-                                androidx.compose.ui.text.SpanStyle(
-                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                                ),
-                            )
-                            append("write it down")
-                            pop()
-                            append(".")
-                        }
                         Text(
-                            text = annotated,
+                            text = bypassGoingAwayNote(pinKey),
                             color = HaomaPalette.FG_PRIMARY,
                             fontSize = 13.sp,
                             lineHeight = 18.sp,
@@ -842,21 +851,43 @@ private fun ApplyPresetConfirmDialog(
 }
 
 
-private fun buildDriftStatus(activeProfile: String, current: LockSettings): String {
-    if (activeProfile.isEmpty()) return "Custom (no preset selected)"
+internal fun presetClearsBypassSlot(presetId: String): Boolean =
+    THREAT_PRESET_BUNDLES[presetId]?.bypassSlotEnabled == false
+
+
+internal fun bypassGoingAwayNote(pinKey: String): String =
+    "This turns off the bypass. You will need your PIN. " +
+        "Long-press $pinKey until the blue light shows, type your PIN, " +
+        "then long-press =. If you have not set your own PIN, it is " +
+        "${io.haoma.calculator.unlock.PatternConfig.FACTORY_DEFAULT}."
+
+
+internal fun buildDriftStatus(
+    activeProfile: String,
+    current: LockSettings,
+    notifs: NotificationSettings?,
+): String {
+    if (activeProfile.isEmpty()) return "Not picked yet"
     val label = PRESET_LABEL_BY_ID[activeProfile] ?: activeProfile
     val bundle = THREAT_PRESET_BUNDLES[activeProfile] ?: return label
+    if (notifs == null) return label
     val matches = bundle.idleAction == current.idleAction &&
         bundle.idleTimeoutSeconds == current.idleTimeoutSeconds &&
         bundle.pinValiditySec == current.pinValiditySec &&
-        bundle.panicAction == current.panicAction
-    return if (matches) label else "$label-modified"
+        bundle.panicAction == current.panicAction &&
+        bundle.notifyShellEnabled == notifs.shellEnabled &&
+        bundle.notifyShowSender == notifs.showSender &&
+        bundle.notifyShowBody == notifs.showBody &&
+        bundle.notificationsOnLock == notifs.onLock &&
+        bundle.notifyPersistUntilOpen == notifs.persistUntilOpen &&
+        bundle.notifyDeepLink == notifs.deepLink &&
+        bundle.showFailedDestroyAttempts == notifs.showFailedDestroyAttempts
+    return if (matches) label else "$label — changed since"
 }
 
-private fun presetIndexOf(profile: String): Int = when (profile) {
-    "domestic" -> 1
-    "privacy" -> 2
-    else -> 0
+private fun presetIndexOf(profile: String): Int {
+    val idx = PRESET_VALUES.indexOf(profile)
+    return if (idx > 0) idx else 0
 }
 
 private fun idleIndexOf(action: String): Int {
@@ -869,13 +900,30 @@ private fun panicIndexOf(action: String): Int {
     return if (idx >= 0) idx else 0
 }
 
-private val PRESET_LABELS: List<String> = listOf("(unset)", "Domestic", "Privacy")
-private val PRESET_VALUES: List<String> = listOf("", "domestic", "privacy")
-private val PRESET_LABEL_BY_ID: Map<String, String> = mapOf(
-    "domestic" to "Domestic",
-    "privacy" to "Privacy",
-    "activist" to "Activist",
+
+private const val PRESET_QUESTION = "Who is after you?"
+private val PRESET_LABELS: List<String> = listOf(
+    "(not picked yet)",
+    "No one",
+    "People at home",
+    "People with power",
+    "People with force",
 )
+private val PRESET_VALUES: List<String> = listOf(
+    "",
+    TIER_NOBODY,
+    TIER_DOMESTIC,
+    TIER_POWER,
+    TIER_FORCE,
+)
+private val PRESET_LINES: Map<String, String> = mapOf(
+    TIER_NOBODY to "nobody else uses this device",
+    TIER_DOMESTIC to "somebody here picks it up and looks",
+    TIER_POWER to "they can dig, but cannot make you open it",
+    TIER_FORCE to "they can make you unlock it",
+)
+private val PRESET_LABEL_BY_ID: Map<String, String> =
+    PRESET_VALUES.drop(1).zip(PRESET_LABELS.drop(1)).toMap()
 
 
 private val IDLE_LABELS: List<String> = listOf("safe-lock", "soft-lock", "hard-lock")
@@ -1028,7 +1076,7 @@ private fun UnlockKeysDialog(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = "re-sealing vault (1–3s)…",
+                                text = "Saving…",
                                 color = HaomaPalette.FG_SECONDARY,
                                 fontSize = 12.sp,
                             )

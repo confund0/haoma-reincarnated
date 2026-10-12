@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/libsignal/serialize"
 	libsession "go.mau.fi/libsignal/session"
 
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/signal"
 )
 
@@ -61,10 +62,10 @@ func (c *Cipher) Encrypt(ctx context.Context, peerID string, plaintext []byte) (
 
 	contains, err := c.stores.ContainsSession(ctx, addr)
 	if err != nil {
-		return nil, fmt.Errorf("session: contains-session check for %s: %w", peerID, err)
+		return nil, fmt.Errorf("session: contains-session check for %s: %w", logid.Short(peerID), err)
 	}
 	if !contains {
-		return nil, fmt.Errorf("%w: %s", ErrNoSession, peerID)
+		return nil, fmt.Errorf("%w: %s", ErrNoSession, logid.Short(peerID))
 	}
 	cipher := c.cipherFor(addr)
 
@@ -72,7 +73,7 @@ func (c *Cipher) Encrypt(ctx context.Context, peerID string, plaintext []byte) (
 	msg, err := cipher.Encrypt(ctx, plaintext)
 	c.logRatchetOp(ctx, "encrypt", peerID, peekKind(plaintext), 0, before, c.snapshot(ctx, addr), err)
 	if err != nil {
-		return nil, fmt.Errorf("session: encrypt to %s: %w", peerID, err)
+		return nil, fmt.Errorf("session: encrypt to %s: %w", logid.Short(peerID), err)
 	}
 	body := msg.Serialize()
 	out := make([]byte, 0, 1+len(body))
@@ -100,23 +101,24 @@ func (c *Cipher) Decrypt(ctx context.Context, peerID string, blob []byte) ([]byt
 	case protocol.WHISPER_TYPE:
 		msg, err := protocol.NewSignalMessageFromBytes(body, c.ser.SignalMessage)
 		if err != nil {
-			return nil, fmt.Errorf("session: parse SignalMessage from %s: %w", peerID, err)
+			return nil, fmt.Errorf("session: parse SignalMessage from %s: %w", logid.Short(peerID), err)
 		}
 		plain, err := cipher.Decrypt(ctx, msg)
 		c.logRatchetOp(ctx, "decrypt", peerID, peekKind(plain), tag, before, c.snapshot(ctx, addr), err)
 		if err != nil {
-			return nil, fmt.Errorf("session: decrypt SignalMessage from %s: %w", peerID, err)
+			return nil, fmt.Errorf("session: decrypt SignalMessage from %s: %w", logid.Short(peerID), err)
 		}
 		return plain, nil
 	case protocol.PREKEY_TYPE:
 		msg, err := protocol.NewPreKeySignalMessageFromBytes(body, c.ser.PreKeySignalMessage, c.ser.SignalMessage)
 		if err != nil {
-			return nil, fmt.Errorf("session: parse PreKeySignalMessage from %s: %w", peerID, err)
+			return nil, fmt.Errorf("session: parse PreKeySignalMessage from %s: %w", logid.Short(peerID), err)
 		}
+		c.logPreKeyMessage(ctx, peerID, msg)
 		plain, err := cipher.DecryptMessage(ctx, msg)
 		c.logRatchetOp(ctx, "decrypt", peerID, peekKind(plain), tag, before, c.snapshot(ctx, addr), err)
 		if err != nil {
-			return nil, fmt.Errorf("session: decrypt PreKeySignalMessage from %s: %w", peerID, err)
+			return nil, fmt.Errorf("session: decrypt PreKeySignalMessage from %s: %w", logid.Short(peerID), err)
 		}
 		return plain, nil
 	default:

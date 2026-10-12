@@ -15,6 +15,25 @@ import (
 	"time"
 )
 
+const capturePrevSuffix = ".prev"
+
+func rotateCaptureFile(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat %q: %w", path, err)
+	}
+	prev := path + capturePrevSuffix
+	if err := os.Remove(prev); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove previous generation %q: %w", prev, err)
+	}
+	if err := os.Rename(path, prev); err != nil {
+		return fmt.Errorf("rename %q to %q: %w", path, prev, err)
+	}
+	return nil
+}
+
 type readyLine struct {
 	Status  string `json:"status"`
 	APIAddr string `json:"api_addr"`
@@ -46,7 +65,11 @@ func Spawn(name, binPath string, args []string, secretsBlob []byte, stderrLogPat
 		return nil, errors.New("supervisor: Spawn requires binPath")
 	}
 
-	logFile, err := os.OpenFile(stderrLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err := rotateCaptureFile(stderrLogPath); err != nil {
+		return nil, fmt.Errorf("supervisor: rotate stderr log %q: %w", stderrLogPath, err)
+	}
+
+	logFile, err := os.OpenFile(stderrLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: open stderr log %q: %w", stderrLogPath, err)
 	}

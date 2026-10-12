@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -23,6 +25,8 @@ const (
 )
 
 var ErrEventNotFound = errors.New("events: event not found")
+
+var ErrDuplicateMsgID = errors.New("events: a row with this msg id is already held")
 
 var ErrEditorNotAuthor = errors.New("events: editor is not the original author")
 
@@ -68,7 +72,32 @@ const (
 	KindCallSummary Kind = "call_summary"
 
 	KindOnionRotation Kind = "onion_rotation"
+
+	KindInvitation Kind = "invitation"
 )
+
+const (
+	InvitationLive = "live"
+
+	InvitationSuperseded = "superseded"
+
+	InvitationAccepted = "accepted"
+
+	InvitationFailed = "failed"
+)
+
+func InvitationTerminal(state string) bool {
+	return state == InvitationAccepted || state == InvitationFailed
+}
+
+func InvitationAnswerable(state string, expiresAt, now int64) bool {
+	return state == InvitationLive && expiresAt > 0 && now < expiresAt
+}
+
+type InvitationBody struct {
+	ExpiresAt int64  `json:"expires_at"`
+	State     string `json:"state"`
+}
 
 type OnionRotationStage string
 
@@ -110,6 +139,8 @@ const (
 	CallOutcomeFailed CallOutcome = "failed"
 
 	CallOutcomeDisrupted CallOutcome = "disrupted"
+
+	CallOutcomeAnsweredElsewhere CallOutcome = "answered_elsewhere"
 )
 
 type CallSummaryBody struct {
@@ -135,16 +166,19 @@ const (
 )
 
 type Event struct {
-	RecvSeq      uint64      `json:"recv_seq"`
-	ChatID       chat.ChatID `json:"chat_id"`
-	Direction    Direction   `json:"direction"`
-	Kind         Kind        `json:"kind"`
-	DisplayTs    int64       `json:"display_ts"`
-	SenderTs     int64       `json:"sender_ts,omitempty"`
-	RecvTs       int64       `json:"recv_ts"`
-	SenderSeq    uint64      `json:"sender_seq,omitempty"`
-	SenderPeerID string      `json:"sender_peer_id,omitempty"`
-	EnvelopeID   string      `json:"envelope_id,omitempty"`
+	RecvSeq   uint64      `json:"recv_seq"`
+	ChatID    chat.ChatID `json:"chat_id"`
+	Direction Direction   `json:"direction"`
+	Kind      Kind        `json:"kind"`
+	DisplayTs int64       `json:"display_ts"`
+	SenderTs  int64       `json:"sender_ts,omitempty"`
+	RecvTs    int64       `json:"recv_ts"`
+	SenderSeq uint64      `json:"sender_seq,omitempty"`
+
+	SenderPeerID string `json:"sender_peer_id,omitempty"`
+
+	ArrivedFromPeerID string `json:"arrived_from_peer_id,omitempty"`
+	EnvelopeID        string `json:"envelope_id,omitempty"`
 
 	EnvelopeIDs   []string          `json:"envelope_ids,omitempty"`
 	MsgID         string            `json:"msg_id,omitempty"`
@@ -155,6 +189,10 @@ type Event struct {
 
 	DeliveryState string `json:"delivery_state,omitempty"`
 
+	FailedEnvelopeIDs []string `json:"failed_envelope_ids,omitempty"`
+
+	MirroredFromSibling bool `json:"mirrored_from_sibling,omitempty"`
+
 	ExpireSeconds uint32 `json:"expire_seconds,omitempty"`
 
 	ReadAt int64 `json:"read_at,omitempty"`
@@ -164,6 +202,10 @@ type Event struct {
 	DeletedAt int64 `json:"deleted_at,omitempty"`
 
 	ReadReceiptSentAt int64 `json:"read_receipt_sent_at,omitempty"`
+
+	ReceiptClaimOrigin bool `json:"receipt_claim_origin,omitempty"`
+
+	ReceiptClaimGeneration uint64 `json:"receipt_claim_generation,omitempty"`
 }
 
 func (e Event) Deletable(now int64) bool {
@@ -303,6 +345,18 @@ type Log struct {
 	st  *store.Store
 	bus *Bus
 	now func() time.Time
+
+	retryTestHook func()
+
+	journalGrowth atomic.Pointer[func()]
+}
+
+func (l *Log) SetJournalGrowthHook(fn func()) {
+	if fn == nil {
+		l.journalGrowth.Store(nil)
+		return
+	}
+	l.journalGrowth.Store(&fn)
 }
 
 func New(st *store.Store, bus *Bus, now func() time.Time) *Log {
@@ -314,25 +368,114 @@ func New(st *store.Store, bus *Bus, now func() time.Time) *Log {
 
 func (l *Log) AppendInbound(in InboundParams) (Event, error) {
 	now := l.now()
-	displayTs := clampDisplayTs(in.SenderTs, now.Unix())
-	ev := Event{
-		ChatID:        in.ChatID,
-		Direction:     DirIn,
-		Kind:          in.Kind,
-		DisplayTs:     displayTs,
-		SenderTs:      in.SenderTs,
-		RecvTs:        now.Unix(),
-		SenderSeq:     in.SenderSeq,
-		SenderPeerID:  in.SenderPeerID,
-		EnvelopeID:    in.EnvelopeID,
-		MsgID:         in.MsgID,
-		ExpireSeconds: in.ExpireSeconds,
-		DecryptStatus: in.Status,
-		FailReason:    in.FailReason,
-		Body:          in.Body,
-		RawBlob:       in.RawBlob,
+
+	displayTs := in.DisplayTs
+	if displayTs == 0 {
+		displayTs = clampDisplayTs(in.SenderTs, now.Unix())
 	}
-	return l.append(ev)
+	ev := Event{
+		ChatID:              in.ChatID,
+		Direction:           DirIn,
+		Kind:                in.Kind,
+		DisplayTs:           displayTs,
+		SenderTs:            in.SenderTs,
+		RecvTs:              now.Unix(),
+		SenderSeq:           in.SenderSeq,
+		SenderPeerID:        in.SenderPeerID,
+		ArrivedFromPeerID:   in.ArrivedFromPeerID,
+		EnvelopeID:          in.EnvelopeID,
+		MsgID:               in.MsgID,
+		ExpireSeconds:       in.ExpireSeconds,
+		DecryptStatus:       in.Status,
+		FailReason:          in.FailReason,
+		Body:                in.Body,
+		RawBlob:             in.RawBlob,
+		MirroredFromSibling: in.MirroredFromSibling,
+	}
+	return l.append(ev, in.Attach)
+}
+
+func (l *Log) RecordArrivedFrom(msgID, peerID string) (bool, error) {
+	if msgID == "" || peerID == "" {
+		return false, nil
+	}
+	slog.Debug("events: RecordArrivedFrom observed",
+		slog.String("msg_id", msgID),
+		slog.String("peer_id", peerID),
+	)
+	changed := false
+	reason := ""
+
+	err := l.updateRetry(func(m mutatingTxn) error {
+
+		changed, reason = false, ""
+		idxItem, err := m.get([]byte(msgIDPrefix + msgID))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			reason = "row_not_held"
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var key []byte
+		if err := idxItem.Value(func(v []byte) error {
+			key = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			return err
+		}
+		rowItem, err := m.get(key)
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			_ = m.deleteAux([]byte(msgIDPrefix + msgID))
+			reason = "row_swept"
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var ev Event
+		if err := rowItem.Value(func(v []byte) error {
+			return json.Unmarshal(v, &ev)
+		}); err != nil {
+			return err
+		}
+		switch {
+		case ev.Direction != DirIn:
+			reason = "row_is_outbound"
+			return nil
+		case ev.DeletedAt != 0:
+			reason = "row_is_deleted"
+			return nil
+		case ev.ArrivedFromPeerID == peerID:
+			reason = "already_recorded"
+			return nil
+		case ev.ArrivedFromPeerID != "":
+			reason = "another_device_already_recorded"
+			return nil
+		}
+		ev.ArrivedFromPeerID = peerID
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		if err := m.storeRow(MutatorRecordArrivedFrom, ev.ChatID, ev.MsgID, key, raw); err != nil {
+			return err
+		}
+		changed = true
+		reason = "recorded"
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("events: RecordArrivedFrom msg=%s: %w", msgID, err)
+	}
+
+	slog.Debug("events: RecordArrivedFrom decision",
+		slog.String("msg_id", msgID),
+		slog.String("peer_id", peerID),
+		slog.Bool("changed", changed),
+		slog.String("outcome", reason),
+	)
+	return changed, nil
 }
 
 func (l *Log) AppendOutbound(out OutboundParams) (Event, error) {
@@ -346,52 +489,79 @@ func (l *Log) AppendOutbound(out OutboundParams) (Event, error) {
 	if len(envIDs) > 0 {
 		primaryEnvID = envIDs[0]
 	}
-	ev := Event{
-		ChatID:        out.ChatID,
-		Direction:     DirOut,
-		Kind:          out.Kind,
-		DisplayTs:     now.Unix(),
-		SenderTs:      now.Unix(),
-		RecvTs:        now.Unix(),
-		SenderSeq:     out.SenderSeq,
-		EnvelopeID:    primaryEnvID,
-		EnvelopeIDs:   envIDs,
-		MsgID:         out.MsgID,
-		ExpireSeconds: out.ExpireSeconds,
-		Body:          out.Body,
-		DeliveryState: "enqueued",
+
+	displayTs := out.DisplayTs
+	if displayTs == 0 {
+		displayTs = now.Unix()
 	}
-	return l.append(ev)
+	delivery := out.DeliveryState
+	if delivery == "" {
+		delivery = DeliveryEnqueued
+	}
+	if out.MirroredFromSibling {
+		delivery = DeliverySeedFromSibling(delivery)
+	}
+	ev := Event{
+		ChatID:              out.ChatID,
+		Direction:           DirOut,
+		Kind:                out.Kind,
+		DisplayTs:           displayTs,
+		SenderTs:            displayTs,
+		RecvTs:              now.Unix(),
+		SenderSeq:           out.SenderSeq,
+		EnvelopeID:          primaryEnvID,
+		EnvelopeIDs:         envIDs,
+		MsgID:               out.MsgID,
+		ExpireSeconds:       out.ExpireSeconds,
+		Body:                out.Body,
+		DeliveryState:       delivery,
+		MirroredFromSibling: out.MirroredFromSibling,
+	}
+	return l.append(ev, nil)
 }
 
+type TxnWrite func(txn *badger.Txn) error
+
 type InboundParams struct {
-	ChatID        chat.ChatID
-	Kind          Kind
-	SenderTs      int64
-	SenderSeq     uint64
-	SenderPeerID  string
-	EnvelopeID    string
-	MsgID         string
-	ExpireSeconds uint32
-	Status        DecryptStatus
-	FailReason    DecryptFailReason
-	Body          json.RawMessage
-	RawBlob       []byte
+	ChatID chat.ChatID
+	Kind   Kind
+
+	DisplayTs    int64
+	SenderTs     int64
+	SenderSeq    uint64
+	SenderPeerID string
+
+	ArrivedFromPeerID string
+	EnvelopeID        string
+	MsgID             string
+	ExpireSeconds     uint32
+	Status            DecryptStatus
+	FailReason        DecryptFailReason
+	Body              json.RawMessage
+	RawBlob           []byte
+
+	MirroredFromSibling bool
+
+	Attach TxnWrite
 }
 
 type LocalParams struct {
-	ChatID        chat.ChatID
-	Kind          Kind
-	Direction     Direction
-	DisplayTs     int64
+	ChatID    chat.ChatID
+	Kind      Kind
+	Direction Direction
+	DisplayTs int64
+
+	MsgID         string
 	SenderPeerID  string
 	ExpireSeconds uint32
 	Body          json.RawMessage
 }
 
 type OutboundParams struct {
-	ChatID    chat.ChatID
-	Kind      Kind
+	ChatID chat.ChatID
+	Kind   Kind
+
+	DisplayTs int64
 	SenderSeq uint64
 
 	EnvelopeIDs   []string
@@ -399,6 +569,10 @@ type OutboundParams struct {
 	MsgID         string
 	ExpireSeconds uint32
 	Body          json.RawMessage
+
+	DeliveryState string
+
+	MirroredFromSibling bool
 }
 
 func (l *Log) AppendLocal(p LocalParams) (Event, error) {
@@ -414,13 +588,14 @@ func (l *Log) AppendLocal(p LocalParams) (Event, error) {
 		DisplayTs:     displayTs,
 		RecvTs:        now.Unix(),
 		SenderPeerID:  p.SenderPeerID,
+		MsgID:         p.MsgID,
 		ExpireSeconds: p.ExpireSeconds,
 		Body:          p.Body,
 	}
-	return l.append(ev)
+	return l.append(ev, nil)
 }
 
-func (l *Log) append(ev Event) (Event, error) {
+func (l *Log) append(ev Event, attach TxnWrite) (Event, error) {
 	if ev.ChatID == "" {
 		return Event{}, errors.New("events: empty chat id")
 	}
@@ -438,8 +613,25 @@ func (l *Log) append(ev Event) (Event, error) {
 		return Event{}, fmt.Errorf("events: marshal event: %w", err)
 	}
 	key := storageKey(ev.ChatID, ev.DisplayTs, seq)
-	if err := l.st.Update(func(txn *badger.Txn) error {
-		if err := txn.Set(key, raw); err != nil {
+	var held Event
+	duplicate := false
+	if err := l.updateRetry(func(m mutatingTxn) error {
+
+		held, duplicate = Event{}, false
+		if ev.MsgID != "" {
+			prior, lookupErr := eventByMsgIDTxn(m, ev.MsgID)
+			switch {
+			case lookupErr == nil:
+				held, duplicate = prior, true
+				return nil
+			case errors.Is(lookupErr, ErrEventNotFound):
+
+			default:
+				return lookupErr
+			}
+		}
+
+		if err := m.storeRow(MutatorAppend, ev.ChatID, ev.MsgID, key, raw); err != nil {
 			return err
 		}
 
@@ -452,25 +644,107 @@ func (l *Log) append(ev Event) (Event, error) {
 				if eid == "" {
 					continue
 				}
-				if err := txn.Set([]byte(envIDPrefix+eid), key); err != nil {
+				if err := m.setAux([]byte(envIDPrefix+eid), key); err != nil {
 					return err
 				}
 			}
 		}
 
 		if ev.MsgID != "" {
-			if err := txn.Set([]byte(msgIDPrefix+ev.MsgID), key); err != nil {
+			if err := m.setAux([]byte(msgIDPrefix+ev.MsgID), key); err != nil {
 				return err
 			}
 		}
-		return nil
+		return m.runAttach(attach)
 	}); err != nil {
 		return Event{}, fmt.Errorf("events: persist event for %s: %w", ev.ChatID, err)
+	}
+	if duplicate {
+		if held.ChatID != ev.ChatID {
+			slog.Warn("events: msg id is held by a different conversation; the arriving row is refused",
+				slog.String("msg_id", ev.MsgID),
+				slog.String("holding_chat_id", string(held.ChatID)),
+				slog.String("refused_chat_id", string(ev.ChatID)),
+				slog.String("kind", string(ev.Kind)),
+			)
+		}
+		return held, ErrDuplicateMsgID
 	}
 	if l.bus != nil {
 		l.bus.publish(ev)
 	}
 	return ev, nil
+}
+
+func eventByMsgIDTxn(m mutatingTxn, msgID string) (Event, error) {
+	idxItem, err := m.get([]byte(msgIDPrefix + msgID))
+	if errors.Is(err, badger.ErrKeyNotFound) {
+		return Event{}, ErrEventNotFound
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	var key []byte
+	if err := idxItem.Value(func(v []byte) error {
+		key = append([]byte(nil), v...)
+		return nil
+	}); err != nil {
+		return Event{}, err
+	}
+	rowItem, err := m.get(key)
+	if errors.Is(err, badger.ErrKeyNotFound) {
+		return Event{}, ErrEventNotFound
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	var ev Event
+	if err := rowItem.Value(func(v []byte) error {
+		return json.Unmarshal(v, &ev)
+	}); err != nil {
+		return Event{}, err
+	}
+	return ev, nil
+}
+
+func (l *Log) updateRetry(fn func(m mutatingTxn) error) error {
+	var err error
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		err = l.attemptUpdate(fn)
+		if !errors.Is(err, badger.ErrConflict) {
+			return err
+		}
+	}
+	return fmt.Errorf("events: exceeded %d conflict retries: %w", maxConflictRetries, err)
+}
+
+func (l *Log) attemptUpdate(fn func(m mutatingTxn) error) (err error) {
+	var txnUsed *badger.Txn
+	committed := false
+
+	journalled := false
+	defer func() {
+		if txnUsed == nil {
+			return
+		}
+		if committed {
+			logJournalTouches(txnUsed)
+		} else {
+			discardJournalTouches(txnUsed)
+		}
+	}()
+	err = l.st.Update(func(txn *badger.Txn) error {
+		txnUsed = txn
+		return fn(mutatingTxn{txn: txn, journalled: &journalled})
+	})
+	committed = err == nil
+	if committed && journalled {
+
+		if hook := l.journalGrowth.Load(); hook != nil {
+			(*hook)()
+		}
+	}
+	return err
 }
 
 func (l *Log) nextRecvSeq() (uint64, error) {
@@ -560,6 +834,30 @@ func (l *Log) List(chatID chat.ChatID, sinceDisplayTs int64, limit int) ([]Event
 	return out, err
 }
 
+func (l *Log) EachFileRow(fn func(Event) error) error {
+	return l.st.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(prefix)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			var ev Event
+			if err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &ev)
+			}); err != nil {
+				return err
+			}
+			if ev.Kind != KindFile {
+				continue
+			}
+			if err := fn(ev); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (l *Log) GetByMsgID(msgID string) (Event, error) {
 	if msgID == "" {
 		return Event{}, ErrEventNotFound
@@ -598,13 +896,16 @@ func (l *Log) GetByMsgID(msgID string) (Event, error) {
 	return ev, nil
 }
 
-func (l *Log) UpdateDeliveryState(envelopeID, state string) (Event, error) {
+func (l *Log) UpdateDeliveryState(envelopeID, state string) (row Event, moved bool, err error) {
 	if envelopeID == "" {
-		return Event{}, errors.New("events: empty envelope id")
+		return Event{}, false, errors.New("events: empty envelope id")
 	}
 	var updated Event
-	err := l.st.Update(func(txn *badger.Txn) error {
-		idxItem, err := txn.Get([]byte(envIDPrefix + envelopeID))
+
+	err = l.updateRetry(func(m mutatingTxn) error {
+
+		moved = false
+		idxItem, err := m.get([]byte(envIDPrefix + envelopeID))
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return ErrEventNotFound
 		}
@@ -618,39 +919,53 @@ func (l *Log) UpdateDeliveryState(envelopeID, state string) (Event, error) {
 		}); err != nil {
 			return err
 		}
-		rowItem, err := txn.Get(key)
+		rowItem, err := m.get(key)
 		if errors.Is(err, badger.ErrKeyNotFound) {
 
-			_ = txn.Delete([]byte(envIDPrefix + envelopeID))
+			_ = m.deleteAux([]byte(envIDPrefix + envelopeID))
 			return ErrEventNotFound
 		}
 		if err != nil {
 			return err
 		}
+
+		updated = Event{}
 		if err := rowItem.Value(func(v []byte) error {
 			return json.Unmarshal(v, &updated)
 		}); err != nil {
 			return err
 		}
-		if updated.DeliveryState == state {
-
-			return nil
+		if l.retryTestHook != nil {
+			l.retryTestHook()
 		}
 
-		if updated.DeliveryState == "read" {
-			return nil
+		listChanged := updated.noteEnvelopeOutcome(envelopeID, state)
+		if !deliveryFoldAdvances(updated, state) {
+			if !listChanged {
+				return nil
+			}
+			raw, err := json.Marshal(updated)
+			if err != nil {
+				return err
+			}
+			return m.storeRow(MutatorRecordEnvelopeOutcome, updated.ChatID, updated.MsgID, key, raw)
 		}
 		updated.DeliveryState = state
 		newRaw, err := json.Marshal(updated)
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, newRaw)
+
+		if err := m.storeRow(MutatorUpdateDeliveryState, updated.ChatID, updated.MsgID, key, newRaw); err != nil {
+			return err
+		}
+		moved = true
+		return nil
 	})
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
-	return updated, nil
+	return updated, moved, nil
 }
 
 func (l *Log) ApplyEdit(targetMsgID, newText string, editedAt int64, expectedSenderPeerID string) (Event, error) {
@@ -661,8 +976,8 @@ func (l *Log) ApplyEdit(targetMsgID, newText string, editedAt int64, expectedSen
 		return Event{}, fmt.Errorf("events: empty edit text")
 	}
 	var updated Event
-	err := l.st.Update(func(txn *badger.Txn) error {
-		idxItem, err := txn.Get([]byte(msgIDPrefix + targetMsgID))
+	err := l.updateRetry(func(m mutatingTxn) error {
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return ErrEventNotFound
 		}
@@ -676,9 +991,9 @@ func (l *Log) ApplyEdit(targetMsgID, newText string, editedAt int64, expectedSen
 		}); err != nil {
 			return err
 		}
-		rowItem, err := txn.Get(key)
+		rowItem, err := m.get(key)
 		if errors.Is(err, badger.ErrKeyNotFound) {
-			_ = txn.Delete([]byte(msgIDPrefix + targetMsgID))
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
 			return ErrEventNotFound
 		}
 		if err != nil {
@@ -715,7 +1030,8 @@ func (l *Log) ApplyEdit(targetMsgID, newText string, editedAt int64, expectedSen
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, raw)
+
+		return m.storeRow(MutatorApplyEdit, updated.ChatID, updated.MsgID, key, raw)
 	})
 	if err != nil {
 		return Event{}, err
@@ -731,8 +1047,9 @@ func (l *Log) UpdateFileBody(targetMsgID string, body json.RawMessage) (Event, e
 		return Event{}, ErrEventNotFound
 	}
 	var updated Event
-	err := l.st.Update(func(txn *badger.Txn) error {
-		idxItem, err := txn.Get([]byte(msgIDPrefix + targetMsgID))
+
+	err := l.updateRetry(func(m mutatingTxn) error {
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return ErrEventNotFound
 		}
@@ -746,9 +1063,9 @@ func (l *Log) UpdateFileBody(targetMsgID string, body json.RawMessage) (Event, e
 		}); err != nil {
 			return err
 		}
-		rowItem, err := txn.Get(key)
+		rowItem, err := m.get(key)
 		if errors.Is(err, badger.ErrKeyNotFound) {
-			_ = txn.Delete([]byte(msgIDPrefix + targetMsgID))
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
 			return ErrEventNotFound
 		}
 		if err != nil {
@@ -767,7 +1084,65 @@ func (l *Log) UpdateFileBody(targetMsgID string, body json.RawMessage) (Event, e
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, raw)
+
+		return m.storeRow(MutatorUpdateFileBody, updated.ChatID, updated.MsgID, key, raw)
+	})
+	if err != nil {
+		return Event{}, err
+	}
+	if l.bus != nil {
+		l.bus.publish(updated)
+	}
+	return updated, nil
+}
+
+func (l *Log) UpdateInvitationBody(targetMsgID string, body json.RawMessage, attach TxnWrite) (Event, error) {
+	if targetMsgID == "" {
+		return Event{}, ErrEventNotFound
+	}
+	var updated Event
+
+	err := l.updateRetry(func(m mutatingTxn) error {
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var key []byte
+		if err := idxItem.Value(func(v []byte) error {
+			key = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			return err
+		}
+		rowItem, err := m.get(key)
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := rowItem.Value(func(v []byte) error {
+			return json.Unmarshal(v, &updated)
+		}); err != nil {
+			return err
+		}
+		if updated.Kind != KindInvitation {
+			return ErrEditUnsupportedKind
+		}
+		updated.Body = body
+		raw, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+
+		if err := m.storeRow(MutatorUpdateInvitationBody, updated.ChatID, updated.MsgID, key, raw); err != nil {
+			return err
+		}
+		return m.runAttach(attach)
 	})
 	if err != nil {
 		return Event{}, err
@@ -783,8 +1158,8 @@ func (l *Log) ApplyDelete(targetMsgID string, deletedAt int64, expectedSenderPee
 		return Event{}, ErrEventNotFound
 	}
 	var updated Event
-	err := l.st.Update(func(txn *badger.Txn) error {
-		idxItem, err := txn.Get([]byte(msgIDPrefix + targetMsgID))
+	err := l.updateRetry(func(m mutatingTxn) error {
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return ErrEventNotFound
 		}
@@ -798,9 +1173,9 @@ func (l *Log) ApplyDelete(targetMsgID string, deletedAt int64, expectedSenderPee
 		}); err != nil {
 			return err
 		}
-		rowItem, err := txn.Get(key)
+		rowItem, err := m.get(key)
 		if errors.Is(err, badger.ErrKeyNotFound) {
-			_ = txn.Delete([]byte(msgIDPrefix + targetMsgID))
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
 			return ErrEventNotFound
 		}
 		if err != nil {
@@ -833,7 +1208,8 @@ func (l *Log) ApplyDelete(targetMsgID string, deletedAt int64, expectedSenderPee
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, raw)
+
+		return m.storeRow(MutatorApplyDelete, updated.ChatID, updated.MsgID, key, raw)
 	})
 	if err != nil {
 		return Event{}, err
@@ -844,7 +1220,7 @@ func (l *Log) ApplyDelete(targetMsgID string, deletedAt int64, expectedSenderPee
 	return updated, nil
 }
 
-func (l *Log) AppendReactionBreadcrumb(targetMsgID, emoji, reactorPeerID string, at int64, expireSeconds uint32) (Event, error) {
+func (l *Log) AppendReactionBreadcrumb(targetMsgID, emoji, reactorPeerID, msgID string, at int64, expireSeconds uint32) (Event, error) {
 	if targetMsgID == "" {
 		return Event{}, ErrEventNotFound
 	}
@@ -872,6 +1248,7 @@ func (l *Log) AppendReactionBreadcrumb(targetMsgID, emoji, reactorPeerID string,
 		Direction:     dir,
 		DisplayTs:     target.DisplayTs,
 		SenderPeerID:  reactorPeerID,
+		MsgID:         msgID,
 		ExpireSeconds: expireSeconds,
 		Body:          body,
 	})
@@ -1031,6 +1408,14 @@ func (l *Log) SearchInChat(chatID chat.ChatID, query string, maxMatches int) (ma
 }
 
 func (l *Log) DeleteByChat(chatID chat.ChatID) (int, int, error) {
+	return l.deleteByChat(chatID, nil)
+}
+
+func (l *Log) DeleteByChatThrough(chatID chat.ChatID, through int64) (int, int, error) {
+	return l.deleteByChat(chatID, func(ev Event) bool { return ev.DisplayTs <= through })
+}
+
+func (l *Log) deleteByChat(chatID chat.ChatID, match func(Event) bool) (int, int, error) {
 	if chatID == "" {
 		return 0, 0, errors.New("events: empty chat id")
 	}
@@ -1062,6 +1447,9 @@ func (l *Log) DeleteByChat(chatID chat.ChatID) (int, int, error) {
 					return json.Unmarshal(v, &ev)
 				}); err != nil {
 					return err
+				}
+				if match != nil && !match(ev) {
+					continue
 				}
 				ref := rowRef{key: keyCopy, msgID: ev.MsgID, kind: ev.Kind, cascade: cascadeKeysFor(ev)}
 				if ev.Direction == DirOut && ev.EnvelopeID != "" {
@@ -1121,10 +1509,24 @@ func (l *Log) DeleteByChat(chatID chat.ChatID) (int, int, error) {
 
 const deleteBatchSize = 1000
 
-func (l *Log) MarkRead(chatID chat.ChatID) (mutated int, pendingReceipt []string, err error) {
+type ReceiptTarget struct {
+	MsgID             string
+	ArrivedFromPeerID string
+}
+
+func ReceiptMsgIDs(targets []ReceiptTarget) []string {
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, t.MsgID)
+	}
+	return out
+}
+
+func (l *Log) MarkRead(chatID chat.ChatID) (mutated int, pendingReceipt []ReceiptTarget, err error) {
 	if chatID == "" {
 		return 0, nil, errors.New("events: empty chat id")
 	}
+	slog.Debug("events: MarkRead observed", slog.String("chat_id", string(chatID)))
 	chatPrefix := append([]byte(prefix), chatID...)
 	chatPrefix = append(chatPrefix, ':')
 
@@ -1176,38 +1578,127 @@ func (l *Log) MarkRead(chatID chat.ChatID) (mutated int, pendingReceipt []string
 		if len(batch) == 0 {
 			return mutated, pendingReceipt, nil
 		}
-		writeErr := l.st.Update(func(txn *badger.Txn) error {
+
+		freshRows := make([]Event, len(batch))
+		stampedNow := make([]bool, len(batch))
+
+		writeErr := l.updateRetry(func(m mutatingTxn) error {
 			for i := range batch {
 				if !batch[i].stamp {
 					continue
 				}
-				batch[i].ev.ReadAt = nowSec
-				raw, err := json.Marshal(batch[i].ev)
+
+				item, err := m.get(batch[i].key)
+				if errors.Is(err, badger.ErrKeyNotFound) {
+
+					stampedNow[i] = false
+					continue
+				}
 				if err != nil {
 					return err
 				}
-				if err := txn.Set(batch[i].key, raw); err != nil {
+				var fresh Event
+				if err := item.Value(func(v []byte) error {
+					return json.Unmarshal(v, &fresh)
+				}); err != nil {
 					return err
 				}
+				if fresh.ReadAt != 0 {
+
+					freshRows[i] = fresh
+					stampedNow[i] = false
+					continue
+				}
+				fresh.ReadAt = nowSec
+				raw, err := json.Marshal(fresh)
+				if err != nil {
+					return err
+				}
+
+				if err := m.storeRow(MutatorMarkRead, fresh.ChatID, fresh.MsgID, batch[i].key, raw); err != nil {
+					return err
+				}
+				freshRows[i] = fresh
+				stampedNow[i] = true
 			}
 			return nil
 		})
 		if writeErr != nil {
 			return mutated, pendingReceipt, fmt.Errorf("events: MarkRead write chat=%s: %w", chatID, writeErr)
 		}
+		batchStamped, batchPending := 0, 0
 		for i := range batch {
+			ev := batch[i].ev
 			if batch[i].stamp {
-				mutated++
+				ev = freshRows[i]
+				if stampedNow[i] {
+					mutated++
+					batchStamped++
+				}
 			}
-			if batch[i].ev.MsgID != "" && batch[i].ev.ReadReceiptSentAt == 0 &&
-				(batch[i].ev.Kind == KindText || (batch[i].ev.Kind == KindFile && batch[i].ev.fileReceiptReady())) {
-				pendingReceipt = append(pendingReceipt, batch[i].ev.MsgID)
+			if ev.MsgID != "" && ev.ReadReceiptSentAt == 0 &&
+				(ev.Kind == KindText || (ev.Kind == KindFile && ev.fileReceiptReady())) {
+
+				pendingReceipt = append(pendingReceipt, ReceiptTarget{
+					MsgID:             ev.MsgID,
+					ArrivedFromPeerID: ev.ArrivedFromPeerID,
+				})
+				batchPending++
 			}
 		}
+
+		slog.Debug("events: MarkRead batch applied",
+			slog.String("chat_id", string(chatID)),
+			slog.Int("batch_size", len(batch)),
+			slog.Int("stamped", batchStamped),
+			slog.Int("pending_receipt", batchPending),
+		)
 		if len(batch) < deleteBatchSize {
 			return mutated, pendingReceipt, nil
 		}
 	}
+}
+
+func (l *Log) CountUnread(chatID chat.ChatID) (int, error) {
+	if chatID == "" {
+		return 0, errors.New("events: empty chat id")
+	}
+	chatPrefix := append([]byte(prefix), chatID...)
+	chatPrefix = append(chatPrefix, ':')
+
+	count := 0
+	err := l.st.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = chatPrefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.ValidForPrefix(opts.Prefix); it.Next() {
+			var ev Event
+			if err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &ev)
+			}); err != nil {
+				return err
+			}
+			if ev.Direction != DirIn {
+				continue
+			}
+			if ev.DecryptStatus != DecryptOK {
+				continue
+			}
+			if ev.Kind != KindText && ev.Kind != KindFile {
+				continue
+			}
+			if ev.ReadAt != 0 {
+				continue
+			}
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("events: count unread chat=%s: %w", chatID, err)
+	}
+	return count, nil
 }
 
 const ReadReceiptSuppressedSentinel int64 = 69
@@ -1216,12 +1707,13 @@ func (l *Log) MarkReadReceiptSent(msgIDs []string, at int64) error {
 	if len(msgIDs) == 0 {
 		return nil
 	}
-	return l.st.Update(func(txn *badger.Txn) error {
+
+	return l.updateRetry(func(m mutatingTxn) error {
 		for _, msgID := range msgIDs {
 			if msgID == "" {
 				continue
 			}
-			idxItem, err := txn.Get([]byte(msgIDPrefix + msgID))
+			idxItem, err := m.get([]byte(msgIDPrefix + msgID))
 			if errors.Is(err, badger.ErrKeyNotFound) {
 				continue
 			}
@@ -1235,9 +1727,9 @@ func (l *Log) MarkReadReceiptSent(msgIDs []string, at int64) error {
 			}); err != nil {
 				return err
 			}
-			rowItem, err := txn.Get(key)
+			rowItem, err := m.get(key)
 			if errors.Is(err, badger.ErrKeyNotFound) {
-				_ = txn.Delete([]byte(msgIDPrefix + msgID))
+				_ = m.deleteAux([]byte(msgIDPrefix + msgID))
 				continue
 			}
 			if err != nil {
@@ -1253,11 +1745,19 @@ func (l *Log) MarkReadReceiptSent(msgIDs []string, at int64) error {
 				continue
 			}
 			ev.ReadReceiptSentAt = at
+
+			honest := at != ReadReceiptSuppressedSentinel
+			ev.ReceiptClaimOrigin = honest
 			raw, err := json.Marshal(ev)
 			if err != nil {
 				return err
 			}
-			if err := txn.Set(key, raw); err != nil {
+
+			mutator := MutatorMarkReadReceiptSent
+			if !honest {
+				mutator = MutatorMarkReadReceiptSentSuppressed
+			}
+			if err := m.storeRow(mutator, ev.ChatID, ev.MsgID, key, raw); err != nil {
 				return err
 			}
 		}
@@ -1319,39 +1819,71 @@ func (l *Log) SuppressPendingReadReceipts(chatID chat.ChatID) (int, error) {
 		if len(batch) == 0 {
 			return suppressed, nil
 		}
-		writeErr := l.st.Update(func(txn *badger.Txn) error {
+		batchSuppressed := 0
+
+		writeErr := l.updateRetry(func(m mutatingTxn) error {
+			batchSuppressed = 0
 			for i := range batch {
-				batch[i].ev.ReadReceiptSentAt = ReadReceiptSuppressedSentinel
-				raw, err := json.Marshal(batch[i].ev)
+
+				item, err := m.get(batch[i].key)
+				if errors.Is(err, badger.ErrKeyNotFound) {
+
+					continue
+				}
 				if err != nil {
 					return err
 				}
-				if err := txn.Set(batch[i].key, raw); err != nil {
+				var fresh Event
+				if err := item.Value(func(v []byte) error {
+					return json.Unmarshal(v, &fresh)
+				}); err != nil {
 					return err
 				}
+				if fresh.ReadReceiptSentAt != 0 {
+
+					continue
+				}
+				fresh.ReadReceiptSentAt = ReadReceiptSuppressedSentinel
+				raw, err := json.Marshal(fresh)
+				if err != nil {
+					return err
+				}
+
+				if err := m.storeRow(MutatorSuppressPendingReadReceipts, fresh.ChatID, fresh.MsgID, batch[i].key, raw); err != nil {
+					return err
+				}
+				batchSuppressed++
 			}
 			return nil
 		})
 		if writeErr != nil {
 			return suppressed, fmt.Errorf("events: SuppressPendingReadReceipts write chat=%s: %w", chatID, writeErr)
 		}
-		suppressed += len(batch)
+		suppressed += batchSuppressed
 		if len(batch) < deleteBatchSize {
 			return suppressed, nil
 		}
 	}
 }
 
-func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID chat.ChatID) (Event, error) {
+func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID chat.ChatID) (Event, bool, error) {
 	if targetMsgID == "" {
-		return Event{}, ErrEventNotFound
+		return Event{}, false, ErrEventNotFound
 	}
 	if readAt <= 0 {
-		return Event{}, fmt.Errorf("events: read_at must be > 0")
+		return Event{}, false, fmt.Errorf("events: read_at must be > 0")
 	}
+	slog.Debug("events: ApplyReadReceipt observed",
+		slog.String("msg_id", targetMsgID),
+		slog.Int64("read_at", readAt),
+	)
 	var updated Event
-	err := l.st.Update(func(txn *badger.Txn) error {
-		idxItem, err := txn.Get([]byte(msgIDPrefix + targetMsgID))
+	var changed bool
+
+	err := l.updateRetry(func(m mutatingTxn) error {
+
+		updated = Event{}
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return ErrEventNotFound
 		}
@@ -1365,9 +1897,9 @@ func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID 
 		}); err != nil {
 			return err
 		}
-		rowItem, err := txn.Get(key)
+		rowItem, err := m.get(key)
 		if errors.Is(err, badger.ErrKeyNotFound) {
-			_ = txn.Delete([]byte(msgIDPrefix + targetMsgID))
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
 			return ErrEventNotFound
 		}
 		if err != nil {
@@ -1377,6 +1909,9 @@ func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID 
 			return json.Unmarshal(v, &updated)
 		}); err != nil {
 			return err
+		}
+		if l.retryTestHook != nil {
+			l.retryTestHook()
 		}
 		if updated.ChatID != expectedChatID {
 			return ErrReaderNotPeer
@@ -1389,23 +1924,36 @@ func (l *Log) ApplyReadReceipt(targetMsgID string, readAt int64, expectedChatID 
 			return ErrReadUnsupportedKind
 		}
 
+		priorReadAt, priorState := updated.ReadAt, updated.DeliveryState
 		if updated.ReadAt == 0 || readAt < updated.ReadAt {
 			updated.ReadAt = readAt
 		}
 		updated.DeliveryState = "read"
+		changed = updated.ReadAt != priorReadAt || updated.DeliveryState != priorState
+		if !changed {
+
+			return nil
+		}
 		raw, err := json.Marshal(updated)
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, raw)
+
+		return m.storeRow(MutatorApplyReadReceipt, updated.ChatID, updated.MsgID, key, raw)
 	})
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
 	}
+
+	slog.Debug("events: ApplyReadReceipt decision",
+		slog.String("msg_id", updated.MsgID),
+		slog.String("chat_id", string(updated.ChatID)),
+		slog.Bool("changed", changed),
+	)
 	if l.bus != nil {
 		l.bus.publish(updated)
 	}
-	return updated, nil
+	return updated, changed, nil
 }
 
 func (l *Log) ApplyDeliveredReceipt(targetMsgID string, expectedChatID chat.ChatID) (Event, error) {
@@ -1414,8 +1962,9 @@ func (l *Log) ApplyDeliveredReceipt(targetMsgID string, expectedChatID chat.Chat
 	}
 	var updated Event
 	changed := false
-	err := l.st.Update(func(txn *badger.Txn) error {
-		idxItem, err := txn.Get([]byte(msgIDPrefix + targetMsgID))
+
+	err := l.updateRetry(func(m mutatingTxn) error {
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return ErrEventNotFound
 		}
@@ -1429,9 +1978,9 @@ func (l *Log) ApplyDeliveredReceipt(targetMsgID string, expectedChatID chat.Chat
 		}); err != nil {
 			return err
 		}
-		rowItem, err := txn.Get(key)
+		rowItem, err := m.get(key)
 		if errors.Is(err, badger.ErrKeyNotFound) {
-			_ = txn.Delete([]byte(msgIDPrefix + targetMsgID))
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
 			return ErrEventNotFound
 		}
 		if err != nil {
@@ -1452,16 +2001,17 @@ func (l *Log) ApplyDeliveredReceipt(targetMsgID string, expectedChatID chat.Chat
 			return ErrReadUnsupportedKind
 		}
 
-		if updated.DeliveryState == "read" || updated.DeliveryState == "delivered" {
+		if !DeliveryOutranks(updated.DeliveryState, DeliveryDelivered) {
 			return nil
 		}
-		updated.DeliveryState = "delivered"
+		updated.DeliveryState = DeliveryDelivered
 		changed = true
 		raw, err := json.Marshal(updated)
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, raw)
+
+		return m.storeRow(MutatorApplyDeliveredReceipt, updated.ChatID, updated.MsgID, key, raw)
 	})
 	if err != nil {
 		return Event{}, err
@@ -1470,6 +2020,261 @@ func (l *Log) ApplyDeliveredReceipt(targetMsgID string, expectedChatID chat.Chat
 		l.bus.publish(updated)
 	}
 	return updated, nil
+}
+
+func (l *Log) ApplyInboundReadAt(targetMsgID string, readAt int64) (Event, bool, error) {
+	if targetMsgID == "" {
+		return Event{}, false, ErrEventNotFound
+	}
+	if readAt <= 0 {
+		return Event{}, false, fmt.Errorf("events: read_at must be > 0")
+	}
+	slog.Debug("events: ApplyInboundReadAt observed",
+		slog.String("msg_id", targetMsgID),
+		slog.Int64("read_at", readAt),
+	)
+	var updated Event
+	changed := false
+
+	err := l.updateRetry(func(m mutatingTxn) error {
+
+		changed = false
+		updated = Event{}
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var key []byte
+		if err := idxItem.Value(func(v []byte) error {
+			key = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			return err
+		}
+		rowItem, err := m.get(key)
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := rowItem.Value(func(v []byte) error {
+			return json.Unmarshal(v, &updated)
+		}); err != nil {
+			return err
+		}
+		if l.retryTestHook != nil {
+			l.retryTestHook()
+		}
+		if updated.Direction != DirIn {
+			return nil
+		}
+		if updated.Kind != KindText && updated.Kind != KindFile {
+			return nil
+		}
+		if updated.ReadAt != 0 && readAt >= updated.ReadAt {
+
+			return nil
+		}
+		updated.ReadAt = readAt
+		changed = true
+		raw, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		return m.storeRow(MutatorApplyInboundReadAt, updated.ChatID, updated.MsgID, key, raw)
+	})
+	if err != nil {
+		return Event{}, false, err
+	}
+
+	slog.Debug("events: ApplyInboundReadAt decision",
+		slog.String("msg_id", updated.MsgID),
+		slog.String("chat_id", string(updated.ChatID)),
+		slog.Bool("changed", changed),
+	)
+	if changed && l.bus != nil {
+		l.bus.publish(updated)
+	}
+	return updated, changed, nil
+}
+
+func (l *Log) ApplyDeliverySnapshot(targetMsgID, rank string, failed bool) (Event, bool, error) {
+	if targetMsgID == "" {
+		return Event{}, false, ErrEventNotFound
+	}
+	slog.Debug("events: ApplyDeliverySnapshot observed",
+		slog.String("msg_id", targetMsgID),
+		slog.String("rank", rank),
+		slog.Bool("failed", failed),
+	)
+	if rank == "" && !failed {
+
+		return Event{}, false, nil
+	}
+	var updated Event
+	changed := false
+	err := l.updateRetry(func(m mutatingTxn) error {
+
+		changed = false
+		updated = Event{}
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var key []byte
+		if err := idxItem.Value(func(v []byte) error {
+			key = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			return err
+		}
+		rowItem, err := m.get(key)
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := rowItem.Value(func(v []byte) error {
+			return json.Unmarshal(v, &updated)
+		}); err != nil {
+			return err
+		}
+		if l.retryTestHook != nil {
+			l.retryTestHook()
+		}
+		if updated.Direction != DirOut {
+			return nil
+		}
+		if updated.Kind != KindText && updated.Kind != KindFile {
+			return nil
+		}
+		if rank != "" && DeliveryOutranks(updated.DeliveryState, rank) {
+			updated.DeliveryState = rank
+			changed = true
+		}
+		if failed && updated.mayFail() {
+			updated.DeliveryState = DeliveryFailed
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		raw, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		return m.storeRow(MutatorApplyDeliverySnapshot, updated.ChatID, updated.MsgID, key, raw)
+	})
+	if err != nil {
+		return Event{}, false, err
+	}
+
+	slog.Debug("events: ApplyDeliverySnapshot decision",
+		slog.String("msg_id", updated.MsgID),
+		slog.String("chat_id", string(updated.ChatID)),
+		slog.Bool("changed", changed),
+	)
+	if changed && l.bus != nil {
+		l.bus.publish(updated)
+	}
+	return updated, changed, nil
+}
+
+func (l *Log) ApplyReceiptSentClaim(targetMsgID string, sentAt int64, generation uint64) (Event, bool, error) {
+	if targetMsgID == "" {
+		return Event{}, false, ErrEventNotFound
+	}
+	if sentAt <= 0 {
+		return Event{}, false, nil
+	}
+	slog.Debug("events: ApplyReceiptSentClaim observed",
+		slog.String("msg_id", targetMsgID),
+		slog.Int64("sent_at", sentAt),
+		slog.Uint64("generation", generation),
+	)
+	var updated Event
+	changed := false
+	err := l.updateRetry(func(m mutatingTxn) error {
+
+		changed = false
+		updated = Event{}
+		idxItem, err := m.get([]byte(msgIDPrefix + targetMsgID))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var key []byte
+		if err := idxItem.Value(func(v []byte) error {
+			key = append([]byte(nil), v...)
+			return nil
+		}); err != nil {
+			return err
+		}
+		rowItem, err := m.get(key)
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			_ = m.deleteAux([]byte(msgIDPrefix + targetMsgID))
+			return ErrEventNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := rowItem.Value(func(v []byte) error {
+			return json.Unmarshal(v, &updated)
+		}); err != nil {
+			return err
+		}
+		if l.retryTestHook != nil {
+			l.retryTestHook()
+		}
+		if updated.Direction != DirIn {
+			return nil
+		}
+		if updated.Kind != KindText && updated.Kind != KindFile {
+			return nil
+		}
+		if updated.ReadReceiptSentAt != 0 {
+
+			return nil
+		}
+		if generation < updated.ReceiptClaimGeneration {
+
+			return nil
+		}
+		updated.ReadReceiptSentAt = sentAt
+		updated.ReceiptClaimOrigin = false
+		updated.ReceiptClaimGeneration = generation
+		changed = true
+		raw, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		return m.storeRow(MutatorApplyReceiptSentClaim, updated.ChatID, updated.MsgID, key, raw)
+	})
+	if err != nil {
+		return Event{}, false, err
+	}
+
+	slog.Debug("events: ApplyReceiptSentClaim decision",
+		slog.String("msg_id", updated.MsgID),
+		slog.String("chat_id", string(updated.ChatID)),
+		slog.Bool("changed", changed),
+	)
+	if changed && l.bus != nil {
+		l.bus.publish(updated)
+	}
+	return updated, changed, nil
 }
 
 func (ev *Event) expired(nowSec int64) bool {
@@ -1486,6 +2291,10 @@ func (ev *Event) expired(nowSec int64) bool {
 		default:
 			return false
 		}
+	}
+
+	if ev.Kind == KindCallSummary && ev.Direction == DirOut {
+		return ev.DisplayTs+int64(ev.ExpireSeconds) <= nowSec
 	}
 	return ev.RecvTs+int64(ev.ExpireSeconds) <= nowSec
 }

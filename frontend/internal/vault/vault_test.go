@@ -2,6 +2,8 @@ package vault
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +11,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 var fastParams = KDFParams{
@@ -462,6 +467,89 @@ func TestPayload_DefaultTrueBoolsSurviveOldVaults(t *testing.T) {
 	}
 }
 
+func sealRawPayloadJSON(t *testing.T, path string, passphrase, raw []byte) {
+	t.Helper()
+	salt := make([]byte, saltLen)
+	if _, err := rand.Read(salt); err != nil {
+		t.Fatalf("salt: %v", err)
+	}
+	nonce := make([]byte, nonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("nonce: %v", err)
+	}
+	header := make([]byte, headerLen)
+	copy(header[0:8], magic[:])
+	header[8] = CurrentVersion
+	binary.BigEndian.PutUint32(header[9:13], fastParams.Time)
+	binary.BigEndian.PutUint32(header[13:17], fastParams.Memory)
+	header[17] = fastParams.Threads
+	header[18] = fastParams.KeyLen
+	copy(header[19:19+saltLen], salt)
+	copy(header[19+saltLen:19+saltLen+nonceLen], nonce)
+
+	key := argon2.IDKey(passphrase, salt, fastParams.Time, fastParams.Memory, fastParams.Threads, uint32(fastParams.KeyLen))
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		t.Fatalf("aead init: %v", err)
+	}
+	sealed := append(header, aead.Seal(nil, nonce, raw, header)...)
+	if err := writeSealedVault(path, sealed); err != nil {
+		t.Fatalf("write raw payload: %v", err)
+	}
+}
+
+func TestOpen_SeedsDefaultTrueBoolsOnOldVaults(t *testing.T) {
+	dir := t.TempDir()
+	pass := []byte("correct horse battery staple")
+
+	absent := filepath.Join(dir, "absent.enc")
+	sealRawPayloadJSON(t, absent, pass, []byte(`{
+		"haomad_store_passphrase":   "a",
+		"frontend_store_passphrase": "b",
+		"haomad_token":              "c"
+	}`))
+	p, _, err := Open(absent, pass)
+	if err != nil {
+		t.Fatalf("open absent-key vault: %v", err)
+	}
+	if !p.ShowLoginForm {
+		t.Error("ShowLoginForm must open true when the key is absent — " +
+			"add it to defaultSeededPayload()")
+	}
+	if !p.SayPassphraseIsDefault {
+		t.Error("SayPassphraseIsDefault must open true when the key is absent — " +
+			"add it to defaultSeededPayload()")
+	}
+	if !p.NotificationsOnLock || !p.NotifyShellEnabled || !p.URLForceChooser {
+		t.Error("the older default-true bools must open true when their keys are absent")
+	}
+
+	explicit := filepath.Join(dir, "explicit.enc")
+	sealRawPayloadJSON(t, explicit, pass, []byte(`{
+		"haomad_store_passphrase":   "a",
+		"frontend_store_passphrase": "b",
+		"haomad_token":              "c",
+		"show_login_form":           false,
+		"say_passphrase_is_default": false,
+		"notifications_on_lock":     false,
+		"notify_shell_enabled":      false,
+		"url_force_chooser":         false
+	}`))
+	p2, _, err := Open(explicit, pass)
+	if err != nil {
+		t.Fatalf("open explicit-false vault: %v", err)
+	}
+	if p2.ShowLoginForm {
+		t.Error("show_login_form=false in the sealed JSON must beat the seed")
+	}
+	if p2.SayPassphraseIsDefault {
+		t.Error("say_passphrase_is_default=false in the sealed JSON must beat the seed")
+	}
+	if p2.NotificationsOnLock || p2.NotifyShellEnabled || p2.URLForceChooser {
+		t.Error("an explicit false must beat the seed for every default-true bool")
+	}
+}
+
 func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 	mobilePayload := `{
 		"haomad_store_passphrase":   "p1",
@@ -479,7 +567,10 @@ func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 		"idle_timeout_seconds":      900,
 		"pin_validity_sec":          0,
 		"panic_action":              "hard-lock",
-		"threat_profile":            "privacy",
+		"threat_profile":            "power",
+		"show_login_form":           true,
+		"say_passphrase_is_default": true,
+		"show_failed_destroy_attempts": false,
 		"url_force_chooser":         true,
 		"share_target_enabled":      true,
 		"mobile_notice_snooze":      {"passphrase_is_default": {"until": 1733600000000, "step": 2}}
@@ -500,7 +591,7 @@ func TestPayload_RoundTripsAllFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.enc")
 	want := mintFresh(t)
-	want.ThreatProfile = "privacy"
+	want.ThreatProfile = "power"
 	want.PIN = "1357"
 	want.IdleAction = "soft-lock"
 	want.PinValiditySec = 300

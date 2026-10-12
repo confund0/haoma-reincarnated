@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"haoma-frontend/internal/backendapi"
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/events"
+	"haoma-frontend/internal/gapfill"
 	"haoma-frontend/internal/ipc"
 	"haoma-frontend/internal/msg"
 	"haoma-frontend/internal/pair"
@@ -54,15 +57,64 @@ type haomadStub struct {
 	sendStatus     int
 	sendEnvelopeID string
 
+	SentPeerIDs  []string
+	SentPayloads [][]byte
+
+	SentKinds []string
+
+	sendMu sync.Mutex
+
+	PeerList []backendapi.Peer
+
+	SendGate chan struct{}
+
+	SendEntered chan struct{}
+
 	PeerActionCalls   int
 	LastPeerActionID  string
 	LastPeerActionReq string
 
+	PeerActionIDs []string
+
 	Peer backendapi.Peer
+
+	MissingPeers map[string]bool
+
+	DestroyPINGuardSet  bool
+	DestroyPINSalt      string
+	DestroyPINVerifier  string
+	DestroyPINSetCalls  int
+	DestroyPINSetBodies []string
+
+	DestroyVerifyBodies []string
+
+	DestroyVerifyStatus int
+	DestroyVerifyAnswer backendapi.VerifyDestroyPINResponse
+
+	DestroyVerifyAccepts string
+
+	UnlinkBodies []string
+	UnlinkAnswer backendapi.UnlinkResponse
+
+	OnUnlink func()
+
+	CallOrder []string
 
 	close         func()
 	mintedAddress string
 	mintedPrivKey string
+}
+
+func (s *haomadStub) WaitForSendEntered(t *testing.T, n int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for i := 0; i < n; i++ {
+		select {
+		case <-s.SendEntered:
+		case <-deadline:
+			t.Fatalf("WaitForSendEntered: timed out waiting for %d /send calls to start (got %d)", n, i)
+		}
+	}
 }
 
 func (s *haomadStub) WaitForSend(t *testing.T, n int, timeout time.Duration) {
@@ -90,6 +142,7 @@ func startHaomadStub(t *testing.T, identity []string, peerStatus int) *haomadStu
 		sendStatus:     http.StatusAccepted,
 		sendEnvelopeID: "env-stub-0001",
 		SendDone:       make(chan struct{}, 16),
+		SendEntered:    make(chan struct{}, 16),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /onion/mint", func(w http.ResponseWriter, _ *http.Request) {
@@ -104,7 +157,15 @@ func startHaomadStub(t *testing.T, identity []string, peerStatus int) *haomadStu
 		stub.LastBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(peerStatus)
 	})
+	mux.HandleFunc("GET /peers", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(backendapi.PeersResponse{Peers: stub.PeerList})
+	})
 	mux.HandleFunc("GET /peers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if stub.MissingPeers != nil && stub.MissingPeers[r.PathValue("id")] {
+			http.Error(w, `{"error":"contacts: peer not found"}`, http.StatusNotFound)
+			return
+		}
 		p := stub.Peer
 		if p.ID == "" {
 			p.ID = r.PathValue("id")
@@ -115,12 +176,30 @@ func startHaomadStub(t *testing.T, identity []string, peerStatus int) *haomadStu
 	mux.HandleFunc("POST /peers/{id}/action", func(w http.ResponseWriter, r *http.Request) {
 		stub.PeerActionCalls++
 		stub.LastPeerActionID = r.PathValue("id")
+		stub.PeerActionIDs = append(stub.PeerActionIDs, r.PathValue("id"))
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
 			Action string `json:"action"`
 		}
 		_ = json.Unmarshal(body, &req)
 		stub.LastPeerActionReq = req.Action
+		if stub.MissingPeers != nil {
+			id := r.PathValue("id")
+			if stub.MissingPeers[id] {
+				http.Error(w, `{"error":"contacts: peer not found"}`, http.StatusNotFound)
+				return
+			}
+			if req.Action == "delete" {
+				stub.MissingPeers[id] = true
+				kept := stub.PeerList[:0]
+				for _, p := range stub.PeerList {
+					if p.ID != id {
+						kept = append(kept, p)
+					}
+				}
+				stub.PeerList = kept
+			}
+		}
 
 		if req.Action == "retire" {
 			if stub.Peer.ID == "" {
@@ -128,6 +207,13 @@ func startHaomadStub(t *testing.T, identity []string, peerStatus int) *haomadStu
 			}
 			stub.Peer.RetiredAt = 1_750_000_000
 			stub.Peer.KnownAddresses = nil
+
+			for i := range stub.PeerList {
+				if stub.PeerList[i].ID == r.PathValue("id") {
+					stub.PeerList[i].RetiredAt = 1_750_000_000
+					stub.PeerList[i].KnownAddresses = nil
+				}
+			}
 		}
 		p := stub.Peer
 		if p.ID == "" {
@@ -137,9 +223,26 @@ func startHaomadStub(t *testing.T, identity []string, peerStatus int) *haomadStu
 		_ = json.NewEncoder(w).Encode(p)
 	})
 	mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case stub.SendEntered <- struct{}{}:
+		default:
+		}
+		if g := stub.SendGate; g != nil {
+			<-g
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var thisReq backendapi.SendRequest
+		_ = json.Unmarshal(body, &thisReq)
+		stub.sendMu.Lock()
 		stub.SendCalls++
-		stub.LastSendBody, _ = io.ReadAll(r.Body)
+		stub.CallOrder = append(stub.CallOrder, "/send")
+		stub.LastSendBody = body
 		_ = json.Unmarshal(stub.LastSendBody, &stub.LastSendReq)
+		stub.SentPeerIDs = append(stub.SentPeerIDs, thisReq.PeerID)
+		stub.SentPayloads = append(stub.SentPayloads, append([]byte(nil), thisReq.Payload...))
+		stub.SentKinds = append(stub.SentKinds, thisReq.Kind)
+		stub.sendMu.Unlock()
 
 		select {
 		case stub.SendDone <- struct{}{}:
@@ -154,6 +257,82 @@ func startHaomadStub(t *testing.T, identity []string, peerStatus int) *haomadStu
 		_ = json.NewEncoder(w).Encode(backendapi.SendResponse{
 			EnvelopeID: stub.sendEnvelopeID,
 		})
+	})
+	mux.HandleFunc("GET /destroy-pin", func(w http.ResponseWriter, _ *http.Request) {
+		out := backendapi.DestroyPINState{Set: stub.DestroyPINGuardSet}
+		if stub.DestroyPINGuardSet {
+			out.Salt = stub.DestroyPINSalt
+			out.SetAt = 1_750_000_000
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("POST /unlink", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		stub.CallOrder = append(stub.CallOrder, "/unlink")
+		stub.UnlinkBodies = append(stub.UnlinkBodies, string(raw))
+		if stub.OnUnlink != nil {
+			stub.OnUnlink()
+		}
+		var req backendapi.UnlinkRequest
+		_ = json.Unmarshal(raw, &req)
+		w.Header().Set("Content-Type", "application/json")
+
+		if req.Proof == "" {
+			_ = json.NewEncoder(w).Encode(backendapi.UnlinkResponse{
+				Narrowed: true, Deadline: stub.UnlinkAnswer.Deadline,
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(stub.UnlinkAnswer)
+	})
+	mux.HandleFunc("POST /destroy-pin/clear", func(w http.ResponseWriter, _ *http.Request) {
+
+		stub.DestroyPINGuardSet = false
+		stub.DestroyPINSalt = ""
+		stub.DestroyPINVerifier = ""
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(backendapi.SetDestroyPINResponse{Accepted: true})
+	})
+	mux.HandleFunc("POST /destroy-pin/verify", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		stub.CallOrder = append(stub.CallOrder, "/destroy-pin/verify")
+		stub.DestroyVerifyBodies = append(stub.DestroyVerifyBodies, string(raw))
+		w.Header().Set("Content-Type", "application/json")
+
+		if stub.DestroyVerifyStatus != 0 {
+			w.WriteHeader(stub.DestroyVerifyStatus)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "peer has no address"})
+			return
+		}
+		if stub.DestroyVerifyAccepts != "" {
+			var req backendapi.VerifyDestroyPINRequest
+			_ = json.Unmarshal(raw, &req)
+			_ = json.NewEncoder(w).Encode(backendapi.VerifyDestroyPINResponse{
+				Answered: true, Verified: req.Proof == stub.DestroyVerifyAccepts,
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(stub.DestroyVerifyAnswer)
+	})
+	mux.HandleFunc("POST /destroy-pin", func(w http.ResponseWriter, r *http.Request) {
+		stub.DestroyPINSetCalls++
+		raw, _ := io.ReadAll(r.Body)
+		stub.DestroyPINSetBodies = append(stub.DestroyPINSetBodies, string(raw))
+		var req backendapi.SetDestroyPINRequest
+		_ = json.Unmarshal(raw, &req)
+		w.Header().Set("Content-Type", "application/json")
+
+		if stub.DestroyPINGuardSet {
+			_ = json.NewEncoder(w).Encode(backendapi.SetDestroyPINResponse{
+				Reason: backendapi.DestroyPINAlreadySet,
+			})
+			return
+		}
+		stub.DestroyPINGuardSet = true
+		stub.DestroyPINSalt = req.Salt
+		stub.DestroyPINVerifier = req.Verifier
+		_ = json.NewEncoder(w).Encode(backendapi.SetDestroyPINResponse{Accepted: true})
 	})
 	srv := httptest.NewServer(mux)
 	stub.URL = srv.URL
@@ -200,6 +379,7 @@ func newTestDaemon(t *testing.T, stub *haomadStub) (d *daemon, addr, certPEM, to
 		peerSeq:       peerstate.New(st),
 		peerMeta:      peerstate.NewMeta(st),
 		chats:         chat.NewStore(st),
+		watermarks:    gapfill.NewWatermarks(st),
 		events:        events.New(st, bus, nil),
 		eventBus:      bus,
 		backendClient: backendapi.New(stub.URL, "", nil),
@@ -221,6 +401,8 @@ func newTestDaemon(t *testing.T, stub *haomadStub) (d *daemon, addr, certPEM, to
 	if err != nil {
 		t.Fatal(err)
 	}
+	testServers.Store(ln.Addr().String(), srv)
+	t.Cleanup(func() { testServers.Delete(ln.Addr().String()) })
 	go func() {
 		tlsLn := tls.NewListener(ln, tlsCfg)
 		_ = httpSrv.Serve(tlsLn)
@@ -233,8 +415,26 @@ func newTestDaemon(t *testing.T, stub *haomadStub) (d *daemon, addr, certPEM, to
 	return d, ln.Addr().String(), ipc.CertPath(dir), tok
 }
 
+var testServers sync.Map
+
 func dialTest(t *testing.T, ctx context.Context, addr, certPath, token string) *websocket.Conn {
 	t.Helper()
+
+	var srv *ipc.Server
+	before := 0
+	if v, ok := testServers.Load(addr); ok {
+		srv = v.(*ipc.Server)
+		before = srv.SessionCount()
+	}
+	defer func() {
+		if srv == nil || t.Failed() {
+			return
+		}
+		deadline := time.Now().Add(time.Second)
+		for srv.SessionCount() <= before && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	}()
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +499,7 @@ func readNext(t *testing.T, ctx context.Context, conn *websocket.Conn) ipc.Frame
 	}
 }
 
-func readUntil(t *testing.T, ctx context.Context, conn *websocket.Conn, wantType ipc.FrameType) ipc.Frame {
+func readUntil(t *testing.T, ctx context.Context, conn *websocket.Conn, wantType ipc.FrameType, alsoWant ...ipc.FrameType) ipc.Frame {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -313,7 +513,7 @@ func readUntil(t *testing.T, ctx context.Context, conn *websocket.Conn, wantType
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if f.Type == wantType {
+		if f.Type == wantType || slices.Contains(alsoWant, f.Type) {
 			return f
 		}
 		if f.Type == ipc.FramePing || f.Type == ipc.FramePong {
@@ -725,6 +925,7 @@ func TestDispatch_SendText_NoText_BadRequest(t *testing.T) {
 }
 
 func TestDispatch_SendText_NoSession_EncryptFails(t *testing.T) {
+	setSendSessionTimeout(t, 100*time.Millisecond)
 	stub := startHaomadStub(t, []string{"our-onion"}, http.StatusCreated)
 	d, addr, certPath, token := newTestDaemon(t, stub)
 	const peerID = "0000000000000000000000000000000a"
@@ -747,8 +948,8 @@ func TestDispatch_SendText_NoSession_EncryptFails(t *testing.T) {
 	if ep.Code != "encrypt_failed" {
 		t.Errorf("code = %q, want encrypt_failed", ep.Code)
 	}
-	if !strings.Contains(ep.Message, "no session") {
-		t.Errorf("err message lacks 'no session' detail: %q", ep.Message)
+	if ep.Message != noSessionYetDetail {
+		t.Errorf("err message = %q, want %q", ep.Message, noSessionYetDetail)
 	}
 	if stub.SendCalls != 0 {
 		t.Errorf("haomad saw %d /send calls, want 0", stub.SendCalls)
@@ -915,11 +1116,38 @@ func TestDispatch_SendText_PushesTimelineEventOnBus(t *testing.T) {
 	}
 }
 
-func makeInboundCiphertext(t *testing.T, d *daemon, fromPeerID, text string, seq uint64, ts int64) []byte {
+func makeInboundCiphertext(t *testing.T, d *daemon, fromPeerID, text string, seq uint64, ts int64, deviceCount int) ([]byte, string) {
 	t.Helper()
+	testMsgID, err := msg.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := msg.BuildText(seq, ts, testMsgID, text, 0, "", "", nil, deviceCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encryptAsAlice(t, d, fromPeerID, wrapper), testMsgID
+}
+
+func encryptAsAlice(t *testing.T, d *daemon, fromPeerID string, wrapper *msg.Wrapper) []byte {
+	t.Helper()
+	blob, _ := encryptAsAliceKeepingCipher(t, d, fromPeerID, wrapper)
+	return blob
+}
+
+func encryptAsAliceKeepingCipher(t *testing.T, d *daemon, fromPeerID string, wrapper *msg.Wrapper) ([]byte, *session.Cipher) {
+	t.Helper()
+	return encryptAsAliceOnOPK(t, d, fromPeerID, wrapper, 0)
+}
+
+func encryptAsAliceOnOPK(t *testing.T, d *daemon, fromPeerID string, wrapper *msg.Wrapper, opkIndex int) ([]byte, *session.Cipher) {
+	t.Helper()
+	if opkIndex >= len(d.signalState.OneTimePreKeys) {
+		t.Fatalf("the daemon holds %d one-time prekeys; index %d was asked for", len(d.signalState.OneTimePreKeys), opkIndex)
+	}
 
 	bobAddr := protocol.NewSignalAddress("bob-self", session.DeviceID)
-	bobOPK := d.signalState.OneTimePreKeys[0]
+	bobOPK := d.signalState.OneTimePreKeys[opkIndex]
 	bobSPKSig := d.signalState.SignedPreKey.Signature()
 	bobBundle := prekey.NewBundle(
 		d.signalState.RegistrationID,
@@ -950,14 +1178,6 @@ func makeInboundCiphertext(t *testing.T, d *daemon, fromPeerID, text string, seq
 	}
 	aliceCipher := session.New(aliceStores)
 
-	testMsgID, err := msg.NewID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapper, err := msg.BuildText(seq, ts, testMsgID, text, 0, "", "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	plain, err := msg.Marshal(wrapper)
 	if err != nil {
 		t.Fatal(err)
@@ -968,7 +1188,7 @@ func makeInboundCiphertext(t *testing.T, d *daemon, fromPeerID, text string, seq
 	}
 
 	_ = fromPeerID
-	return blob
+	return blob, aliceCipher
 }
 
 func TestProcessInboxEntry_SeedsPeerFingerprint(t *testing.T) {
@@ -984,7 +1204,7 @@ func TestProcessInboxEntry_SeedsPeerFingerprint(t *testing.T) {
 		t.Fatalf("precondition: fingerprint should be empty, got %q", rec.Fingerprint)
 	}
 
-	blob := makeInboundCiphertext(t, d, aliceID, "hello bob", 7, senderTs)
+	blob, _ := makeInboundCiphertext(t, d, aliceID, "hello bob", 7, senderTs, 0)
 	processInboxEntry(ctx, d, backendapi.InboxEntry{
 		ArrivalAt: time.Now().UnixNano(),
 		PeerID:    aliceID,
@@ -1013,7 +1233,7 @@ func TestProcessInboxEntry_DecryptOK_PersistsAndPushes(t *testing.T) {
 
 	const aliceID = "0000000000000000000000000000aaaa"
 	const senderTs int64 = 1742643890
-	blob := makeInboundCiphertext(t, d, aliceID, "hello bob", 7, senderTs)
+	blob, _ := makeInboundCiphertext(t, d, aliceID, "hello bob", 7, senderTs, 0)
 
 	entry := backendapi.InboxEntry{
 		ArrivalAt: time.Now().UnixNano(),

@@ -156,7 +156,7 @@ private fun TorPasswordDialog(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = "re-sealing vault (1–3s)…",
+                                text = "Saving…",
                                 color = HaomaPalette.FG_SECONDARY,
                                 fontSize = 12.sp,
                             )

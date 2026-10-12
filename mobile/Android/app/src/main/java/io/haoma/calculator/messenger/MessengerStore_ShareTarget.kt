@@ -12,9 +12,7 @@ private const val SHARE_ALIAS = "io.haoma.calculator.ShareReceiverActivity"
 internal fun MessengerStore.reconcileShareTarget(session: VaultSession) {
     val ctx = appContext ?: return
     val snap = session.snapshot()
-    val optedIn = snap.optBoolean("share_target_enabled", false)
-    val noThreat = snap.optString("threat_profile", "").isEmpty()
-    val enable = optedIn && noThreat
+    val enable = snap.optBoolean("share_target_enabled", false)
     val newState = if (enable) {
         PackageManager.COMPONENT_ENABLED_STATE_ENABLED
     } else {
@@ -25,10 +23,7 @@ internal fun MessengerStore.reconcileShareTarget(session: VaultSession) {
         val pm = ctx.packageManager
         if (pm.getComponentEnabledSetting(cn) != newState) {
             pm.setComponentEnabledSetting(cn, newState, PackageManager.DONT_KILL_APP)
-            Logger.d(
-                "messenger",
-                "share-target alias enabled=$enable (optedIn=$optedIn noThreat=$noThreat)",
-            )
+            Logger.d("messenger", "share-target alias enabled=$enable")
         }
     } catch (t: Throwable) {
         Logger.w("messenger", "share-target reconcile failed: ${t.message}")

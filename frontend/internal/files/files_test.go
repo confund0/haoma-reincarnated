@@ -1,6 +1,7 @@
 package files_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -1006,5 +1007,267 @@ func TestWipeOpenTransient_NukesDir(t *testing.T) {
 
 	if err := mgr.WipeOpenTransient(); err != nil {
 		t.Errorf("second WipeOpenTransient on missing dir: %v", err)
+	}
+}
+
+func TestJanitor_OutboundDropsTheSiblingBlobs(t *testing.T) {
+	for _, trigger := range []string{"tombstone", "retention"} {
+		t.Run(trigger, func(t *testing.T) {
+			mgr, st, _ := newManager(t)
+			bus := events.NewBus()
+			now := int64(1742643890)
+			log := events.New(st, bus, func() time.Time { return time.Unix(now, 0) })
+			rec := &recordingDropper{}
+			jan := files.NewJanitor(mgr, bus, nil, rec)
+			const sibStaging = "5a1b2c3d4e5f60718293a4b5c6d7e8f9"
+			if err := mgr.PutMeta(files.Metadata{
+				MsgID: testMsgA, ChatID: testChatID, Direction: files.DirOut, State: files.StateReady,
+				SiblingStagingIDs: []string{sibStaging},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			body, _ := json.Marshal(map[string]string{"name": "blob.bin"})
+			if _, err := log.AppendOutbound(events.OutboundParams{
+				ChatID: testChatID, Kind: events.KindFile, SenderSeq: 1,
+				EnvelopeID: "env-sib", MsgID: testMsgA, ExpireSeconds: 1, Body: body,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			go jan.Run(ctx)
+			defer cancel()
+			waitForSubscribers(t, bus, 1, 1)
+			if trigger == "tombstone" {
+				if _, err := log.ApplyDelete(testMsgA, now, ""); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, _, err := log.SweepExpired(now + 10); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) && len(rec.snapshot()) < 2 {
+				time.Sleep(20 * time.Millisecond)
+			}
+			calls := rec.snapshot()
+			if len(calls) != 2 || calls[0] != testMsgA || calls[1] != sibStaging {
+				t.Fatalf("DropFile calls = %v, want [%s %s]", calls, testMsgA, sibStaging)
+			}
+		})
+	}
+}
+
+func TestJanitor_FetchedFromSiblingSendsHaomadNothing(t *testing.T) {
+	mgr, st, _ := newManager(t)
+	bus := events.NewBus()
+	log := events.New(st, bus, nil)
+	rec := &recordingDropper{}
+	jan := files.NewJanitor(mgr, bus, nil, rec)
+	if err := mgr.PutMeta(files.Metadata{
+		MsgID: testMsgA, ChatID: testChatID, Direction: files.DirOut, State: files.StateReady,
+		FetchedFromSibling: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"name": "blob.bin"})
+	if _, err := log.AppendOutbound(events.OutboundParams{
+		ChatID: testChatID, Kind: events.KindFile, SenderSeq: 1,
+		EnvelopeID: "env-fs", MsgID: testMsgA, Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go jan.Run(ctx)
+	defer cancel()
+	waitForSubscribers(t, bus, 1, 1)
+	if _, err := log.ApplyDelete(testMsgA, time.Now().Unix(), ""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := mgr.GetMeta(testMsgA); errors.Is(err, files.ErrMetaNotFound) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := mgr.GetMeta(testMsgA); !errors.Is(err, files.ErrMetaNotFound) {
+		t.Fatalf("precondition: the janitor did not run: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	if calls := rec.snapshot(); len(calls) != 0 {
+		t.Fatalf("DropFile calls = %v, want none", calls)
+	}
+}
+
+func TestJanitor_EveryRowKindDropsItsStagedBlobs(t *testing.T) {
+	kinds := map[string]files.Metadata{
+		"inbound": {
+			MsgID: testMsgA, ChatID: testChatID, Direction: files.DirIn, State: files.StateReady,
+		},
+		"fetched from my other device": {
+			MsgID: testMsgA, ChatID: testChatID, Direction: files.DirOut, State: files.StateReady,
+			FetchedFromSibling: true, StagingID: "7f7e7d7c7b7a79787776757473727170",
+		},
+	}
+	for kind, meta := range kinds {
+		for _, trigger := range []string{"tombstone", "retention"} {
+			t.Run(kind+"/"+trigger, func(t *testing.T) {
+				mgr, st, _ := newManager(t)
+				bus := events.NewBus()
+				now := int64(1742643890)
+				log := events.New(st, bus, func() time.Time { return time.Unix(now, 0) })
+				rec := &recordingDropper{}
+				jan := files.NewJanitor(mgr, bus, nil, rec)
+				staged := []string{"5a1b2c3d4e5f60718293a4b5c6d7e8f9", "6b2c3d4e5f60718293a4b5c6d7e8f9a0"}
+				meta.SiblingStagingIDs = staged
+				if err := mgr.PutMeta(meta); err != nil {
+					t.Fatal(err)
+				}
+				body, _ := json.Marshal(map[string]string{"name": "blob.bin"})
+				if _, err := log.AppendOutbound(events.OutboundParams{
+					ChatID: testChatID, Kind: events.KindFile, SenderSeq: 1,
+					EnvelopeID: "env-restaged", MsgID: testMsgA, ExpireSeconds: 1, Body: body,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				go jan.Run(ctx)
+				defer cancel()
+				waitForSubscribers(t, bus, 1, 1)
+				if trigger == "tombstone" {
+					if _, err := log.ApplyDelete(testMsgA, now, ""); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, _, err := log.SweepExpired(now + 10); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(2 * time.Second)
+				for time.Now().Before(deadline) && len(rec.snapshot()) < len(staged) {
+					time.Sleep(20 * time.Millisecond)
+				}
+
+				time.Sleep(100 * time.Millisecond)
+				calls := rec.snapshot()
+				if len(calls) != len(staged) || calls[0] != staged[0] || calls[1] != staged[1] {
+					t.Fatalf("DropFile calls = %v, want exactly the staging ids %v", calls, staged)
+				}
+				if _, err := mgr.GetMeta(testMsgA); !errors.Is(err, files.ErrMetaNotFound) {
+					t.Fatalf("the metadata row outlived the cascade: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestJanitor_DropsAStagingIDAddedDuringTheDelete(t *testing.T) {
+	mgr, st, _ := newManager(t)
+	bus := events.NewBus()
+	log := events.New(st, bus, nil)
+	rec := &recordingDropper{}
+	jan := files.NewJanitor(mgr, bus, nil, rec)
+	const first, late = "5a1b2c3d4e5f60718293a4b5c6d7e8f9", "6b2c3d4e5f60718293a4b5c6d7e8f9a0"
+	if err := mgr.PutMeta(files.Metadata{
+		MsgID: testMsgA, ChatID: testChatID, Direction: files.DirIn, State: files.StateReady,
+		SiblingStagingIDs: []string{first},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	files.SetDeleteMetaCheckpoint(t, func(string) {
+		once.Do(func() {
+			if err := mgr.UpdateMeta(testMsgA, func(m *files.Metadata) error {
+				m.SiblingStagingIDs = append(m.SiblingStagingIDs, late)
+				return nil
+			}); err != nil {
+				t.Errorf("the serving write failed: %v", err)
+			}
+		})
+	})
+	body, _ := json.Marshal(map[string]string{"name": "blob.bin"})
+	if _, err := log.AppendOutbound(events.OutboundParams{
+		ChatID: testChatID, Kind: events.KindFile, SenderSeq: 1,
+		EnvelopeID: "env-late", MsgID: testMsgA, Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go jan.Run(ctx)
+	defer cancel()
+	waitForSubscribers(t, bus, 1, 1)
+	if _, err := log.ApplyDelete(testMsgA, time.Now().Unix(), ""); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(rec.snapshot()) < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	calls := rec.snapshot()
+	if len(calls) != 2 || calls[0] != first || calls[1] != late {
+		t.Fatalf("DropFile calls = %v, want [%s %s] — a staging id added during the delete was left hosted", calls, first, late)
+	}
+	if _, err := mgr.GetMeta(testMsgA); !errors.Is(err, files.ErrMetaNotFound) {
+		t.Fatalf("the row outlived a delete that lost a race: %v", err)
+	}
+}
+
+func TestDeleteMetaReturning_ReturnsTheRemovedRow(t *testing.T) {
+	mgr, _, _ := newManager(t)
+	staged := []string{"5a1b2c3d4e5f60718293a4b5c6d7e8f9"}
+	if err := mgr.PutMeta(files.Metadata{
+		MsgID: testMsgA, ChatID: testChatID, Direction: files.DirIn, State: files.StateReady,
+		Token: "tok-in", SiblingStagingIDs: staged,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := mgr.DeleteMetaReturning(testMsgA)
+	if err != nil || !found {
+		t.Fatalf("DeleteMetaReturning = found %v, err %v", found, err)
+	}
+	if len(got.SiblingStagingIDs) != 1 || got.SiblingStagingIDs[0] != staged[0] {
+		t.Fatalf("returned staging ids = %v, want %v", got.SiblingStagingIDs, staged)
+	}
+	if _, err := mgr.GetMeta(testMsgA); !errors.Is(err, files.ErrMetaNotFound) {
+		t.Fatalf("row still there: %v", err)
+	}
+	if _, err := mgr.GetMetaByToken("tok-in"); !errors.Is(err, files.ErrMetaNotFound) {
+		t.Fatalf("token index still there: %v", err)
+	}
+	if _, found, err := mgr.DeleteMetaReturning(testMsgA); err != nil || found {
+		t.Fatalf("second delete = found %v, err %v; want not found, no error", found, err)
+	}
+}
+
+func TestDecryptSealMoveTrimmed_SealsTheFileWithoutThePadding(t *testing.T) {
+	mgr, _, _ := newManager(t)
+	file := []byte("the file itself")
+	padded := append(append([]byte(nil), file...), bytes.Repeat([]byte{0xee}, 500)...)
+	key := make([]byte, chacha20poly1305.KeySize)
+	nonce := make([]byte, chacha20poly1305.NonceSizeX)
+	_, _ = rand.Read(key)
+	_, _ = rand.Read(nonce)
+	aead, err := chacha20poly1305.NewX(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := aead.Seal(nil, nonce, padded, nil)
+
+	if _, err := mgr.WriteStaging(testMsgA, ct); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.DecryptSealMoveTrimmed(testChatID, testMsgA, key, nonce, len(padded)+1); !errors.Is(err, files.ErrPlaintextLength) {
+		t.Fatalf("a length past the blob: err = %v, want ErrPlaintextLength", err)
+	}
+	if _, err := mgr.WriteStaging(testMsgA, ct); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.DecryptSealMoveTrimmed(testChatID, testMsgA, key, nonce, len(file)); err != nil {
+		t.Fatalf("DecryptSealMoveTrimmed: %v", err)
+	}
+	got, err := mgr.UnsealAtRest(testChatID, testMsgA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, file) {
+		t.Fatalf("sealed %d bytes, want the %d of the file alone", len(got), len(file))
 	}
 }

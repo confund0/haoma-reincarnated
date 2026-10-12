@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,5 +166,59 @@ func TestEventsLoop_OnPresence_FeedsCache(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("cache never observed the SSE presence_observed signal")
+	}
+}
+
+func TestEventsLoop_OnDestroyDevice_PassesTheEraseIDOn(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /inbox", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(backendapi.InboxResponse{})
+	})
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("event: device.destroy\n" +
+			`data: {"reason":"the other device commanded it","erase_id":"erase-7c31f0"}` + "\n\n"))
+		flusher.Flush()
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var buf syncBuffer
+	restoreLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(restoreLog) })
+
+	exited := make(chan int, 1)
+	prevExit := exitForDestroy
+	exitForDestroy = func(code int) { exited <- code }
+	t.Cleanup(func() { exitForDestroy = prevExit })
+
+	d := minimalDaemon(t, srv.URL)
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+
+	go eventsLoop(ctx, d)
+
+	select {
+	case <-exited:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the instruction to stop never reached the exit")
+	}
+
+	found := false
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "this device is being erased; stopping") &&
+			strings.Contains(line, "erase_id=erase-7c31f0") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("the relay dropped the erase id on its way to the instruction to stop:\n%s",
+			buf.String())
 	}
 }

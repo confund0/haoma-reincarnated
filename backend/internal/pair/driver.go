@@ -18,6 +18,10 @@ type CreateRequest struct {
 	Payload []byte
 
 	Timeout time.Duration
+
+	LongLived bool
+
+	Secret string
 }
 
 type AcceptRequest struct {
@@ -32,6 +36,9 @@ type AcceptResult struct {
 
 type InviteBlob struct {
 	Words []string
+
+	Secret string
+
 	Bytes []byte
 }
 
@@ -48,6 +55,8 @@ type PendingInvite interface {
 type OOB struct {
 	Words []string
 
+	Secret string
+
 	Tag string
 }
 
@@ -60,5 +69,9 @@ var ErrCancelled = errors.New("pair: invite cancelled")
 var ErrTimedOut = errors.New("pair: rendezvous timed out")
 
 var ErrMACMismatch = errors.New("pair: handshake MAC mismatch")
+
+var ErrRendezvousSpent = errors.New("pair: rendezvous already answered")
+
+var ErrOnionWordCount = errors.New("pair: onion phrase has the wrong number of words")
 
 var ErrInvalidBlob = errors.New("pair: invalid invite blob")

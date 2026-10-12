@@ -1,0 +1,44 @@
+{
+  "type": "peers_listed",
+  "id": "c-2",
+  "payload": {
+    "peers": [
+      {
+        "id": "a41c7e59d0b3486fa2e15c9037bd48e6",
+        "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+        "nick": "mara",
+        "alias": "Mara from the ferry",
+        "label": "Mara from the ferry",
+        "last_active_at": 1754902874,
+        "last_passive_at": 1754903102,
+        "accepting": true,
+        "sending": true,
+        "chatty": "available",
+        "effective": "available",
+        "verified": true,
+        "unreachable": true
+      },
+      {
+        "id": "5b2e94a07c1d43f8ae60b3d519f78c24",
+        "label": "my other device",
+        "last_active_at": 1754903120,
+        "accepting": true,
+        "chatty": "available",
+        "effective": "available",
+        "sibling": true
+      },
+      {
+        "id": "e0b7419c53d84a26bf9d1e7038c5a2f4",
+        "chat_id": "1d84b0f7c25e49a3b6d70f1c8a34e5b9",
+        "nick": "toma",
+        "label": "toma",
+        "last_active_at": 1754812440,
+        "last_passive_at": 1754899301,
+        "retired_at": 1754900000,
+        "chatty": "busy",
+        "effective": "busy",
+        "blocked": true
+      }
+    ]
+  }
+}

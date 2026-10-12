@@ -213,6 +213,7 @@ func (d *daemon) handleDHTInvite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("ADD_ONION (dht-pair): %w", err))
 		return
 	}
+	d.published.record(conn, dhtOnion.ServiceID)
 	onionURL := "http://" + dhtOnion.ServiceID + ".onion"
 
 	dhtCtx, cancel := context.WithTimeout(r.Context(), 90*time.Second)

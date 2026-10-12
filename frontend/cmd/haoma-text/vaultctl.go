@@ -48,13 +48,13 @@ func newVaultController(path string, passphrase []byte, payload vault.Payload, p
 	}
 }
 
-func (vc *vaultController) Wipe() {
+func (vc *vaultController) Zero() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 	if len(vc.passphrase) == 0 {
 		return
 	}
-	slog.Debug("vault: wipe master passphrase", slog.Int("pass_len", len(vc.passphrase)))
+	slog.Debug("vault: zero master passphrase")
 	clear(vc.passphrase)
 	vc.passphrase = nil
 }
@@ -97,7 +97,7 @@ func (vc *vaultController) resealWithLocked(passphrase []byte) error {
 
 	slog.Debug("vault: reseal initiated",
 		slog.String("bin", bin),
-		slog.Int("pass_len", len(passphrase)),
+		slog.Bool("empty", len(passphrase) == 0),
 		slog.Int("payload_bytes", len(jsonPayload)),
 	)
 	start := time.Now()
@@ -124,7 +124,7 @@ func (vc *vaultController) Mutate(label string, transform func(*vault.Payload) e
 		vc.payload = before
 		return fmt.Errorf("re-seal: %w", err)
 	}
-	slog.Info("vault: mutate ok", slog.String("label", label))
+	slog.Info("vault: mutate ok", slog.String("op", label))
 	return nil
 }
 
@@ -165,6 +165,15 @@ func (vc *vaultController) ChangePIN(old, newPIN string) error {
 	}
 	slog.Info("vault: PIN changed")
 	return nil
+}
+
+func (vc *vaultController) CheckPIN(s string) bool {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	if s == "" || vc.payload.PIN == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(s), []byte(vc.payload.PIN)) == 1
 }
 
 func (vc *vaultController) SetIdleAction(action string) error {
@@ -241,6 +250,16 @@ func (vc *vaultController) IsInsecureDefaultPIN() bool {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 	return vault.IsInsecureDefaultPIN(vc.payload.PIN)
+}
+
+func (vc *vaultController) SaysPassphraseIsDefault() bool {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+
+	if vc.payload.ThreatProfile == vault.PresetNobody {
+		return false
+	}
+	return vc.payload.SayPassphraseIsDefault
 }
 
 func (vc *vaultController) SetNotifyShellEnabled(b bool) error {
@@ -323,7 +342,7 @@ func (vc *vaultController) SetNotifyDeepLink(b bool) error {
 
 func (vc *vaultController) SetThreatProfile(s string) error {
 	switch s {
-	case "", vault.PresetDomestic, vault.PresetPrivacy, vault.PresetActivist:
+	case "", vault.PresetNobody, vault.PresetDomestic, vault.PresetPower, vault.PresetForce:
 
 	default:
 		return fmt.Errorf("invalid threat profile %q", s)
@@ -341,9 +360,6 @@ func (vc *vaultController) SetThreatProfile(s string) error {
 }
 
 func (vc *vaultController) ApplyThreatPreset(preset string) error {
-	if preset == vault.PresetActivist {
-		return errors.New("activist preset not yet implemented (waits on hard-kill + data-destruction primitives)")
-	}
 	bundle, ok := vault.ThreatPresetBundles[preset]
 	if !ok {
 		return fmt.Errorf("unknown threat preset %q", preset)
@@ -352,24 +368,57 @@ func (vc *vaultController) ApplyThreatPreset(preset string) error {
 	defer vc.mu.Unlock()
 	prev := vc.payload
 	vc.payload.ThreatProfile = preset
+
+	vc.payload.ShowLoginForm = bundle.ShowLoginForm
+	vc.payload.SayPassphraseIsDefault = bundle.SayPassphraseIsDefault
+
 	vc.payload.IdleAction = bundle.IdleAction
 	vc.payload.IdleTimeoutSeconds = bundle.IdleTimeoutSeconds
 	vc.payload.PinValiditySec = bundle.PinValiditySec
 	vc.payload.PanicAction = bundle.PanicAction
+
+	vc.payload.NotifyShellEnabled = bundle.NotifyShellEnabled
+	vc.payload.NotifyShowSender = bundle.NotifyShowSender
+	vc.payload.NotifyShowBody = bundle.NotifyShowBody
+	vc.payload.NotifyDisguiseEnabled = bundle.NotifyDisguiseEnabled
+	vc.payload.NotifyNoisy = bundle.NotifyNoisy
+	vc.payload.NotifyPersistUntilOpen = bundle.NotifyPersistUntilOpen
+	vc.payload.NotifyDeepLink = bundle.NotifyDeepLink
+	vc.payload.NotificationsOnLock = bundle.NotificationsOnLock
+
+	vc.payload.ShareTargetEnabled = bundle.ShareTargetEnabled
+	vc.payload.ShowFailedDestroyAttempts = bundle.ShowFailedDestroyAttempts
+
 	if err := vc.resealLocked(); err != nil {
-		vc.payload.ThreatProfile = prev.ThreatProfile
-		vc.payload.IdleAction = prev.IdleAction
-		vc.payload.IdleTimeoutSeconds = prev.IdleTimeoutSeconds
-		vc.payload.PinValiditySec = prev.PinValiditySec
-		vc.payload.PanicAction = prev.PanicAction
+		vc.payload = prev
 		return fmt.Errorf("re-seal: %w", err)
 	}
-	slog.Info("vault: threat preset applied",
+	slog.Info("vault: threat preset applied", slog.String("preset", preset))
+
+	slog.Debug("vault: threat preset unlock cells written",
+		slog.String("preset", preset),
+		slog.Bool("show_login_form", bundle.ShowLoginForm),
+		slog.Bool("say_passphrase_is_default", bundle.SayPassphraseIsDefault))
+	slog.Debug("vault: threat preset lock cells written",
 		slog.String("preset", preset),
 		slog.String("idle_action", bundle.IdleAction),
 		slog.Int("idle_timeout_sec", bundle.IdleTimeoutSeconds),
 		slog.Int("pin_validity_sec", bundle.PinValiditySec),
 		slog.String("panic_action", bundle.PanicAction))
+	slog.Debug("vault: threat preset notification cells written",
+		slog.String("preset", preset),
+		slog.Bool("notify_shell_enabled", bundle.NotifyShellEnabled),
+		slog.Bool("notify_show_sender", bundle.NotifyShowSender),
+		slog.Bool("notify_show_body", bundle.NotifyShowBody),
+		slog.Bool("notify_disguise_enabled", bundle.NotifyDisguiseEnabled),
+		slog.Bool("notify_noisy", bundle.NotifyNoisy),
+		slog.Bool("notify_persist_until_open", bundle.NotifyPersistUntilOpen),
+		slog.Bool("notify_deep_link", bundle.NotifyDeepLink),
+		slog.Bool("notifications_on_lock", bundle.NotificationsOnLock))
+	slog.Debug("vault: threat preset mobile cells written",
+		slog.String("preset", preset),
+		slog.Bool("share_target_enabled", bundle.ShareTargetEnabled),
+		slog.Bool("show_failed_destroy_attempts", bundle.ShowFailedDestroyAttempts))
 	return nil
 }
 
@@ -433,20 +482,21 @@ func (vc *vaultController) Settings() ipc.Settings {
 	defer vc.mu.Unlock()
 	p := vc.payload
 	return ipc.Settings{
-		IdleAction:             p.IdleAction,
-		IdleTimeoutSeconds:     p.IdleTimeoutSeconds,
-		PinValiditySec:         p.PinValiditySec,
-		NotifyShellEnabled:     p.NotifyShellEnabled,
-		NotifyShowSender:       p.NotifyShowSender,
-		NotifyShowBody:         p.NotifyShowBody,
-		NotificationsOnLock:    p.NotificationsOnLock,
-		NotifyPersistUntilOpen: p.NotifyPersistUntilOpen,
-		NotifyDeepLink:         p.NotifyDeepLink,
-		ThreatProfile:          p.ThreatProfile,
-		PanicAction:            p.PanicAction,
-		SecurityWarnings:       append([]string(nil), p.SecurityWarnings...),
-		HasTorPassword:         p.TorPassword != "",
-		DefaultSaveDir:         p.DefaultSaveDir,
-		DefaultAttachStartDir:  p.DefaultAttachStartDir,
+		IdleAction:                p.IdleAction,
+		IdleTimeoutSeconds:        p.IdleTimeoutSeconds,
+		PinValiditySec:            p.PinValiditySec,
+		NotifyShellEnabled:        p.NotifyShellEnabled,
+		NotifyShowSender:          p.NotifyShowSender,
+		NotifyShowBody:            p.NotifyShowBody,
+		NotificationsOnLock:       p.NotificationsOnLock,
+		NotifyPersistUntilOpen:    p.NotifyPersistUntilOpen,
+		NotifyDeepLink:            p.NotifyDeepLink,
+		ShowFailedDestroyAttempts: p.ShowFailedDestroyAttempts,
+		ThreatProfile:             p.ThreatProfile,
+		PanicAction:               p.PanicAction,
+		SecurityWarnings:          append([]string(nil), p.SecurityWarnings...),
+		HasTorPassword:            p.TorPassword != "",
+		DefaultSaveDir:            p.DefaultSaveDir,
+		DefaultAttachStartDir:     p.DefaultAttachStartDir,
 	}
 }

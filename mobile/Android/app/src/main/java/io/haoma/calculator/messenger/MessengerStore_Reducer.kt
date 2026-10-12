@@ -20,8 +20,12 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                     chatFontScale = w.chatFontScale,
                     defaultRetentionSec = w.defaultRetentionSec,
                     defaultSendReceipts = w.defaultSendReceipts,
+                    
+                    
+                    chatDefaultsKnown = true,
                 )
             }
+            Logger.d("messenger", "chat defaults known from welcome: retention=${w.defaultRetentionSec}s receipts=${w.defaultSendReceipts}")
             appendStatus("welcome — daemon ${w.daemonVersion} (protocol v${w.protocolVersion})")
         }
 
@@ -33,7 +37,7 @@ internal fun MessengerStore.dispatch(frame: Frame) {
         FrameType.Nick -> if (payload != null) {
             val n = NickPayload.fromJson(payload)
             _health.update { it.copy(selfNick = n.nick, selfNickIsDefault = n.isDefault) }
-            appendStatus("self-nick → ${n.nick}")
+            appendStatus("self-nick updated")
         }
 
         FrameType.ChatFontScale -> if (payload != null) {
@@ -47,8 +51,10 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                 it.copy(
                     defaultRetentionSec = p.retentionSec,
                     defaultSendReceipts = p.sendReceipts,
+                    chatDefaultsKnown = true,
                 )
             }
+            Logger.d("messenger", "chat defaults changed: retention=${p.retentionSec}s receipts=${p.sendReceipts}")
         }
 
         FrameType.BackendStatus -> if (payload != null) {
@@ -68,7 +74,7 @@ internal fun MessengerStore.dispatch(frame: Frame) {
             val p = PeerSelfReachPayload.fromJson(payload)
             if (p.peerId.isNotEmpty()) {
                 _health.update { s ->
-                    s.copy(selfReach = s.selfReach + (p.peerId to SelfReach(p.onion, p.ok, p.at)))
+                    s.copy(selfReach = s.selfReach + (p.peerId to SelfReach(p.ok, p.at)))
                 }
             }
         }
@@ -102,9 +108,21 @@ internal fun MessengerStore.dispatch(frame: Frame) {
         FrameType.PresenceChanged -> if (payload != null) {
             val u = PresenceChangedPayload.fromJson(payload)
             if (u.peerId.isNotEmpty()) {
-                _presence.update { it + (u.peerId to u.effective) }
+                _presence.update {
+                    it + (u.peerId to PresenceView(accepting = u.accepting, sending = u.sending, chatty = u.chatty))
+                }
                 mapPeer(u.peerId) {
-                    it.copy(accepting = u.accepting, chatty = u.chatty, effective = u.effective)
+                    it.copy(accepting = u.accepting, sending = u.sending, chatty = u.chatty, effective = u.effective)
+                }
+            }
+        }
+
+        
+        FrameType.ChatPresenceChanged -> if (payload != null) {
+            val u = ChatPresenceChangedPayload.fromJson(payload)
+            if (u.chatId.isNotEmpty()) {
+                mapChat(u.chatId) {
+                    it.copy(accepting = u.accepting, sending = u.sending, chatty = u.chatty, effective = u.effective)
                 }
             }
         }
@@ -118,6 +136,7 @@ internal fun MessengerStore.dispatch(frame: Frame) {
             val u = ChatClearedPayload.fromJson(payload)
             if (u.chatId.isNotEmpty()) {
                 _timelines.update { it - u.chatId }
+                _pendingTexts.update { if (u.chatId in it) it - u.chatId else it }
                 _pendingAnchors.update { if (u.chatId in it) it - u.chatId else it }
                 if (_chatSearch.value?.chatId == u.chatId) closeChatSearch()
                 forgetEnvelopesFor(u.chatId)
@@ -132,6 +151,7 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                 _timelines.update { it - u.chatId }
                 _drafts.update { if (u.chatId in it) it - u.chatId else it }
                 _replyTargets.update { if (u.chatId in it) it - u.chatId else it }
+                _pendingTexts.update { if (u.chatId in it) it - u.chatId else it }
                 _pendingAnchors.update { if (u.chatId in it) it - u.chatId else it }
                 if (_chatSearch.value?.chatId == u.chatId) closeChatSearch()
                 forgetEnvelopesFor(u.chatId)
@@ -156,6 +176,17 @@ internal fun MessengerStore.dispatch(frame: Frame) {
         FrameType.PeerPaired -> if (payload != null) {
             val u = PeerPairedPush.fromJson(payload)
             appendStatus("paired — peer ${shortChat(u.peerId)} via ${u.source}")
+            onPairingCompleted()
+        }
+
+        
+        FrameType.InheritedContactsChanged -> if (payload != null) {
+            applyInheritedContactsPush(InheritedContactsBody.fromJson(payload))
+        }
+
+        
+        FrameType.DeviceSyncFinished -> if (payload != null) {
+            onDeviceSyncFinished(DeviceSyncFinishedPush.fromJson(payload))
         }
 
         FrameType.PairOnionProbe -> if (payload != null) {
@@ -203,6 +234,19 @@ internal fun MessengerStore.dispatch(frame: Frame) {
             )
         }
 
+        
+        FrameType.DeviceLinkProbe -> if (payload != null) {
+            deviceLinkProbe(DeviceLinkProbePush.fromJson(payload))
+        }
+
+        FrameType.DeviceLinkCompleted -> if (payload != null) {
+            deviceLinkCompleted(DeviceLinkCompletedPush.fromJson(payload))
+        }
+
+        FrameType.DeviceLinkFailed -> if (payload != null) {
+            deviceLinkFailed(DeviceLinkFailedPush.fromJson(payload))
+        }
+
         FrameType.TimelineEvent -> if (payload != null) {
             val ev = TimelineEventPayload.fromJson(payload).event
             if (ev.chatId.isNotEmpty()) {
@@ -210,7 +254,12 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                     rememberEnvelope(ev.envelopeId, ev.chatId)
                 }
                 upsertTimeline(ev.chatId) { mergeTimelineEvent(it, ev) }
+                
+                if (ev.isOutbound) _pendingTexts.update { dropPendingForRow(it, ev.chatId, ev.msgId) }
             }
+            
+            
+            if (ev.kind == EventKind.INVITATION) onInvitationMarker()
         }
 
         FrameType.DeliveryStatus -> if (payload != null) {
@@ -361,11 +410,23 @@ internal fun MessengerStore.dispatch(frame: Frame) {
 
         FrameType.NotificationEmitted -> if (payload != null) {
             val n = NotificationEmittedPayload.fromJson(payload)
-            val who = n.peerLabel.ifEmpty { shortChat(n.chatId) }
-            appendStatus("notify ($who): ${n.title}")
+            
+            
+            appendStatus("notify (${shortChat(n.chatId)})")
             
             
             notificationPoster?.post(n)
+        }
+
+        
+        FrameType.DestroyDevice ->
+            onDestroyDevice(
+                payload?.let { DestroyDevicePush.fromJson(it) } ?: DestroyDevicePush(reason = ""),
+            )
+
+        
+        FrameType.DestroyAttemptsSeen -> if (payload != null) {
+            onDestroyAttemptsSeen(DestroyAttemptsSeenPush.fromJson(payload))
         }
 
         

@@ -1,0 +1,9 @@
+{
+  "type": "delivery.state-changed",
+  "payload": {
+    "envelope_id": "2f60a8c94b17d3e05a8c61f2790db34e",
+    "state": "sent",
+    "at": 1754902812903117000,
+    "attempts": 1
+  }
+}

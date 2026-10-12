@@ -1,7 +1,6 @@
 // Vendored from github.com/anacrolix/torrent/bencode at commit
 // c20f73d53e9f. Licensed under Mozilla Public License 2.0; see
-// LICENSE in this directory. See docs/DEP-BENCODE-VENDOR.md for
-// rationale. One mechanical edit vs upstream: MustMarshal's
+// LICENSE in this directory. One mechanical edit vs upstream: MustMarshal's
 // expect.Nil(err) inlined as panic-on-non-nil to drop the
 // missinggo/expect transitive.
 

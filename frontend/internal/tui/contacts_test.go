@@ -3,7 +3,17 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"haoma-frontend/internal/ipc"
 )
+
+func pairedContactRows(peers []ipc.PeerEntry) []contactRow {
+	rows := make([]contactRow, 0, len(peers))
+	for i := range peers {
+		rows = append(rows, contactRow{peer: &peers[i]})
+	}
+	return rows
+}
 
 func TestFormatFingerprint_Empty(t *testing.T) {
 	got := formatFingerprint("")

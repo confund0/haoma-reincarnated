@@ -17,8 +17,12 @@ const (
 	TopicFileFetchStateChanged = "file.fetch-state-changed"
 	TopicFileFetchProgress     = "file.fetch-progress"
 
+	TopicDestroyDevice = "device.destroy"
+
 	TopicPeerSelfReachChanged       = "peer.self-reach-changed"
 	TopicHealthExternalReachChanged = "health.external-reach-changed"
+
+	TopicPeerUnreachableChanged = "peer.unreachable-changed"
 )
 
 type Event struct {
@@ -62,7 +66,7 @@ func (b *Bus) Subscribe(prefix string, bufSize int) (<-chan Event, func()) {
 	return s.ch, cancel
 }
 
-func (b *Bus) Publish(topic string, payload any) {
+func (b *Bus) Publish(topic string, payload any) (delivered, dropped int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	matched := 0
@@ -73,7 +77,9 @@ func (b *Bus) Publish(topic string, payload any) {
 		matched++
 		select {
 		case s.ch <- Event{Topic: topic, Payload: payload}:
+			delivered++
 		default:
+			dropped++
 			slog.Warn("eventbus: subscriber dropped (buffer full)",
 				slog.String("topic", topic),
 				slog.String("prefix", s.prefix),
@@ -83,5 +89,8 @@ func (b *Bus) Publish(topic string, payload any) {
 	slog.Debug("eventbus publish",
 		slog.String("topic", topic),
 		slog.Int("subscribers", matched),
+		slog.Int("delivered", delivered),
+		slog.Int("dropped", dropped),
 	)
+	return delivered, dropped
 }

@@ -1,0 +1,10 @@
+{
+  "type": "destroy_pin_set",
+  "id": "c-14",
+  "payload": {
+    "accepted": false,
+    "reason": "already_set",
+    "salt_pushed": 0,
+    "siblings": 1
+  }
+}

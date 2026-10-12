@@ -16,6 +16,7 @@ const (
 	EventProtocolViolation
 	EventConnectionAccepted
 	EventProbeAllDead
+	EventBadDestroyProof
 )
 
 func (k EventKind) String() string {
@@ -30,6 +31,8 @@ func (k EventKind) String() string {
 		return "connection_accepted"
 	case EventProbeAllDead:
 		return "probe_all_dead"
+	case EventBadDestroyProof:
+		return "bad_destroy_proof"
 	default:
 		return "unknown"
 	}
@@ -53,6 +56,8 @@ func (k *EventKind) UnmarshalJSON(data []byte) error {
 		*k = EventConnectionAccepted
 	case "probe_all_dead":
 		*k = EventProbeAllDead
+	case "bad_destroy_proof":
+		*k = EventBadDestroyProof
 	default:
 		return fmt.Errorf("ids: unknown EventKind %q", s)
 	}

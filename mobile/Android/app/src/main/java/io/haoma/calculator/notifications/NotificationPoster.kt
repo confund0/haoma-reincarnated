@@ -204,6 +204,32 @@ class NotificationPoster(
         
     }
 
+    
+    fun cancelCallBanners() {
+        val mgr = NotificationManagerCompat.from(app)
+        val sysMgr = app.getSystemService(NotificationManager::class.java)
+        if (sysMgr == null) {
+            Logger.w("notifications", "no notification service; call banners are not cancelled")
+            return
+        }
+        val active = try {
+            sysMgr.activeNotifications
+        } catch (t: Throwable) {
+            Logger.w("notifications", "activeNotifications threw: ${t.message}")
+            return
+        }
+        var n = 0
+        active.filter { it.id == NOTIF_ID_CALL }.forEach {
+            try {
+                mgr.cancel(it.tag, it.id)
+                n++
+            } catch (t: Throwable) {
+                Logger.w("notifications", "call-banner cancel failed: ${t.message}")
+            }
+        }
+        Logger.i("notifications", "call banners cancelled count=$n")
+    }
+
     private fun ensureChannel() {
         val mgr = app.getSystemService(NotificationManager::class.java) ?: return
         if (mgr.getNotificationChannel(CHANNEL_ID) == null) {
@@ -306,7 +332,7 @@ class NotificationPoster(
             .build()
         try {
             mgr.notify(callId, NOTIF_ID_CALL, notification)
-            Logger.i("notifications", "posted call call=${shortTag(callId)} peer=$peerLabel")
+            Logger.i("notifications", "posted call call=${shortTag(callId)} chat=${shortTag(chatId)}")
         } catch (t: SecurityException) {
             Logger.w("notifications", "call notify() threw: ${t.message}")
         }

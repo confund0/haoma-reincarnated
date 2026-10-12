@@ -12,7 +12,7 @@ import (
 	"haoma-frontend/internal/ipc"
 )
 
-func buildChatsTable(chats []ipc.ChatEntry, peerLabel func(peerID string) string, presenceLabel func(peerID string) string, rotationCell func(peerID string) rotationCellInfo, onOpen func(peerID string)) *tview.Table {
+func buildChatsTable(chats []ipc.ChatEntry, peerLabel func(peerID string) string, presenceOf func(chatID string) presenceView, rotationCell func(peerID string) rotationCellInfo, onOpen func(peerID string)) *tview.Table {
 	t := tview.NewTable().
 		SetBorders(false).
 		SetSelectable(true, false).
@@ -20,7 +20,7 @@ func buildChatsTable(chats []ipc.ChatEntry, peerLabel func(peerID string) string
 	t.SetBorder(true).SetTitle(" chats ")
 
 	style := tcell.StyleDefault.Bold(true)
-	t.SetCell(0, 0, tview.NewTableCell("P").SetStyle(style).SetMaxWidth(1))
+	t.SetCell(0, 0, tview.NewTableCell("P").SetStyle(style).SetMaxWidth(2))
 	t.SetCell(0, 1, tview.NewTableCell("R").SetStyle(style).SetMaxWidth(1))
 	t.SetCell(0, 2, tview.NewTableCell("Label").SetStyle(style).SetExpansion(3))
 	t.SetCell(0, 3, tview.NewTableCell("Kind").SetStyle(style).SetExpansion(1))
@@ -43,22 +43,17 @@ func buildChatsTable(chats []ipc.ChatEntry, peerLabel func(peerID string) string
 		last := relativeTime(now, c.LastActivityAt)
 
 		presenceText := ""
-		var presenceStyleVal tcell.Style
-		hasPresence := false
+		var view presenceView
 		if c.Kind == ipc.ChatKindDirect && c.PeerID != "" {
-			pl := "unknown"
-			if presenceLabel != nil {
-				if v := presenceLabel(c.PeerID); v != "" {
-					pl = v
-				}
+			if presenceOf != nil {
+				view = presenceOf(c.ChatID)
 			}
-			presenceText = presenceCellText(pl)
-			presenceStyleVal = presenceCellStyle(pl)
-			hasPresence = true
+			presenceText = presenceArrowsTag(view)
 		}
 		row := i + 1
-		presenceCell := tview.NewTableCell(presenceText).SetMaxWidth(1)
-		labelCell := tview.NewTableCell(label).SetExpansion(3)
+		presenceCell := tview.NewTableCell(presenceText).SetMaxWidth(2)
+
+		labelCell := tview.NewTableCell(label).SetExpansion(3).SetReference(c.ChatID)
 		kindCell := tview.NewTableCell(kind).SetExpansion(1)
 		ttlCell := tview.NewTableCell(ttl).SetExpansion(1)
 		unreadCell := tview.NewTableCell(unread).SetExpansion(1)
@@ -70,18 +65,16 @@ func buildChatsTable(chats []ipc.ChatEntry, peerLabel func(peerID string) string
 			ttlCell.SetStyle(unreadStyle)
 			unreadCell.SetStyle(unreadStyle)
 			lastCell.SetStyle(unreadStyle)
-			if hasPresence {
-				presenceCell.SetStyle(presenceStyleVal)
-			}
 		} else {
-			if hasPresence {
-				presenceCell.SetStyle(presenceStyleVal)
-			}
 
 			unreadCell.SetStyle(dimmed)
 			if c.LastActivityAt == 0 {
 				lastCell.SetStyle(dimmed)
 			}
+		}
+
+		if colour, ok := presenceNameColor(view.chatty); ok {
+			labelCell.SetStyle(tcell.StyleDefault.Foreground(colour))
 		}
 
 		rotText := ""
@@ -207,12 +200,10 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 	top.AddFormItem(retentionDropdown)
 	retentionDropdown.SetCurrentOption(retentionOptionIndex(c.RetentionTTL))
 
-	sendReceipts := !c.DisableReadReceipts
-	receiptsCheckbox := newBracketCheckbox("Send read receipts", sendReceipts, func(checked bool) { sendReceipts = checked })
+	receiptsCheckbox := newBracketCheckbox("Send read receipts", !c.DisableReadReceipts, nil)
 	top.AddFormItem(receiptsCheckbox)
 
-	muted := c.NotificationsMuted
-	muteCheckbox := newBracketCheckbox("Mute notifications", muted, func(checked bool) { muted = checked })
+	muteCheckbox := newBracketCheckbox("Mute notifications", c.NotificationsMuted, nil)
 	top.AddFormItem(muteCheckbox)
 
 	initialRetention := c.RetentionTTL
@@ -225,8 +216,9 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 			return
 		}
 		wantTTL := retentionLevels[idx].seconds
-		wantReceiptsDisabled := !sendReceipts
-		wantMuted := muted
+
+		wantReceiptsDisabled := !receiptsCheckbox.Checked()
+		wantMuted := muteCheckbox.Checked()
 		wantNickOverride := strings.TrimSpace(nickField.GetText())
 		if wantTTL == initialRetention &&
 			wantReceiptsDisabled == initialReceiptsDisabled &&
@@ -280,8 +272,9 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 
 	bottom := tview.NewForm()
 	bottom.SetButtonsAlign(tview.AlignCenter)
-	var risksAcked bool
-	bottom.AddFormItem(newBracketCheckbox("I understand risks", false, func(checked bool) { risksAcked = checked }))
+
+	risksBox := newBracketCheckbox("I understand risks", false, nil)
+	bottom.AddFormItem(risksBox)
 
 	fireChatAction := func(action ipc.ChatAction, label string) {
 
@@ -312,7 +305,7 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 	}
 
 	bottom.AddButton("Clear chat", func() {
-		if !risksAcked {
+		if !risksBox.Checked() {
 			a.log("[yellow]check the risks box first[white]")
 			return
 		}
@@ -320,7 +313,7 @@ func (a *App) showChatModal(c ipc.ChatEntry) {
 		fireChatAction(ipc.ChatActionClear, "cleared")
 	})
 	bottom.AddButton("Delete chat", func() {
-		if !risksAcked {
+		if !risksBox.Checked() {
 			a.log("[yellow]check the risks box first[white]")
 			return
 		}
@@ -358,16 +351,49 @@ func (a *App) peerLabelForChat(peerID string) string {
 	return ""
 }
 
-func (a *App) peerPresenceLabel(peerID string) string {
+func (a *App) chatsTableKeepingCursor(chats []ipc.ChatEntry) *tview.Table {
+	anchor := ""
+	if old := a.chatsTable; old != nil {
+		if row, _ := old.GetSelection(); row > 0 {
+			if cell := old.GetCell(row, 2); cell != nil {
+				anchor, _ = cell.GetReference().(string)
+			}
+		}
+	}
+	t := buildChatsTable(chats, a.peerLabelForChat, a.chatPresence, a.peerRotationCell, a.openChat)
+	if anchor != "" {
+		for i := range chats {
+			if chats[i].ChatID == anchor {
+				t.Select(i+1, 0)
+				break
+			}
+		}
+	}
+	return t
+}
+
+func (a *App) chatPresence(chatID string) presenceView {
+	a.winMu.Lock()
+	defer a.winMu.Unlock()
+	return a.chatPresenceLocked(chatID)
+}
+
+func (a *App) peerPresenceOf(peerID string) presenceView {
 	if peerID == "" {
-		return "unknown"
+		return presenceView{}
 	}
 	a.winMu.Lock()
 	defer a.winMu.Unlock()
-	if v := a.peerPresence[peerID]; v != "" {
-		return v
+	return a.peerPresence[peerID]
+}
+
+func (a *App) systemLineForChatLocked(chatID string) string {
+	for i := range a.chats {
+		if a.chats[i].ChatID == chatID {
+			return chatSystemLine(a.chats[i])
+		}
 	}
-	return "unknown"
+	return ""
 }
 
 func (a *App) handleChatsListed(f ipc.Frame) {
@@ -384,14 +410,26 @@ func (a *App) handleChatsListed(f ipc.Frame) {
 	}
 	a.winMu.Lock()
 	a.chats = p.Chats
+
+	for _, cp := range a.chatPages {
+		a.syncChatPageLocked(cp)
+	}
 	a.winMu.Unlock()
 
 	a.app.QueueUpdateDraw(func() {
 		a.winMu.Lock()
 		chats := a.chats
+		lines := make(map[*chatPage]string, len(a.chatPages))
+		for _, cp := range a.chatPages {
+			cp.applyTitle(a.chatPresenceLocked(cp.chatID))
+			lines[cp] = a.systemLineForChatLocked(cp.chatID)
+		}
 		a.winMu.Unlock()
+		for cp, line := range lines {
+			cp.setSystemLine(line)
+		}
 		front, _ := a.pages.GetFrontPage()
-		a.chatsTable = buildChatsTable(chats, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+		a.chatsTable = a.chatsTableKeepingCursor(chats)
 		a.installChatsKeys(a.chatsTable)
 		a.pages.RemovePage("chats")
 		a.pages.AddPage("chats", a.chatsTable, true, false)

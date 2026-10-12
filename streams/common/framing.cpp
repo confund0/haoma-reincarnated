@@ -19,7 +19,7 @@ int64_t read_exact(int fd, uint8_t* buf, size_t n) {
   while (got < n) {
     ssize_t r = ::read(fd, buf + got, n - got);
     if (r > 0) { got += (size_t)r; continue; }
-    if (r == 0) return got == 0 ? 0 : -1;  // clean EOF only on frame boundary
+    if (r == 0) return got == 0 ? 0 : -1;  
     if (errno == EINTR) continue;
     return -1;
   }
@@ -36,7 +36,7 @@ uint16_t r_be16(const uint8_t* p) {
   return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
 }
 
-}  // namespace
+}  
 
 size_t encode_frame(uint64_t counter, uint64_t pts_ns,
                     const uint8_t* cipher, size_t cipher_len,

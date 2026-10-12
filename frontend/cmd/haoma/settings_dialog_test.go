@@ -20,7 +20,7 @@ func TestScopeSettings_Domains(t *testing.T) {
 		NotifyShowSender:    true,
 		NotifyShowBody:      true,
 		NotificationsOnLock: true,
-		ThreatProfile:       "privacy",
+		ThreatProfile:       "power",
 		PanicAction:         "hard-lock",
 		SecurityWarnings:    []string{"warn-1"},
 	}
@@ -34,7 +34,7 @@ func TestScopeSettings_Domains(t *testing.T) {
 			name:   "all",
 			domain: ipc.SettingsDomainAll,
 			check: func(t *testing.T, got ipc.Settings) {
-				if got.IdleAction != "soft-lock" || got.NotifyShowBody != true || got.ThreatProfile != "privacy" {
+				if got.IdleAction != "soft-lock" || got.NotifyShowBody != true || got.ThreatProfile != "power" {
 					t.Errorf("all domain should return everything, got %+v", got)
 				}
 			},
@@ -89,7 +89,7 @@ func TestScopeSettings_Domains(t *testing.T) {
 			name:   "advanced",
 			domain: ipc.SettingsDomainAdvanced,
 			check: func(t *testing.T, got ipc.Settings) {
-				if got.ThreatProfile != "privacy" || got.PanicAction != "hard-lock" {
+				if got.ThreatProfile != "power" || got.PanicAction != "hard-lock" {
 					t.Errorf("advanced: missing: %+v", got)
 				}
 				if len(got.SecurityWarnings) != 1 || got.SecurityWarnings[0] != "warn-1" {
@@ -165,7 +165,7 @@ func TestDispatch_SyncSettings_UpdatesSnapshotAndBroadcasts(t *testing.T) {
 		NotifyShowSender:    true,
 		NotifyShowBody:      false,
 		NotificationsOnLock: false,
-		ThreatProfile:       "privacy",
+		ThreatProfile:       "power",
 		PanicAction:         "hard-lock",
 		HasTorPassword:      true,
 	}

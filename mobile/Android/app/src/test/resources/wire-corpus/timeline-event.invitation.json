@@ -1,0 +1,19 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4202,
+      "chat_id": "1d84b0f7c25e49a3b6d70f1c8a34e5b9",
+      "direction": "in",
+      "kind": "invitation",
+      "display_ts": 1754903700,
+      "recv_ts": 1754903700,
+      "sender_peer_id": "5b2e94a07c1d43f8ae60b3d519f78c24",
+      "msg_id": "c6d1074f3b8e2a5901c7e4b36d802f95",
+      "body": {
+        "expires_at": 1755508500,
+        "state": "live"
+      }
+    }
+  }
+}

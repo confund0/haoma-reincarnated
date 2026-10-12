@@ -24,9 +24,17 @@ const probeOnionInviteInterval = 10 * time.Second
 
 const probeOnionInviteMaxAttempts = 30
 
-func probeOnionInvite(ctx context.Context, d *daemon, handleID string, words []string, pi pair.PendingInvite) {
+func probeOnionInvite(ctx context.Context, d *daemon, handleID string, words []string, secret string, pi pair.PendingInvite) {
 
-	mat, err := pair.OnionDerive(words)
+	var (
+		mat *pair.OnionMaterial
+		err error
+	)
+	if secret != "" {
+		mat, err = pair.OnionDeriveSecret(secret)
+	} else {
+		mat, err = pair.OnionDerive(words)
+	}
 	if err != nil {
 		slog.Warn("pair: probe — derive failed",
 			slog.String("handle_id", handleID),

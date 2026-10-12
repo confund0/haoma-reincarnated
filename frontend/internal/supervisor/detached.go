@@ -18,6 +18,9 @@ type RuntimeInfo struct {
 	PID       int       `json:"pid"`
 	APIAddr   string    `json:"api_addr"`
 	StartedAt time.Time `json:"started_at"`
+
+	ManageTor  string `json:"manage_tor,omitempty"`
+	TorDataDir string `json:"tor_data_dir,omitempty"`
 }
 
 type Detached struct {
@@ -26,6 +29,9 @@ type Detached struct {
 	APIAddr   string
 	StartedAt time.Time
 
+	ManageTor  string
+	TorDataDir string
+
 	runtimePath string
 
 	cmd      *exec.Cmd
@@ -33,6 +39,8 @@ type Detached struct {
 	waitErr  error
 	waitOnce sync.Once
 }
+
+func (d *Detached) Attached() bool { return d.cmd == nil }
 
 type HealthCheckFunc func(ctx context.Context, addr string) error
 
@@ -63,6 +71,8 @@ func AttachOrSpawn(
 				PID:         info.PID,
 				APIAddr:     info.APIAddr,
 				StartedAt:   info.StartedAt,
+				ManageTor:   info.ManageTor,
+				TorDataDir:  info.TorDataDir,
 				runtimePath: runtimePath,
 			}, nil
 		}
@@ -76,6 +86,28 @@ func AttachOrSpawn(
 	return spawnDetached(ctx, name, binPath, args, secretsBlob, stderrLogPath, runtimePath)
 }
 
+func FindRunning(name, runtimePath string) (*Detached, error) {
+	info, err := ReadRuntimeFile(runtimePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: %s: runtime file %s: %w", name, runtimePath, err)
+	}
+	if !isProcessAlive(info.PID) {
+		return nil, nil
+	}
+	return &Detached{
+		Name:        name,
+		PID:         info.PID,
+		APIAddr:     info.APIAddr,
+		StartedAt:   info.StartedAt,
+		ManageTor:   info.ManageTor,
+		TorDataDir:  info.TorDataDir,
+		runtimePath: runtimePath,
+	}, nil
+}
+
 func spawnDetached(
 	ctx context.Context,
 	name, binPath string,
@@ -87,7 +119,10 @@ func spawnDetached(
 		return nil, errors.New("supervisor: spawnDetached requires binPath")
 	}
 
-	logFile, err := os.OpenFile(stderrLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err := rotateCaptureFile(stderrLogPath); err != nil {
+		return nil, fmt.Errorf("supervisor: rotate stderr log %q: %w", stderrLogPath, err)
+	}
+	logFile, err := os.OpenFile(stderrLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: open stderr log %q: %w", stderrLogPath, err)
 	}

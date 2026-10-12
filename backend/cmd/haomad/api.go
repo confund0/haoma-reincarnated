@@ -10,9 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"haoma/internal/peers"
 	"haoma/internal/eventbus"
+	"haoma/internal/logid"
 	"haoma/internal/outbox"
+	"haoma/internal/peers"
+	"haoma/internal/tor/control"
+	"haoma/internal/tor/health"
 	"haoma/internal/xport"
 )
 
@@ -24,6 +27,16 @@ func (d *daemon) apiHandler() http.Handler {
 	mux.HandleFunc("GET /tor", d.handleTor)
 	mux.HandleFunc("GET /system", d.handleSystem)
 	mux.HandleFunc("POST /tor-password", d.handleTorPassword)
+
+	mux.HandleFunc("GET /destroy-pin", d.handleDestroyPINState)
+	mux.HandleFunc("POST /destroy-pin", d.handleDestroyPINSet)
+	mux.HandleFunc("POST /destroy-pin/verify", d.handleDestroyVerifySend)
+	mux.HandleFunc("POST /destroy-pin/attempts/drain", d.handleDestroyAttemptsDrain)
+	mux.HandleFunc("POST /wipe", d.handleWipe)
+	mux.HandleFunc("POST /unlink", d.handleUnlink)
+	mux.HandleFunc("GET /unlink/pending", d.handleUnlinkPending)
+	mux.HandleFunc("POST /unlink/stop-waiting", d.handleUnlinkStopWaiting)
+	mux.HandleFunc("POST /destroy-pin/clear", d.handleDestroyPINClear)
 	mux.HandleFunc("POST /onion/mint", d.handleOnionMint)
 	mux.HandleFunc("POST /onion/del", d.handleOnionDel)
 	mux.HandleFunc("GET /peers", d.handleListPeers)
@@ -39,7 +52,7 @@ func (d *daemon) apiHandler() http.Handler {
 	mux.HandleFunc("POST /external-probe-burst", d.handleExternalProbeBurst)
 	mux.HandleFunc("POST /peers/{id}/self-probe", d.handlePeerSelfProbe)
 
-	mux.HandleFunc("POST /tor/recover", d.handleTorRecover)
+	mux.HandleFunc("POST /network/changed", d.handleNetworkChanged)
 	mux.HandleFunc("GET /stats", d.handleStats)
 	mux.HandleFunc("POST /send", d.handleSend)
 	mux.HandleFunc("GET /inbox", d.handleInboxList)
@@ -220,6 +233,14 @@ func logEventPush(ev eventbus.Event) {
 			)
 			return
 		}
+	case eventbus.TopicPeerUnreachableChanged:
+		if obs, ok := ev.Payload.(peerUnreachableObservation); ok {
+			slog.Debug("/events peer.unreachable-changed push",
+				slog.String("peer_id", obs.PeerID),
+				slog.Bool("unreachable", obs.Unreachable),
+			)
+			return
+		}
 	case eventbus.TopicPairOnionProbe:
 		if obs, ok := ev.Payload.(pairProbeObservation); ok {
 			slog.Debug("/events pair.onion-probe push",
@@ -251,7 +272,9 @@ func (d *daemon) handleOnionMint(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("ADD_ONION NEW: %w", err))
 		return
 	}
-	slog.Info("persistent onion minted",
+
+	d.published.record(conn, o.ServiceID)
+	slog.Info("persistent onion minted and published",
 		slog.String("service_id", o.ServiceID),
 	)
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -268,6 +291,8 @@ type peerView struct {
 	LastPassiveAt        int64          `json:"last_passive_at,omitempty"`
 	RetiredAt            int64          `json:"retired_at,omitempty"`
 	PrevMyOnionExpiresAt int64          `json:"prev_my_onion_expires_at,omitempty"`
+
+	Unreachable bool `json:"unreachable,omitempty"`
 }
 
 func viewOf(p peers.Peer) peerView {
@@ -278,6 +303,7 @@ func viewOf(p peers.Peer) peerView {
 		LastActiveAt:   p.LastActiveAt,
 		LastPassiveAt:  p.LastPassiveAt,
 		RetiredAt:      p.RetiredAt,
+		Unreachable:    p.Unreachable(),
 	}
 	if p.PrevMyOnion != nil {
 		v.PrevMyOnionExpiresAt = p.PrevMyOnion.ExpiresAt
@@ -307,6 +333,11 @@ type torHealth struct {
 	Bootstrap   int  `json:"bootstrap"`
 	Ready       bool `json:"ready"`
 	Unreachable bool `json:"unreachable"`
+
+	ClockSkew        int  `json:"clock_skew"`
+	ClockSkewKnown   bool `json:"clock_skew_known"`
+	ClockSkewLimit   int  `json:"clock_skew_limit"`
+	ClockSkewOverLim bool `json:"clock_skew_over_limit"`
 }
 
 func (d *daemon) handleSystem(w http.ResponseWriter, _ *http.Request) {
@@ -351,7 +382,15 @@ func (d *daemon) handleTor(w http.ResponseWriter, _ *http.Request) {
 	var h torHealth
 	if d.torPoller != nil {
 		s := d.torPoller.Status()
-		h = torHealth{Bootstrap: s.Bootstrap, Ready: s.Ready, Unreachable: s.Unreachable}
+		h = torHealth{
+			Bootstrap:        s.Bootstrap,
+			Ready:            s.Ready,
+			Unreachable:      s.Unreachable,
+			ClockSkew:        s.ClockSkew,
+			ClockSkewKnown:   s.ClockSkewKnown,
+			ClockSkewLimit:   health.ClockSkewLimit,
+			ClockSkewOverLim: s.SkewOverLimit(),
+		}
 	}
 	d.verifiedSlotsMu.RLock()
 	slots := d.verifiedSlots
@@ -420,9 +459,13 @@ func (d *daemon) handleImportPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(retired) > 0 {
+		retiredShort := make([]string, len(retired))
+		for i, id := range retired {
+			retiredShort[i] = logid.Short(id)
+		}
 		slog.Info("/peers import retired prior peers (addr collision)",
 			slog.String("new_peer_id", inv.PeerID),
-			slog.Any("retired", retired),
+			slog.Any("retired", retiredShort),
 		)
 
 		for _, addr := range displacedAddrs {
@@ -430,19 +473,31 @@ func (d *daemon) handleImportPeer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp := map[string]any{"retired": retired}
 	if inv.MyOnionPrivateKey != "" {
 		newPeer, gerr := d.registry.Get(inv.PeerID)
 		if gerr == nil && newPeer != nil {
 			if perr := d.publishPeerOnion(*newPeer); perr != nil {
+				resp["onion_published"] = false
+				if errors.Is(perr, control.ErrOnionAddressCollision) {
 
-				slog.Debug("publishPeerOnion post-Import",
-					slog.String("peer_id", inv.PeerID),
-					slog.Any("err", perr),
-				)
+					resp["onion_error"] = "address_taken"
+					slog.Error("imported peer's onion address is served by something else; the peer is registered but unreachable",
+						slog.String("peer_id", inv.PeerID),
+						slog.String("service_id", newPeer.MyOnionAddr),
+						slog.Any("err", perr),
+					)
+				} else {
+					resp["onion_error"] = "publish_failed"
+					slog.Warn("publishing the imported peer's onion failed",
+						slog.String("peer_id", inv.PeerID),
+						slog.Any("err", perr),
+					)
+				}
 			}
 		}
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"retired": retired})
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (d *daemon) collectCollidingMyOnions(newAddrs []string, newPeerID string) []string {
@@ -480,6 +535,7 @@ func (d *daemon) handleDeletePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.unpublishPeerOnionsFromSnapshot(pre)
+	d.routes.forget(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -544,6 +600,7 @@ func (d *daemon) handlePeerAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		d.unpublishPeerOnionsFromSnapshot(p)
+		d.routes.forget(id)
 		writeJSON(w, http.StatusOK, viewOf(*p))
 
 	default:
@@ -636,7 +693,7 @@ func (d *daemon) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if peer.MyOnionAddr == "" {
-		writeErr(w, http.StatusFailedDependency, errors.New("peer has no published per-peer onion (pair pre-ADR-043?)"))
+		writeErr(w, http.StatusFailedDependency, errors.New("peer has no published per-peer onion (paired by an old version?)"))
 		return
 	}
 	if d.worker == nil {
@@ -673,6 +730,30 @@ func (d *daemon) handleSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, sendResponse{EnvelopeID: envID})
 }
 
+type outboxStateView struct {
+	EnvelopeID     string `json:"envelope_id"`
+	State          string `json:"state"`
+	Attempts       int    `json:"attempts"`
+	AckFailures    int    `json:"ack_failures,omitempty"`
+	FirstAt        int64  `json:"first_at"`
+	NextAttemptAt  int64  `json:"next_attempt_at"`
+	StateChangedAt int64  `json:"state_changed_at"`
+	LastError      string `json:"last_error,omitempty"`
+}
+
+func outboxView(row *outbox.OutboxRow) outboxStateView {
+	return outboxStateView{
+		EnvelopeID:     row.EnvelopeID,
+		State:          row.State,
+		Attempts:       row.Attempts,
+		AckFailures:    row.AckFailures,
+		FirstAt:        row.FirstAt,
+		NextAttemptAt:  row.NextAttemptAt,
+		StateChangedAt: row.StateChangedAt,
+		LastError:      row.LastError,
+	}
+}
+
 func (d *daemon) handleOutboxList(w http.ResponseWriter, r *http.Request) {
 	if d.worker == nil {
 		writeErr(w, http.StatusServiceUnavailable, errors.New("outbox worker not initialized"))
@@ -705,7 +786,11 @@ func (d *daemon) handleOutboxList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rows": rows})
+	views := make([]outboxStateView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, outboxView(row))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": views})
 }
 
 func (d *daemon) handleOutboxGet(w http.ResponseWriter, r *http.Request) {
@@ -719,7 +804,7 @@ func (d *daemon) handleOutboxGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("outbox entry not found: %w", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, row)
+	writeJSON(w, http.StatusOK, outboxView(row))
 }
 
 func (d *daemon) handleInboxList(w http.ResponseWriter, r *http.Request) {

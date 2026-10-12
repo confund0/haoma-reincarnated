@@ -17,6 +17,8 @@ type Client struct {
 
 var ErrEmptyResponse = errors.New("xport: peer returned empty body")
 
+var ErrCircuitRenewed = errors.New("xport: the circuit to the peer was renewed; send again")
+
 type PeerHTTPError struct {
 	StatusCode int
 	Body       string

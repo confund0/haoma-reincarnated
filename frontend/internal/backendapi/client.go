@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"haoma-frontend/internal/logid"
 )
 
 type Client struct {
@@ -62,6 +65,11 @@ type TorHealth struct {
 	Bootstrap   int  `json:"bootstrap"`
 	Ready       bool `json:"ready"`
 	Unreachable bool `json:"unreachable"`
+
+	ClockSkew        int  `json:"clock_skew"`
+	ClockSkewKnown   bool `json:"clock_skew_known"`
+	ClockSkewLimit   int  `json:"clock_skew_limit"`
+	ClockSkewOverLim bool `json:"clock_skew_over_limit"`
 }
 
 type TorInfoResponse struct {
@@ -171,7 +179,6 @@ func (c *Client) NewCircuitForPeer(ctx context.Context, peerID string) (int, err
 
 type PeerSelfReach struct {
 	PeerID string `json:"peer_id"`
-	Onion  string `json:"onion,omitempty"`
 	Ok     bool   `json:"ok"`
 	At     int64  `json:"at"`
 }
@@ -188,12 +195,22 @@ func (c *Client) ExternalProbeBurst(ctx context.Context) error {
 	return c.postJSON(ctx, "/external-probe-burst", nil, http.StatusAccepted, nil)
 }
 
-func (c *Client) TorRecover(ctx context.Context, mode string) error {
-	body, err := json.Marshal(map[string]string{"mode": mode})
-	if err != nil {
-		return fmt.Errorf("backendapi: marshal TorRecover body: %w", err)
+type NetworkChangeResult struct {
+	Dropped      bool `json:"dropped"`
+	Rows         int  `json:"rows"`
+	Destinations int  `json:"destinations"`
+	Fetches      int  `json:"fetches"`
+	Failed       bool `json:"failed,omitempty"`
+
+	ResetFailed bool `json:"reset_failed,omitempty"`
+}
+
+func (c *Client) NetworkChanged(ctx context.Context) (NetworkChangeResult, error) {
+	var res NetworkChangeResult
+	if err := c.postJSON(ctx, "/network/changed", nil, http.StatusOK, &res); err != nil {
+		return NetworkChangeResult{}, err
 	}
-	return c.postJSON(ctx, "/tor/recover", body, http.StatusOK, nil)
+	return res, nil
 }
 
 type Peer struct {
@@ -204,6 +221,8 @@ type Peer struct {
 	LastPassiveAt        int64          `json:"last_passive_at,omitempty"`
 	RetiredAt            int64          `json:"retired_at,omitempty"`
 	PrevMyOnionExpiresAt int64          `json:"prev_my_onion_expires_at,omitempty"`
+
+	Unreachable bool `json:"unreachable,omitempty"`
 }
 
 type PeersResponse struct {
@@ -239,7 +258,7 @@ func (c *Client) PeerAction(ctx context.Context, id, action string) (Peer, error
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return Peer{}, fmt.Errorf("backendapi: post peer action: %w", err)
 	}
@@ -267,7 +286,7 @@ func (c *Client) SetTorPassword(ctx context.Context, password string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: post tor password: %w", err)
 	}
@@ -285,7 +304,7 @@ func (c *Client) PostPeer(ctx context.Context, body []byte) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: post peer: %w", err)
 	}
@@ -341,7 +360,7 @@ func (c *Client) DeleteInboxEntry(ctx context.Context, id string) error {
 		return fmt.Errorf("backendapi: build delete inbox: %w", err)
 	}
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: delete inbox: %w", err)
 	}
@@ -399,7 +418,7 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (SendResponse, error
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.authHeader(httpReq)
-	resp, err := c.http.Do(httpReq)
+	resp, err := doRequest(c.http, httpReq)
 	if err != nil {
 		return SendResponse{}, fmt.Errorf("backendapi: send post: %w", err)
 	}
@@ -416,7 +435,6 @@ func (c *Client) Send(ctx context.Context, req SendRequest) (SendResponse, error
 
 type OutboxRow struct {
 	EnvelopeID     string `json:"envelope_id"`
-	Dest           string `json:"dest"`
 	State          string `json:"state"`
 	Attempts       int    `json:"attempts"`
 	AckFailures    int    `json:"ack_failures"`
@@ -456,10 +474,28 @@ func (c *Client) Outbox(ctx context.Context, state string, since int64, limit in
 	return out, nil
 }
 
+var ErrOutboxEntryNotFound = errors.New("backendapi: outbox entry not found")
+
 func (c *Client) OutboxEntry(ctx context.Context, id string) (OutboxRow, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/outbox/"+id, nil)
+	if err != nil {
+		return OutboxRow{}, fmt.Errorf("backendapi: build GET /outbox/{id}: %w", err)
+	}
+	c.authHeader(req)
+	resp, err := doRequest(c.http, req)
+	if err != nil {
+		return OutboxRow{}, fmt.Errorf("backendapi: GET /outbox/{id}: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return OutboxRow{}, ErrOutboxEntryNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return OutboxRow{}, httpError(resp)
+	}
 	var out OutboxRow
-	if err := c.getJSON(ctx, "/outbox/"+id, &out); err != nil {
-		return OutboxRow{}, err
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return OutboxRow{}, fmt.Errorf("backendapi: decode /outbox/{id}: %w", err)
 	}
 	return out, nil
 }
@@ -523,7 +559,7 @@ func (c *Client) DHTCancel(ctx context.Context, guid string) error {
 		return fmt.Errorf("backendapi: build dht cancel: %w", err)
 	}
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: dht cancel: %w", err)
 	}
@@ -584,11 +620,13 @@ func (c *Client) DHTPending(ctx context.Context) ([]DHTPendingEntry, error) {
 type PairOnionInviteRequest struct {
 	Payload        []byte `json:"payload"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	LongLived      bool   `json:"long_lived,omitempty"`
 }
 
 type PairOnionInviteResponse struct {
 	HandleID  string   `json:"handle_id"`
 	Words     []string `json:"words"`
+	Secret    string   `json:"secret,omitempty"`
 	ExpiresAt int64    `json:"expires_at"`
 }
 
@@ -598,6 +636,7 @@ type PairOnionWaitResponse struct {
 
 type PairOnionAcceptRequest struct {
 	Words   []string `json:"words"`
+	Secret  string   `json:"secret,omitempty"`
 	Payload []byte   `json:"payload"`
 }
 
@@ -605,8 +644,8 @@ type PairOnionAcceptResponse struct {
 	InviterPayload []byte `json:"inviter_payload"`
 }
 
-func (c *Client) PairOnionInvite(ctx context.Context, payload []byte, timeoutSeconds int) (PairOnionInviteResponse, error) {
-	body, err := json.Marshal(PairOnionInviteRequest{Payload: payload, TimeoutSeconds: timeoutSeconds})
+func (c *Client) PairOnionInvite(ctx context.Context, payload []byte, timeoutSeconds int, longLived bool) (PairOnionInviteResponse, error) {
+	body, err := json.Marshal(PairOnionInviteRequest{Payload: payload, TimeoutSeconds: timeoutSeconds, LongLived: longLived})
 	if err != nil {
 		return PairOnionInviteResponse{}, fmt.Errorf("backendapi: marshal pair onion invite: %w", err)
 	}
@@ -623,7 +662,7 @@ func (c *Client) PairOnionWait(ctx context.Context, handleID string) (PairOnionW
 		return PairOnionWaitResponse{}, fmt.Errorf("backendapi: build pair onion wait: %w", err)
 	}
 	c.authHeader(req)
-	resp, err := c.longHTTP.Do(req)
+	resp, err := doRequest(c.longHTTP, req)
 	if err != nil {
 		return PairOnionWaitResponse{}, fmt.Errorf("backendapi: pair onion wait: %w", err)
 	}
@@ -644,7 +683,7 @@ func (c *Client) PairOnionCancel(ctx context.Context, handleID string) error {
 		return fmt.Errorf("backendapi: build pair onion cancel: %w", err)
 	}
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: pair onion cancel: %w", err)
 	}
@@ -680,7 +719,7 @@ func (c *Client) StageFile(ctx context.Context, req StageFileRequest) (StageFile
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.authHeader(httpReq)
-	resp, err := c.http.Do(httpReq)
+	resp, err := doRequest(c.http, httpReq)
 	if err != nil {
 		return StageFileResponse{}, fmt.Errorf("backendapi: stage file: %w", err)
 	}
@@ -725,7 +764,7 @@ func (c *Client) FetchFile(ctx context.Context, req FetchFileRequest) (FetchFile
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.authHeader(httpReq)
-	resp, err := c.http.Do(httpReq)
+	resp, err := doRequest(c.http, httpReq)
 	if err != nil {
 		return FetchFileResponse{}, fmt.Errorf("backendapi: fetch file: %w", err)
 	}
@@ -751,7 +790,7 @@ func (c *Client) FetchStagingBlob(ctx context.Context, msgID string) (io.ReadClo
 		return nil, 0, fmt.Errorf("backendapi: build staging get: %w", err)
 	}
 	c.authHeader(req)
-	resp, err := c.longHTTP.Do(req)
+	resp, err := doRequest(c.longHTTP, req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("backendapi: staging get: %w", err)
 	}
@@ -787,7 +826,7 @@ func (c *Client) DropStagingBlob(ctx context.Context, msgID, token string) error
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: drop staging: %w", err)
 	}
@@ -808,7 +847,7 @@ func (c *Client) DropFile(ctx context.Context, msgID string) error {
 		return fmt.Errorf("backendapi: build drop file: %w", err)
 	}
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: drop file: %w", err)
 	}
@@ -826,7 +865,7 @@ func (c *Client) RetryFailedFiles(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("backendapi: build retry failed: %w", err)
 	}
 	c.authHeader(httpReq)
-	resp, err := c.http.Do(httpReq)
+	resp, err := doRequest(c.http, httpReq)
 	if err != nil {
 		return 0, fmt.Errorf("backendapi: retry failed: %w", err)
 	}
@@ -868,7 +907,7 @@ func (c *Client) RedeemFileReceipt(ctx context.Context, req RedeemFileReceiptReq
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.authHeader(httpReq)
-	resp, err := c.http.Do(httpReq)
+	resp, err := doRequest(c.http, httpReq)
 	if err != nil {
 		return RedeemFileReceiptResponse{}, fmt.Errorf("backendapi: redeem receipt: %w", err)
 	}
@@ -915,7 +954,7 @@ func (c *Client) ProxyServe(ctx context.Context, req ProxyServeRequest) error {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.authHeader(httpReq)
-	resp, err := c.http.Do(httpReq)
+	resp, err := doRequest(c.http, httpReq)
 	if err != nil {
 		return fmt.Errorf("backendapi: proxy serve: %w", err)
 	}
@@ -940,7 +979,7 @@ func (c *Client) ProxyFetch(ctx context.Context, req ProxyFetchRequest) error {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.authHeader(httpReq)
-	resp, err := c.http.Do(httpReq)
+	resp, err := doRequest(c.http, httpReq)
 	if err != nil {
 		return fmt.Errorf("backendapi: proxy fetch: %w", err)
 	}
@@ -963,7 +1002,7 @@ func (c *Client) ProxyCancel(ctx context.Context, token string) error {
 		return fmt.Errorf("backendapi: build proxy cancel: %w", err)
 	}
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: proxy cancel: %w", err)
 	}
@@ -975,13 +1014,14 @@ func (c *Client) ProxyCancel(ctx context.Context, token string) error {
 	return httpError(resp)
 }
 
-func (c *Client) PairOnionAccept(ctx context.Context, words []string, payload []byte) (PairOnionAcceptResponse, error) {
-	body, err := json.Marshal(PairOnionAcceptRequest{Words: words, Payload: payload})
+func (c *Client) PairOnionAccept(ctx context.Context, words []string, secret string, payload []byte) (PairOnionAcceptResponse, error) {
+	body, err := json.Marshal(PairOnionAcceptRequest{Words: words, Secret: secret, Payload: payload})
 	if err != nil {
 		return PairOnionAcceptResponse{}, fmt.Errorf("backendapi: marshal pair onion accept: %w", err)
 	}
+
 	var out PairOnionAcceptResponse
-	if err := c.postJSON(ctx, "/pair/onion/accept", body, http.StatusOK, &out); err != nil {
+	if err := c.postJSONWith(ctx, c.longHTTP, "/pair/onion/accept", body, http.StatusOK, &out); err != nil {
 		return PairOnionAcceptResponse{}, err
 	}
 	return out, nil
@@ -993,7 +1033,7 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 		return fmt.Errorf("backendapi: build GET %s: %w", path, err)
 	}
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: GET %s: %w", path, err)
 	}
@@ -1008,13 +1048,17 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, body []byte, wantStatus int, out any) error {
+	return c.postJSONWith(ctx, c.http, path, body, wantStatus, out)
+}
+
+func (c *Client) postJSONWith(ctx context.Context, hc *http.Client, path string, body []byte, wantStatus int, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("backendapi: build POST %s: %w", path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(hc, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: POST %s: %w", path, err)
 	}
@@ -1039,7 +1083,7 @@ func (c *Client) postRaw(ctx context.Context, path string, body []byte, wantStat
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authHeader(req)
-	resp, err := c.http.Do(req)
+	resp, err := doRequest(c.http, req)
 	if err != nil {
 		return nil, fmt.Errorf("backendapi: POST %s: %w", path, err)
 	}
@@ -1057,7 +1101,22 @@ func httpError(resp *http.Response) error {
 	if msg == "" {
 		msg = resp.Status
 	}
-	return fmt.Errorf("backendapi: %s: %s", resp.Request.URL.Path, msg)
+	return &StatusError{Path: logid.RedactURLTokens(resp.Request.URL.Path), StatusCode: resp.StatusCode, Msg: msg}
+}
+
+type StatusError struct {
+	Path       string
+	StatusCode int
+	Msg        string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("backendapi: %s: %s", e.Path, e.Msg)
 }
 
 func (c *Client) BaseURL() string { return c.baseURL }
+
+func doRequest(hc *http.Client, req *http.Request) (*http.Response, error) {
+	resp, err := hc.Do(req)
+	return resp, logid.RedactURLError(err)
+}

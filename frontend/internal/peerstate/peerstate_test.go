@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"haoma-frontend/internal/peerstate"
 	"haoma-frontend/internal/store"
@@ -53,11 +54,16 @@ func TestSetAlias_StampsAliasAt(t *testing.T) {
 	if rec, _ := m.Get("alice"); rec.AliasAt != 2000 {
 		t.Errorf("AliasAt = %d, want 2000", rec.AliasAt)
 	}
-	if _, err := m.SetAlias("alice", "stale", 500); err != nil {
+
+	if _, err := m.SetAlias("alice", "behind", 500); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _ := m.Get("alice"); rec.AliasAt != 2000 {
-		t.Errorf("AliasAt = %d after stale write, want 2000 (no backward move)", rec.AliasAt)
+	rec, _ = m.Get("alice")
+	if rec.Alias != "behind" {
+		t.Errorf("alias = %q, want behind (a local write always takes the field)", rec.Alias)
+	}
+	if rec.AliasAt != 2001 {
+		t.Errorf("AliasAt = %d after a write from behind, want 2001 (bumped past the held stamp)", rec.AliasAt)
 	}
 }
 
@@ -118,6 +124,41 @@ func TestSetFingerprint_SetsAndReports(t *testing.T) {
 	}
 	if rec.Fingerprint != "fp-abc" {
 		t.Errorf("Fingerprint = %q, want fp-abc", rec.Fingerprint)
+	}
+}
+
+func TestSetFingerprint_StampsPairedAtOnce(t *testing.T) {
+	m, _ := newMeta(t)
+	before := time.Now().Unix()
+	if _, _, err := m.SetFingerprint("alice", "fp-abc"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := m.PairedAt("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first < before || first > time.Now().Unix() {
+		t.Fatalf("paired_at = %d, want the time of the first write (from %d)", first, before)
+	}
+	if _, _, err := m.SetFingerprintAt("alice", "fp-abc", first+100); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.SetFingerprintAt("alice", "fp-new", first+200); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.PairedAt("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != first {
+		t.Errorf("paired_at moved to %d after later writes, want %d", got, first)
+	}
+
+	if _, err := m.SetAlias("bob", "Bobby", before); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := m.PairedAt("bob"); got != 0 {
+		t.Errorf("a peer with no fingerprint reads paired_at %d, want 0", got)
 	}
 }
 
@@ -360,5 +401,279 @@ func TestNextSendSeq_Concurrent(t *testing.T) {
 	}
 	if last != N {
 		t.Errorf("peek after %d sends = %d, want %d", N, last, N)
+	}
+}
+
+func TestObserveUnlinkNotice_FirstNoticeIsFresh(t *testing.T) {
+	m, _ := newMeta(t)
+	fresh, err := m.ObserveUnlinkNotice("fp-alice", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("the first notice from a person was refused")
+	}
+}
+
+func TestObserveUnlinkNotice_RefusesAnEarlierTime(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveUnlinkNotice("fp-alice", 2000); err != nil {
+		t.Fatal(err)
+	}
+	for _, ts := range []int64{1999, 1, 1000} {
+		fresh, err := m.ObserveUnlinkNotice("fp-alice", ts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh {
+			t.Errorf("a notice of an unlink at %d was accepted after one at 2000", ts)
+		}
+	}
+	fresh, err := m.ObserveUnlinkNotice("fp-alice", 2001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("a later time was refused; the watermark stops accepting anything")
+	}
+}
+
+func TestObserveUnlinkNotice_EqualTimeIsFresh(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveUnlinkNotice("fp-alice", 2000); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := m.ObserveUnlinkNotice("fp-alice", 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("a redelivery of the same notice was refused, so a retire that failed once can never run again")
+	}
+}
+
+func TestObserveUnlinkNotice_IsPerPerson(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveUnlinkNotice("fp-alice", 2000); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := m.ObserveUnlinkNotice("fp-bob", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("Bob's notice was measured against Alice's watermark")
+	}
+}
+
+func TestObserveUnlinkNotice_ZeroAndBelowAreRefused(t *testing.T) {
+	m, _ := newMeta(t)
+	for _, ts := range []int64{0, -1} {
+		fresh, err := m.ObserveUnlinkNotice("fp-alice", ts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh {
+			t.Errorf("a notice with time %d was accepted", ts)
+		}
+	}
+	fresh, err := m.ObserveUnlinkNotice("fp-alice", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("time 1 was refused, so the zero moved the watermark")
+	}
+}
+
+func TestObserveUnlinkNotice_SurvivesAReopen(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peerstate.NewMeta(st).ObserveUnlinkNotice("fp-alice", 5000); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st2.Lock() })
+	fresh, err := peerstate.NewMeta(st2).ObserveUnlinkNotice("fp-alice", 4999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh {
+		t.Error("the watermark was lost on reopen; a restart would let every stale notice act once")
+	}
+}
+
+func TestObserveUnlinkNotice_RejectsEmptyFingerprint(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveUnlinkNotice("", 3); err == nil {
+		t.Error("an empty fingerprint was accepted")
+	}
+}
+
+func TestObserveDeviceCount_FirstCountIsFresh(t *testing.T) {
+	m, _ := newMeta(t)
+	fresh, err := m.ObserveDeviceCount("fp-alice", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("the first count from a person was refused")
+	}
+}
+
+func TestObserveDeviceCount_RefusesAnEarlierSeal(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveDeviceCount("fp-alice", 2000); err != nil {
+		t.Fatal(err)
+	}
+	for _, ts := range []int64{1999, 1, 1000} {
+		fresh, err := m.ObserveDeviceCount("fp-alice", ts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh {
+			t.Errorf("a count sealed at %d was accepted after one sealed at 2000", ts)
+		}
+	}
+	fresh, err := m.ObserveDeviceCount("fp-alice", 2001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("a later seal was refused; the watermark stops accepting anything")
+	}
+}
+
+func TestObserveDeviceCount_EqualSealIsFresh(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveDeviceCount("fp-alice", 2000); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := m.ObserveDeviceCount("fp-alice", 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("a redelivery of the same message was refused, so a retire that failed once can never run again")
+	}
+}
+
+func TestObserveDeviceCount_IsPerPerson(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveDeviceCount("fp-alice", 2000); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := m.ObserveDeviceCount("fp-bob", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("Bob's count was measured against Alice's watermark")
+	}
+}
+
+func TestObserveDeviceCount_ZeroAndBelowAreRefused(t *testing.T) {
+	m, _ := newMeta(t)
+	for _, ts := range []int64{0, -1} {
+		fresh, err := m.ObserveDeviceCount("fp-alice", ts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh {
+			t.Errorf("a count with seal time %d was accepted", ts)
+		}
+	}
+	fresh, err := m.ObserveDeviceCount("fp-alice", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("seal time 1 was refused, so the zero moved the watermark")
+	}
+}
+
+func TestObserveDeviceCount_SurvivesAReopen(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peerstate.NewMeta(st).ObserveDeviceCount("fp-alice", 5000); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := store.Unlock(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st2.Lock() })
+	fresh, err := peerstate.NewMeta(st2).ObserveDeviceCount("fp-alice", 4999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh {
+		t.Error("the watermark was lost on reopen; a restart would let every stale count act once")
+	}
+}
+
+func TestObserveDeviceCount_RejectsEmptyFingerprint(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveDeviceCount("", 3); err == nil {
+		t.Error("an empty fingerprint was accepted")
+	}
+}
+
+func TestMarkSendsUnlinkNotice_IsSetOnce(t *testing.T) {
+	m, _ := newMeta(t)
+	if got, err := m.SendsUnlinkNotice("peer-a"); err != nil || got {
+		t.Fatalf("a pairing that never showed the marker reads %v (%v), want false", got, err)
+	}
+	changed, err := m.MarkSendsUnlinkNotice("peer-a", 1000)
+	if err != nil || !changed {
+		t.Fatalf("the first mark: changed %v (%v), want true", changed, err)
+	}
+	changed, err = m.MarkSendsUnlinkNotice("peer-a", 2000)
+	if err != nil || changed {
+		t.Fatalf("the second mark: changed %v (%v), want false", changed, err)
+	}
+	rec, err := m.Get("peer-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SendsUnlinkNoticeAt != 1000 {
+		t.Errorf("SendsUnlinkNoticeAt = %d, want the first time 1000", rec.SendsUnlinkNoticeAt)
+	}
+	if got, err := m.SendsUnlinkNotice("peer-a"); err != nil || !got {
+		t.Errorf("a marked pairing reads %v (%v), want true", got, err)
+	}
+	if got, err := m.SendsUnlinkNotice("peer-b"); err != nil || got {
+		t.Errorf("another pairing reads %v (%v); the marker is per pairing", got, err)
+	}
+}
+
+func TestCountAndNoticeWatermarks_AreSeparate(t *testing.T) {
+	m, _ := newMeta(t)
+	if _, err := m.ObserveDeviceCount("fp-alice", 9000); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := m.ObserveUnlinkNotice("fp-alice", 5000); err != nil || !fresh {
+		t.Errorf("a notice was refused on the count watermark: fresh %v (%v)", fresh, err)
+	}
+	if _, err := m.ObserveUnlinkNotice("fp-bob", 9000); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := m.ObserveDeviceCount("fp-bob", 5000); err != nil || !fresh {
+		t.Errorf("a count was refused on the notice watermark: fresh %v (%v)", fresh, err)
 	}
 }

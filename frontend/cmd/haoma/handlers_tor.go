@@ -64,7 +64,6 @@ func (sd *sessionDispatcher) handlePeerSelfProbe(ctx context.Context, sess *ipc.
 	}
 	resp, err := ipc.NewFrame(ipc.FramePeerSelfProbed, f.ID, ipc.PeerSelfReachPayload{
 		PeerID: res.PeerID,
-		Onion:  res.Onion,
 		Ok:     res.Ok,
 		At:     res.At,
 	})
@@ -94,35 +93,5 @@ func (sd *sessionDispatcher) handleExternalProbeBurst(ctx context.Context, sess 
 	}
 	if err := sess.Send(resp); err != nil {
 		slog.Warn("send external_probe_accepted frame failed", slog.Any("err", err))
-	}
-}
-
-func (sd *sessionDispatcher) handleTorRecover(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
-	slog.Debug("handle tor_recover")
-	var req ipc.TorRecoverRequest
-	if err := json.Unmarshal(f.Payload, &req); err != nil {
-		sendError(sess, f.ID, "bad_request", fmt.Sprintf("decode payload: %v", err))
-		return
-	}
-	if req.Mode != "newnym" {
-		sendError(sess, f.ID, "bad_request", fmt.Sprintf("unknown mode %q (want newnym)", req.Mode))
-		return
-	}
-	if sd.d.backendClient == nil {
-		sendError(sess, f.ID, "not_ready", "backend client not wired")
-		return
-	}
-	if err := sd.d.backendClient.TorRecover(ctx, req.Mode); err != nil {
-		sendError(sess, f.ID, "tor_recover_failed", err.Error())
-		return
-	}
-	//lint:ignore S1016 TorRecoverRequest and TorRecoveredResponse are distinct req/resp types that happen to share a shape.
-	resp, err := ipc.NewFrame(ipc.FrameTorRecovered, f.ID, ipc.TorRecoveredResponse{Mode: req.Mode})
-	if err != nil {
-		sendError(sess, f.ID, "encode_frame", err.Error())
-		return
-	}
-	if err := sess.Send(resp); err != nil {
-		slog.Warn("send tor_recovered frame failed", slog.Any("err", err))
 	}
 }

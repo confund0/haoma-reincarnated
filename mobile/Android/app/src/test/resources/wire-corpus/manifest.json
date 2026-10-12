@@ -1,0 +1,255 @@
+{
+  "note": "Generated. Never hand-edited. Every file named here is a frame the haoma daemon marshalled from its own payload structs. The wire-corpus Makefile target rewrites this directory; an ordinary test run only checks it.",
+  "authority": "frontend/cmd/haoma/wirecorpus_test.go",
+  "frames": [
+    {
+      "name": "welcome",
+      "file": "welcome.json",
+      "type": "system.welcome"
+    },
+    {
+      "name": "peers-listed",
+      "file": "peers-listed.json",
+      "type": "peers_listed"
+    },
+    {
+      "name": "chats-listed",
+      "file": "chats-listed.json",
+      "type": "chats_listed"
+    },
+    {
+      "name": "timeline-event.text-outbound-read",
+      "file": "timeline-event.text-outbound-read.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.text-inbound-read",
+      "file": "timeline-event.text-inbound-read.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.text-outbound-mirrored",
+      "file": "timeline-event.text-outbound-mirrored.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.text-outbound-failed",
+      "file": "timeline-event.text-outbound-failed.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.text-edited",
+      "file": "timeline-event.text-edited.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.text-tombstoned",
+      "file": "timeline-event.text-tombstoned.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.text-decrypt-failed",
+      "file": "timeline-event.text-decrypt-failed.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.timer-change",
+      "file": "timeline-event.timer-change.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.reaction",
+      "file": "timeline-event.reaction.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.file-outbound-delivered",
+      "file": "timeline-event.file-outbound-delivered.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.file-inbound-downloading",
+      "file": "timeline-event.file-inbound-downloading.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.call-summary",
+      "file": "timeline-event.call-summary.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.onion-rotation",
+      "file": "timeline-event.onion-rotation.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "timeline-event.invitation",
+      "file": "timeline-event.invitation.json",
+      "type": "msg.timeline-event"
+    },
+    {
+      "name": "inherited-contacts-listed",
+      "file": "inherited-contacts-listed.json",
+      "type": "inherited_contacts_listed"
+    },
+    {
+      "name": "inherited-contacts.changed",
+      "file": "inherited-contacts.changed.json",
+      "type": "inherited_contacts.changed"
+    },
+    {
+      "name": "invitation-offered",
+      "file": "invitation-offered.json",
+      "type": "invitation_offered"
+    },
+    {
+      "name": "invitations-listed",
+      "file": "invitations-listed.json",
+      "type": "invitations_listed"
+    },
+    {
+      "name": "timeline-page",
+      "file": "timeline-page.json",
+      "type": "timeline_page"
+    },
+    {
+      "name": "timeline-event-deleted",
+      "file": "timeline-event-deleted.json",
+      "type": "msg.deleted"
+    },
+    {
+      "name": "delivery-state-changed.sent",
+      "file": "delivery-state-changed.sent.json",
+      "type": "delivery.state-changed"
+    },
+    {
+      "name": "delivery-state-changed.failed",
+      "file": "delivery-state-changed.failed.json",
+      "type": "delivery.state-changed"
+    },
+    {
+      "name": "read-receipt-sent",
+      "file": "read-receipt-sent.json",
+      "type": "msg.read-receipt-sent"
+    },
+    {
+      "name": "devicelink-started",
+      "file": "devicelink-started.json",
+      "type": "devicelink_started"
+    },
+    {
+      "name": "devicelink-probe.waiting",
+      "file": "devicelink-probe.waiting.json",
+      "type": "devicelink.probe"
+    },
+    {
+      "name": "devicelink-probe.ready-unverified",
+      "file": "devicelink-probe.ready-unverified.json",
+      "type": "devicelink.probe"
+    },
+    {
+      "name": "devicelink-completed",
+      "file": "devicelink-completed.json",
+      "type": "devicelink.completed"
+    },
+    {
+      "name": "devicelink-accepted",
+      "file": "devicelink-accepted.json",
+      "type": "devicelink_accepted"
+    },
+    {
+      "name": "devicelink-failed",
+      "file": "devicelink-failed.json",
+      "type": "devicelink.failed"
+    },
+    {
+      "name": "devicesync-sent",
+      "file": "devicesync-sent.json",
+      "type": "devicesync_sent"
+    },
+    {
+      "name": "devicesync-sent.already-running",
+      "file": "devicesync-sent.already-running.json",
+      "type": "devicesync_sent"
+    },
+    {
+      "name": "devicesync.finished",
+      "file": "devicesync.finished.json",
+      "type": "devicesync.finished"
+    },
+    {
+      "name": "devicesync.finished.unreachable",
+      "file": "devicesync.finished.unreachable.json",
+      "type": "devicesync.finished"
+    },
+    {
+      "name": "devicesync.finished.timed-out",
+      "file": "devicesync.finished.timed-out.json",
+      "type": "devicesync.finished"
+    },
+    {
+      "name": "devicelinks-listed",
+      "file": "devicelinks-listed.json",
+      "type": "devicelinks_listed"
+    },
+    {
+      "name": "destroy-pin-listed",
+      "file": "destroy-pin-listed.json",
+      "type": "destroy_pin_listed"
+    },
+    {
+      "name": "destroy-pin-set.accepted",
+      "file": "destroy-pin-set.accepted.json",
+      "type": "destroy_pin_set"
+    },
+    {
+      "name": "destroy-pin-set.refused",
+      "file": "destroy-pin-set.refused.json",
+      "type": "destroy_pin_set"
+    },
+    {
+      "name": "destroy-pin-verified.answered",
+      "file": "destroy-pin-verified.answered.json",
+      "type": "destroy_pin_verified"
+    },
+    {
+      "name": "destroy-pin-verified.refused",
+      "file": "destroy-pin-verified.refused.json",
+      "type": "destroy_pin_verified"
+    },
+    {
+      "name": "destroy-pin-verified.no-salt",
+      "file": "destroy-pin-verified.no-salt.json",
+      "type": "destroy_pin_verified"
+    },
+    {
+      "name": "device-unlinked",
+      "file": "device-unlinked.json",
+      "type": "device_unlinked"
+    },
+    {
+      "name": "destroy-device",
+      "file": "destroy-device.json",
+      "type": "destroy_device"
+    },
+    {
+      "name": "destroy-attempts-seen",
+      "file": "destroy-attempts-seen.json",
+      "type": "destroy_attempts_seen"
+    },
+    {
+      "name": "chat-presence-changed",
+      "file": "chat-presence-changed.json",
+      "type": "chat_presence_changed"
+    },
+    {
+      "name": "presence-changed",
+      "file": "presence-changed.json",
+      "type": "presence_changed"
+    }
+  ],
+  "ladder": {
+    "file": "delivery-ladder.json",
+    "authority": "frontend/internal/events/delivery_rank.go"
+  }
+}

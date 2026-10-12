@@ -1,0 +1,20 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4201,
+      "chat_id": "1d84b0f7c25e49a3b6d70f1c8a34e5b9",
+      "direction": "out",
+      "kind": "onion_rotation",
+      "display_ts": 1754903600,
+      "recv_ts": 1754903600,
+      "sender_peer_id": "e0b7419c53d84a26bf9d1e7038c5a2f4",
+      "body": {
+        "rotation_id": "f10a83d6b47c2e59018d3f6a95c274be",
+        "stage": "failed",
+        "reason": "cooldown"
+      },
+      "expire_seconds": 86400
+    }
+  }
+}

@@ -38,7 +38,20 @@ const (
 	KindRotateAddress Kind = "rotate_address"
 	KindRotateConfirm Kind = "rotate_confirm"
 	KindRotateCancel  Kind = "rotate_cancel"
+
+	KindDeviceLinkIdentity Kind = "devicelink_identity"
+
+	KindPairingInvitation Kind = "pairing_invitation"
 )
+
+var AllKinds = []Kind{
+	KindText, KindEdit, KindDelete, KindReaction, KindRead, KindPresence,
+	KindFileOffer, KindFileReceipt, KindFileKey, KindFileDelivered,
+	KindCallOffer, KindCallAccept, KindCallReject, KindCallEnd, KindCallControl,
+	KindRotateRequest, KindRotateAccept, KindRotateAddress, KindRotateConfirm, KindRotateCancel,
+	KindDeviceLinkIdentity,
+	KindPairingInvitation,
+}
 
 const (
 	PresenceAvailable = "available"
@@ -62,10 +75,12 @@ type ReplyTo struct {
 }
 
 type TextBody struct {
-	Text          string   `json:"text"`
-	PresenceState string   `json:"presence_state,omitempty"`
-	SenderNick    string   `json:"sender_nick,omitempty"`
-	ReplyTo       *ReplyTo `json:"reply_to,omitempty"`
+	Text              string   `json:"text"`
+	PresenceState     string   `json:"presence_state,omitempty"`
+	SenderNick        string   `json:"sender_nick,omitempty"`
+	ReplyTo           *ReplyTo `json:"reply_to,omitempty"`
+	DeviceCount       int      `json:"device_count,omitempty"`
+	SendsUnlinkNotice bool     `json:"sends_unlink_notice,omitempty"`
 }
 
 type EditBody struct {
@@ -83,7 +98,10 @@ type ReadBody struct {
 }
 
 type PresenceBody struct {
-	State string `json:"state"`
+	State             string `json:"state"`
+	DeviceCount       int    `json:"device_count,omitempty"`
+	UnlinkedAt        int64  `json:"unlinked_at,omitempty"`
+	SendsUnlinkNotice bool   `json:"sends_unlink_notice,omitempty"`
 }
 
 type FileOfferBody struct {
@@ -127,7 +145,7 @@ func NewID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-func BuildText(seq uint64, ts int64, msgID, text string, expireSeconds uint32, presenceState, senderNick string, replyTo *ReplyTo) (*Wrapper, error) {
+func BuildText(seq uint64, ts int64, msgID, text string, expireSeconds uint32, presenceState, senderNick string, replyTo *ReplyTo, deviceCount int) (*Wrapper, error) {
 	if seq == 0 {
 		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
 	}
@@ -145,7 +163,11 @@ func BuildText(seq uint64, ts int64, msgID, text string, expireSeconds uint32, p
 	if replyTo != nil && replyTo.MsgID == "" {
 		return nil, fmt.Errorf("%w: reply_to msg_id required", ErrMissingField)
 	}
-	body, err := json.Marshal(TextBody{Text: text, PresenceState: presenceState, SenderNick: senderNick, ReplyTo: replyTo})
+	if deviceCount < 0 {
+		return nil, fmt.Errorf("%w: device_count must be >= 0, got %d", ErrMissingField, deviceCount)
+	}
+
+	body, err := json.Marshal(TextBody{Text: text, PresenceState: presenceState, SenderNick: senderNick, ReplyTo: replyTo, DeviceCount: deviceCount, SendsUnlinkNotice: true})
 	if err != nil {
 		return nil, fmt.Errorf("msg: marshal text body: %w", err)
 	}
@@ -280,7 +302,7 @@ func BuildRead(seq uint64, ts int64, msgID string, targets []string, expireSecon
 	}, nil
 }
 
-func BuildPresence(seq uint64, ts int64, msgID, state string, expireSeconds uint32) (*Wrapper, error) {
+func BuildPresence(seq uint64, ts int64, msgID, state string, expireSeconds uint32, deviceCount int, unlinkedAt int64) (*Wrapper, error) {
 	if seq == 0 {
 		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
 	}
@@ -295,7 +317,14 @@ func BuildPresence(seq uint64, ts int64, msgID, state string, expireSeconds uint
 	default:
 		return nil, fmt.Errorf("%w: state must be available|away|busy, got %q", ErrMissingField, state)
 	}
-	body, err := json.Marshal(PresenceBody{State: state})
+	if deviceCount < 0 {
+		return nil, fmt.Errorf("%w: device_count must be >= 0, got %d", ErrMissingField, deviceCount)
+	}
+	if unlinkedAt < 0 {
+		return nil, fmt.Errorf("%w: unlinked_at must be >= 0, got %d", ErrMissingField, unlinkedAt)
+	}
+
+	body, err := json.Marshal(PresenceBody{State: state, DeviceCount: deviceCount, UnlinkedAt: unlinkedAt, SendsUnlinkNotice: true})
 	if err != nil {
 		return nil, fmt.Errorf("msg: marshal presence body: %w", err)
 	}
@@ -682,7 +711,10 @@ type CallRejectBody struct {
 
 type CallEndBody struct {
 	CallID string `json:"call_id"`
+	Reason string `json:"reason,omitempty"`
 }
+
+const CallEndAnsweredElsewhere = "answered_elsewhere"
 
 const (
 	CallControlActionVideoMute   = "video_mute"
@@ -804,7 +836,7 @@ func BuildCallReject(seq uint64, ts int64, msgID, callID, reason string, expireS
 	}, nil
 }
 
-func BuildCallEnd(seq uint64, ts int64, msgID, callID string, expireSeconds uint32) (*Wrapper, error) {
+func BuildCallEnd(seq uint64, ts int64, msgID, callID, reason string, expireSeconds uint32) (*Wrapper, error) {
 	if seq == 0 {
 		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
 	}
@@ -817,7 +849,7 @@ func BuildCallEnd(seq uint64, ts int64, msgID, callID string, expireSeconds uint
 	if callID == "" {
 		return nil, fmt.Errorf("%w: call_id required", ErrMissingField)
 	}
-	body, err := json.Marshal(CallEndBody{CallID: callID})
+	body, err := json.Marshal(CallEndBody{CallID: callID, Reason: reason})
 	if err != nil {
 		return nil, fmt.Errorf("msg: marshal call_end body: %w", err)
 	}
@@ -1204,6 +1236,81 @@ func (w *Wrapper) RotateCancel() (*RotateCancelBody, error) {
 	}
 	if b.RotationID == "" {
 		return nil, fmt.Errorf("%w: rotation_id", ErrMissingField)
+	}
+	return &b, nil
+}
+
+type PairingInvitationBody struct {
+	Secret         string `json:"secret"`
+	OfferingDevice string `json:"offering_device"`
+	MintedAt       int64  `json:"minted_at"`
+	ExpiresAt      int64  `json:"expires_at"`
+}
+
+func BuildPairingInvitation(seq uint64, ts int64, msgID, secret, offeringDevice string, mintedAt, expiresAt int64, expireSeconds uint32) (*Wrapper, error) {
+	if seq == 0 {
+		return nil, fmt.Errorf("%w: seq must be >= 1", ErrMissingField)
+	}
+	if ts <= 0 {
+		return nil, fmt.Errorf("%w: ts must be > 0", ErrMissingField)
+	}
+	if msgID == "" {
+		return nil, fmt.Errorf("%w: msg_id required", ErrMissingField)
+	}
+	if secret == "" {
+		return nil, fmt.Errorf("%w: secret required", ErrMissingField)
+	}
+	if offeringDevice == "" {
+
+		return nil, fmt.Errorf("%w: offering_device required", ErrMissingField)
+	}
+	if mintedAt <= 0 {
+
+		return nil, fmt.Errorf("%w: minted_at must be > 0", ErrMissingField)
+	}
+	if expiresAt <= 0 {
+
+		return nil, fmt.Errorf("%w: expires_at must be > 0", ErrMissingField)
+	}
+	body, err := json.Marshal(PairingInvitationBody{
+		Secret:         secret,
+		OfferingDevice: offeringDevice,
+		MintedAt:       mintedAt,
+		ExpiresAt:      expiresAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("msg: marshal pairing_invitation body: %w", err)
+	}
+	return &Wrapper{
+		V:             Version,
+		Seq:           seq,
+		Ts:            ts,
+		MsgID:         msgID,
+		Kind:          KindPairingInvitation,
+		ExpireSeconds: expireSeconds,
+		Body:          body,
+	}, nil
+}
+
+func (w *Wrapper) PairingInvitation() (*PairingInvitationBody, error) {
+	if w.Kind != KindPairingInvitation {
+		return nil, fmt.Errorf("msg: wrapper kind is %q, not %q", w.Kind, KindPairingInvitation)
+	}
+	var b PairingInvitationBody
+	if err := json.Unmarshal(w.Body, &b); err != nil {
+		return nil, errors.New("msg: pairing_invitation body will not decode")
+	}
+	if b.Secret == "" {
+		return nil, fmt.Errorf("%w: secret", ErrMissingField)
+	}
+	if b.OfferingDevice == "" {
+		return nil, fmt.Errorf("%w: offering_device", ErrMissingField)
+	}
+	if b.MintedAt <= 0 {
+		return nil, fmt.Errorf("%w: minted_at", ErrMissingField)
+	}
+	if b.ExpiresAt <= 0 {
+		return nil, fmt.Errorf("%w: expires_at", ErrMissingField)
 	}
 	return &b, nil
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"haoma/internal/logid"
 	"haoma/internal/tor/control"
 )
 
@@ -19,7 +20,11 @@ const OnionDriverDefaultTimeout = 60 * time.Minute
 
 const OnionDriverMaxTimeout = 60 * time.Minute
 
+const OnionDriverLongLivedTimeout = 7 * 24 * time.Hour
+
 const OnionMaxHandshakeBytes = 64 << 10
+
+const joinerDialTimeout = 120 * time.Second
 
 type OnionPublisher interface {
 	AddOnion(privateKey string, ports []control.OnionPort, flags ...string) (*control.Onion, error)
@@ -61,19 +66,44 @@ func (d *OnionDriver) CreateInvite(ctx context.Context, req CreateRequest) (Pend
 		return nil, errors.New("pair: CreateInvite payload empty")
 	}
 
+	longLived := req.LongLived || req.Secret != ""
+
 	timeout := req.Timeout
+	maxTimeout := OnionDriverMaxTimeout
+	if longLived {
+		maxTimeout = OnionDriverLongLivedTimeout
+	}
 	if timeout <= 0 {
 		timeout = OnionDriverDefaultTimeout
+		if longLived {
+			timeout = OnionDriverLongLivedTimeout
+		}
 	}
-	if timeout > OnionDriverMaxTimeout {
-		timeout = OnionDriverMaxTimeout
+	if timeout > maxTimeout {
+		timeout = maxTimeout
 	}
 
-	words, err := GenerateOnionWords()
-	if err != nil {
-		return nil, fmt.Errorf("pair: generate words: %w", err)
+	var (
+		words  []string
+		secret string
+		mat    *OnionMaterial
+		err    error
+	)
+	if longLived {
+		secret = req.Secret
+		if secret == "" {
+			if secret, err = GenerateOnionSecret(); err != nil {
+				return nil, fmt.Errorf("pair: generate secret: %w", err)
+			}
+		}
+
+		mat, err = OnionDeriveSecret(secret)
+	} else {
+		if words, err = GenerateOnionWords(); err != nil {
+			return nil, fmt.Errorf("pair: generate words: %w", err)
+		}
+		mat, err = OnionDerive(words)
 	}
-	mat, err := OnionDerive(words)
 	if err != nil {
 		return nil, fmt.Errorf("pair: derive material: %w", err)
 	}
@@ -92,7 +122,7 @@ func (d *OnionDriver) CreateInvite(ctx context.Context, req CreateRequest) (Pend
 
 		_ = d.pub.DelOnion(o.ServiceID)
 		_ = ln.Close()
-		return nil, fmt.Errorf("pair: ADD_ONION returned %q, derivation predicted %q", o.ServiceID, mat.OnionAddress)
+		return nil, fmt.Errorf("pair: ADD_ONION returned %q, derivation predicted %q", logid.Short(o.ServiceID), logid.Short(mat.OnionAddress))
 	}
 
 	now := d.nowFn()
@@ -100,6 +130,7 @@ func (d *OnionDriver) CreateInvite(ctx context.Context, req CreateRequest) (Pend
 
 	pi := &onionPendingInvite{
 		mat:           mat,
+		secret:        secret,
 		ln:            ln,
 		pub:           d.pub,
 		serviceID:     o.ServiceID,
@@ -156,14 +187,23 @@ func (d *OnionDriver) AcceptInvite(ctx context.Context, req AcceptRequest) (Acce
 	if len(req.Payload) == 0 {
 		return AcceptResult{}, errors.New("pair: AcceptInvite payload empty")
 	}
-	mat, err := OnionDerive(req.Blob.Words)
+
+	var (
+		mat *OnionMaterial
+		err error
+	)
+	if req.Blob.Secret != "" {
+		mat, err = OnionDeriveSecret(req.Blob.Secret)
+	} else {
+		mat, err = OnionDerive(req.Blob.Words)
+	}
 	if err != nil {
 		return AcceptResult{}, fmt.Errorf("pair: derive: %w", err)
 	}
 
 	url := fmt.Sprintf("http://%s.onion:%d%s", mat.OnionAddress, mat.Port, PairHandoffPath)
 
-	reqCtx, reqCancel := context.WithTimeout(ctx, 30*time.Second)
+	reqCtx, reqCancel := context.WithTimeout(ctx, joinerDialTimeout)
 	defer reqCancel()
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(req.Payload))
 	if err != nil {
@@ -189,6 +229,9 @@ func (d *OnionDriver) AcceptInvite(ctx context.Context, req AcceptRequest) (Acce
 	if len(body) > OnionMaxHandshakeBytes {
 		return AcceptResult{}, fmt.Errorf("pair: response exceeds %d bytes", OnionMaxHandshakeBytes)
 	}
+	if resp.StatusCode == http.StatusGone {
+		return AcceptResult{}, ErrRendezvousSpent
+	}
 	if resp.StatusCode != http.StatusOK {
 		return AcceptResult{}, fmt.Errorf("pair: onion responded %d (%q)", resp.StatusCode, string(body))
 	}
@@ -207,7 +250,10 @@ func (d *OnionDriver) AcceptInvite(ctx context.Context, req AcceptRequest) (Acce
 }
 
 type onionPendingInvite struct {
-	mat           *OnionMaterial
+	mat *OnionMaterial
+
+	secret string
+
 	ln            net.Listener
 	srv           *http.Server
 	pub           OnionPublisher
@@ -299,8 +345,9 @@ func (pi *onionPendingInvite) servePair(w http.ResponseWriter, r *http.Request) 
 
 func (pi *onionPendingInvite) OOB() OOB {
 	return OOB{
-		Words: append([]string(nil), pi.mat.Words...),
-		Tag:   "onion",
+		Words:  append([]string(nil), pi.mat.Words...),
+		Secret: pi.secret,
+		Tag:    "onion",
 	}
 }
 

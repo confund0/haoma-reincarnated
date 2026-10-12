@@ -44,7 +44,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,7 +65,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.haoma.calculator.messenger.*
-import io.haoma.calculator.messenger.AcceptResult
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.PairType
 import io.haoma.calculator.messenger.PendingInvite
@@ -74,7 +72,6 @@ import io.haoma.calculator.messenger.RecentInvite
 import io.haoma.calculator.messenger.RecentOutcome
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 
 
 @Composable
@@ -190,20 +187,17 @@ private fun AcceptSubtab(store: MessengerStore) {
     var acceptRail by remember { mutableStateOf(PairType.Tor) }
     
     
-    var wordsInput by rememberSaveable { mutableStateOf("") }
-    var acceptError by remember { mutableStateOf<String?>(null) }
-    var submitting by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
+    val join by store.pairJoin.collectAsStateWithLifecycle()
+    val waiting = join.waitingSinceMs != 0L
     val context = LocalContext.current
 
-    val tokens = remember(wordsInput) {
-        wordsInput.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    val tokens = remember(join.wordsInput) {
+        join.wordsInput.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
     }
     val looksValid = remember(tokens) { EffShort.looksValid(context, tokens) }
 
     val launchScanner = rememberQrScannerLauncher { decoded ->
-        wordsInput = decoded.trim()
-        acceptError = null
+        store.setPairJoinWords(decoded.trim())
     }
 
     Section(
@@ -211,11 +205,9 @@ private fun AcceptSubtab(store: MessengerStore) {
         description = "Received an invitation from your new contact? Enter the 7 words here (or scan their QR) and tap Accept.",
     ) {
         OutlinedTextField(
-            value = wordsInput,
-            onValueChange = {
-                wordsInput = it
-                if (acceptError != null) acceptError = null
-            },
+            value = join.wordsInput,
+            onValueChange = { store.setPairJoinWords(it) },
+            enabled = !waiting,
             placeholder = {
                 Text(
                     text = "Enter 7 words here",
@@ -224,7 +216,7 @@ private fun AcceptSubtab(store: MessengerStore) {
                 )
             },
             leadingIcon = {
-                IconButton(onClick = launchScanner) {
+                IconButton(onClick = launchScanner, enabled = !waiting) {
                     Icon(
                         imageVector = QrScannerVector,
                         contentDescription = "Scan QR",
@@ -253,40 +245,30 @@ private fun AcceptSubtab(store: MessengerStore) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             CtaButton(
-                label = if (submitting) "Accepting…" else "Accept",
+                label = if (waiting) "Accepting…" else "Accept",
                 accent = if (looksValid) BTN_ACCEPT else BTN_ACCEPT_DIM,
-                enabled = !submitting && acceptRail == PairType.Tor,
+                enabled = !waiting && acceptRail == PairType.Tor,
             ) {
-                if (tokens.size < 3) {
-                    acceptError = "Need the 7 words from the invite."
-                    return@CtaButton
-                }
-                submitting = true
-                acceptError = null
-                coroutineScope.launch {
-                    when (val r = store.acceptOnion(tokens, "")) {
-                        is AcceptResult.Ok -> {
-                            wordsInput = ""
-                        }
-                        is AcceptResult.Error -> {
-                            acceptError = r.message
-                        }
-                    }
-                    submitting = false
-                }
+                store.startPairJoin(looksValid)
             }
             CtaButton(
                 label = "Scan QR",
                 accent = BTN_ACCEPT_DIM,
-                enabled = !submitting,
+                enabled = !waiting,
                 onClick = launchScanner,
             )
         }
-        if (acceptError != null) {
+        if (waiting) {
+            Spacer(modifier = Modifier.height(8.dp))
+            JoinCountdown(startedAtMs = join.waitingSinceMs)
+        }
+        if (join.error.isNotEmpty()) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = acceptError!!,
-                color = C_DANGER,
+                text = join.error,
+                
+                
+                color = if (join.error == JOIN_TOR_SLOW) HaomaPalette.C_ATTENTION else C_DANGER,
                 fontSize = 12.sp,
             )
         }

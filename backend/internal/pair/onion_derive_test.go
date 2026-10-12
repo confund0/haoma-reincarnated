@@ -11,6 +11,19 @@ import (
 
 var fixedWords = []string{"acid", "acorn", "acre", "acts", "afar", "affix", "aged"}
 
+const goldenOnionAddress = "rfvpxno65a3xmuyddkqluok254sp2oycxmvovpeiodxi3oqsmja2ccad"
+
+func TestOnionDerive_KnownAddress(t *testing.T) {
+	mat, err := OnionDerive(fixedWords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mat.OnionAddress != goldenOnionAddress {
+		t.Fatalf("the fixed phrase now derives %s, was %s — every peer on an older build "+
+			"dials an address this one no longer publishes", mat.OnionAddress, goldenOnionAddress)
+	}
+}
+
 func TestOnionDerive_Deterministic(t *testing.T) {
 	a, err := OnionDerive(fixedWords)
 	if err != nil {
@@ -268,4 +281,85 @@ func TestOnionMaterial_Wipe(t *testing.T) {
 
 	m.Wipe()
 	(*OnionMaterial)(nil).Wipe()
+}
+
+func TestGenerateOnionSecret_LongAndVariable(t *testing.T) {
+	lengths := map[int]bool{}
+	for i := 0; i < 200; i++ {
+		s, err := GenerateOnionSecret()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s) < OnionSecretMinLen || len(s) > OnionSecretMaxLen {
+			t.Fatalf("secret length %d outside [%d,%d]", len(s), OnionSecretMinLen, OnionSecretMaxLen)
+		}
+		lengths[len(s)] = true
+		for _, r := range s {
+			if !strings.ContainsRune(onionSecretAlphabet, r) {
+				t.Fatalf("secret contains %q, outside the alphabet", r)
+			}
+		}
+	}
+
+	if len(lengths) < 10 {
+		t.Errorf("only %d distinct lengths across 200 secrets — length is not varying", len(lengths))
+	}
+}
+
+func TestGenerateOnionSecret_DoesNotRepeat(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 500; i++ {
+		s, err := GenerateOnionSecret()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[s] {
+			t.Fatal("the same secret was generated twice")
+		}
+		seen[s] = true
+	}
+}
+
+func TestOnionDeriveSecret_IsDeterministic(t *testing.T) {
+	const secret = "8sJk2m4nP9qR7tV3wX5yZ1aB6cD0eF4gH8iJ2kL6mN0oP4qR8sT2uV6wX0yZ4aB"
+	a, err := OnionDeriveSecret(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := OnionDeriveSecret(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.OnionAddress != b.OnionAddress || a.Port != b.Port || a.HandoffHMAC != b.HandoffHMAC {
+		t.Error("the same secret derived two different rendezvous")
+	}
+	if len(a.OnionAddress) != 56 {
+		t.Errorf("onion address is %d chars, want 56", len(a.OnionAddress))
+	}
+}
+
+func TestDerivation_DomainTagsSeparateTheTwoFlows(t *testing.T) {
+	const same = "the same bytes fed to both derivations"
+	fromPhrase, err := deriveFromSeedInput(onionRendezvousDST, same, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromSecret, err := deriveFromSeedInput(onionSecretDST, same, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromPhrase.OnionAddress == fromSecret.OnionAddress {
+		t.Error("identical input under both domain tags derived one rendezvous")
+	}
+	if fromPhrase.HandoffHMAC == fromSecret.HandoffHMAC {
+		t.Error("identical input under both domain tags derived one handoff key")
+	}
+}
+
+func TestOnionDeriveSecret_RefusesAnythingTooShort(t *testing.T) {
+	for _, s := range []string{"", "short", strings.Repeat("a", OnionSecretMinLen-1)} {
+		if _, err := OnionDeriveSecret(s); err == nil {
+			t.Errorf("derived a rendezvous from a %d-char secret", len(s))
+		}
+	}
 }

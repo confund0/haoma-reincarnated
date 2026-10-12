@@ -9,6 +9,7 @@ internal object SettingsDomains {
     const val Lock = "lock"
     const val Tor = "tor"
     const val Notifications = "notifications"
+    const val LinkedDevices = "linked-devices"
     const val Advanced = "advanced"
 
     val Order: List<String> = listOf(
@@ -19,6 +20,7 @@ internal object SettingsDomains {
         Appearance,
         Files,
         Tor,
+        LinkedDevices,
         Advanced,
     )
 
@@ -31,6 +33,7 @@ internal object SettingsDomains {
         Lock to "Security",
         Tor to "Tor",
         Notifications to "Notifications",
+        LinkedDevices to LINKED_DEVICES_LABEL,
         Advanced to "Advanced",
     )
 
@@ -43,6 +46,7 @@ internal object SettingsDomains {
         Lock to "Idle action, panic action, PIN, passphrase",
         Tor to "Control-port password",
         Notifications to "Per-OS banners, sender + body privacy",
+        LinkedDevices to "Your other device, destroy PIN, unlink",
         Advanced to "Security warnings",
     )
 }

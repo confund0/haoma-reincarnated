@@ -1,111 +1,257 @@
-# haoma-text — TUI manual
+# haoma-text manual
 
-`haoma-text` is the desktop client. Terminal UI, supervises both
-daemons (`haomad` backend + `haoma` frontend), opens the encrypted
-vault, exposes a windowed chat surface.
+`haoma-text` is the Linux terminal client. It starts and supervises
+the two daemons (`haomad`, the backend; `haoma`, the frontend), opens
+the encrypted vault, and gives you a windowed chat screen in your
+terminal.
 
-## Runtime dependencies
+## What ships
 
-The Linux tarball ships **six** binaries: the four messenger ones
-(`haomad`, `haoma`, `haoma-text`, `haoma-vault`) plus two C++ call
-streamers (`haoma-mic`, `haoma-spk`) that `haoma-text` exec's during
-voice calls.
+The Linux tarball has eight binaries:
 
-The streamers dynamically link against `libsodium`, `libopus`, and
-`libpipewire-0.3`. Install per your distro:
+- `haoma-text` — the terminal client. Start this one.
+- `haoma`, `haomad` — the two daemons `haoma-text` starts for you.
+- `haoma-vault` — used internally for vault writes.
+- `haoma-mic`, `haoma-spk` — voice call streamers (microphone in,
+  speaker out).
+- `haoma-cam`, `haoma-vid` — video call streamers (camera in, video
+  out). The Linux desktop shows incoming video but has no camera
+  support, so it does not use `haoma-cam`.
 
-- Alpine: `apk add libsodium opus pipewire`
-- Debian / Ubuntu: `apt install libsodium23 libopus0 libpipewire-0.3-0`
-- Fedora / RHEL: `dnf install libsodium opus pipewire-libs`
+`haoma-text`, `haoma`, `haomad` and `haoma-vault` are plain Go
+binaries and run on any x86-64 Linux. The call streamers link
+`libsodium`, `libopus`, `libvpx` and PipeWire, built against Alpine
+3.23. Run them on Alpine 3.23, in an Alpine 3.23 container, or build
+from source on your distro.
 
-The binaries are built against **musl libc** (Alpine). On glibc
-distros they need either `gcompat`/`apk-tools` shims or a fresh build
-from source (`make linux-release` in the repo). The messenger
-binaries themselves are pure Go and run anywhere.
+## Install and first run
 
-## First launch
+1. Install `tor`. `haomad` starts its own `tor` process, with its own
+   data directory, and stops it when it stops. You do not need the
+   system `tor` service running, and no tor password is needed for
+   this default path. `haoma-text` looks for `tor` on `PATH`; point it
+   at another binary with `--tor-bin <path>`.
 
-1. `tor` daemon must be running on `127.0.0.1:9050` (SOCKS) and
-   `127.0.0.1:9051` (control). Most distros ship a
-   `tor.service` you `systemctl start`.
-2. `haoma-text` will mint a fresh vault on first run. You'll be
-   prompted for a passphrase. Pick something memorable but real —
-   no recovery if you forget.
-3. After unlock the TUI lands on the system status window.
+   The first start downloads the Tor network directory, which takes a
+   minute or more. Later starts take seconds.
 
-## Slash commands
+   To use a `tor` that is already running on your system instead
+   (SOCKS on `127.0.0.1:9050`, control on `127.0.0.1:9051`), pass
+   `--system-tor`. If that `tor` needs a control password, set it with
+   `/set-tor-password` or in Settings → Tor.
 
-Type `/help` in the input pill for the live list. Highlights:
+2. Run `haoma-text`. On first run it creates a new vault and asks for
+   a master passphrase. Pick one you can remember — there is no way to
+   recover a forgotten passphrase.
 
-- `/invite-tor` — start a pairing-via-onion exchange. Prints 7
-  EFF-short words. Read them out-of-band (Signal, voice, paper) to
-  the peer who's accepting.
-- `/accept-tor` — accept a peer's 7-word invite.
-- `/contacts` — open the contacts pane.
-- `/chats` — open the conversations pane.
-- `/files` — receiver-side picker for incoming attachments.
-- `/attach` — sender-side picker.
-- `/rotate-tor` — kick a per-peer onion rotation.
-- `/nick <text>` — set your displayed name.
-- `/lock` — soft-lock the UI (idle-action shape; daemons stay alive).
-- `/quit` — clean shutdown.
+3. After unlock, haoma-text opens on the status window.
+
+Data, logs and the vault live under `~/.haoma` by default (choose a
+different root with `--cfg-dir`).
 
 ## Window navigation
 
-- `Esc N` — switch to window `N` (0–9).
-- `Tab` / `Shift-Tab` — cycle within forms.
-- `Enter` — submit / activate.
-- `Ctrl-C` — clean exit (same as `/quit`).
+- `Esc` then a digit — switch window: `1` status, `2` contacts, `3`
+  chats, `4`–`9` an open chat.
+- `F6` — move focus between the input bar and the active window's main
+  pane (table, list or scroll view).
+- `Tab` / `Shift-Tab` — move between fields inside a form.
+- `Enter` — submit or activate.
+- `Ctrl-C` or `Ctrl-D` — quit.
 
-## Daemons
+Each window keeps its own draft text, so switching windows never
+mixes up what you were typing.
 
-`haoma-text` spawns and supervises:
+In the contacts pane, `Enter` opens a chat and `e` edits the contact
+(alias, unpair, delete). In the chats pane, `Enter` opens a chat and
+`e` edits the conversation (disappearing messages, clear or delete).
+On an open chat's scroll view, `f` opens the files list for that chat.
 
-- `haoma` — UI-attached frontend. Owns Signal sessions, timeline
-  cache, IPC server. Dies with the supervisor.
-- `haomad` — detached backend. Owns Tor onions, message routing,
-  encrypted store. Survives a UI restart so messages keep landing.
-  Reaped on hard-lock or panic.
+## Commands
 
-Logs land at `~/.haoma/{frontend,backend}/*.log`. Set
-`--log-level debug` to make them chatty.
+Type `/help` at any time for the full, current list. The sections
+below describe what each one does.
 
-## Notable settings
+### Pairing with a person
 
-- **Threat profile** — Domestic / Privacy / Activist (the last is
-  planned, not active in this build). Drives the idle-action,
-  retention, and panic-action defaults.
-- **Idle action** — `soft-lock` (UI hidden, daemons alive),
-  `safe-lock` (haoma dies, haomad keeps draining queue),
-  `hard-lock` (both daemons die, vault re-seal required).
-- **Tor password** — set in Settings → Tor if your local Tor uses
-  HASHEDPASSWORD auth. Cookie-auth is auto-detected; no setting
-  needed there.
+Pairing connects you to someone else. Tor onion rendezvous is the
+default and the one to use:
 
-## Pairing recipe
+- `/invite-tor` — set your name with `/nick` first. This opens an
+  onion address and, once it is reachable, prints 7 short words. Read
+  them to the other person over a separate channel you both trust
+  (voice call, a messaging app you already use, in person) — never
+  paste them into the same chat you are setting up.
+- `/accept-tor <7 words>` — the other person's side: enter the 7 words
+  you were given.
+- `/cancel-tor <handle-id>` — withdraw an invite you started that has
+  not been accepted yet.
 
-On Alice (inviter):
+Two fallback methods exist. Both are weaker than Tor onion
+rendezvous and are meant for cases where it does not work:
 
-```
-/invite-tor alice
-```
+- `/invite-dht` / `/accept-dht` / `/cancel-dht` — rendezvous through a
+  public DHT (BitTorrent's). This leaks your IP address to the DHT
+  nodes it talks to. Use the onion method unless you have a specific
+  reason not to.
+- `/invite-paste` / `/accept-paste`, `/invite-file` / `/accept-file` —
+  no rendezvous at all: you exchange a block of invite data yourself,
+  by any channel you like, then both sides accept. Meant for testing
+  and for cases where neither of the above will work.
 
-`haoma-text` shows 7 words, e.g. `crisp · rather · vague · solar · goblin · pearl · hatred`.
-Read them to Bob over a separate trusted channel.
+### Your own devices (linking)
 
-On Bob (joiner):
+Linking adds a second device — phone or desktop — to your own
+identity. This is not how you connect to another person; see Pairing
+above for that.
 
-```
-/accept-tor crisp rather vague solar goblin pearl hatred bob
-```
+- `/link-device` — offer to link one of your own devices. This hands
+  your identity key to the device that accepts, so only run it toward
+  a device that is brand new (no contacts, no chats of its own) and
+  that you control. You can have at most one linked device.
+- `/link-join <7 words>` — run this on the brand-new device, with the
+  words `/link-device` printed on the first device. The new device
+  takes on the first device's identity.
+- `/link-cancel <handle-id>` — withdraw a `/link-device` offer that
+  has not been joined yet. No argument cancels the most recent one.
+- `/linked-devices` — open Settings → Linked devices: the current set
+  and every action on it.
+- `/sync [all]` — ask your other devices for anything this one missed.
 
-Both ends now share a peer-pair onion + libsignal Double Ratchet
-session. Subsequent messages route directly over Tor — no shared
-server, no common address.
+What syncs between linked devices: messages, edits, deletes,
+reactions, read state, files, and your own outgoing call history. An
+incoming call rings on every linked device at once. Your status
+(available / away / busy) does not sync — each device sets its own.
+
+A device you link inherits your contacts, but starts with no pairing
+of its own to any of them (a pairing is tied to one device). Use
+`/re-pair` to reach a contact your device inherited this way:
+
+- `/re-pair <contact>` — offer that contact a fresh pairing. It is
+  carried to them through one of your devices that can still reach
+  them.
+- `/invites` — every pairing invitation open in either direction.
+  Press `Enter` on one offered to you to accept it.
+
+### Messaging
+
+- `/msg [peer-id] <text>` — send a text message. Inside a chat window
+  the peer-id can be left out.
+- `/send-file [peer-id] <path>` — send a file, up to 10 MB. Peer-id
+  can be left out inside a chat window.
+- `/attach` — pick a file to send with a dialog, instead of typing a
+  path.
+- `/files` (or `f` on a chat's scroll view) — list the files sent and
+  received in this chat; `Enter` on a row opens a save dialog.
+- `/retry` — retry every file download in this chat that got stuck.
+- `/edit` — edit one of your own messages, up to 24 hours old.
+- `/delete` — delete one of your own messages for both sides, up to
+  24 hours old.
+- `/react` — react to a message in this chat; sending an empty
+  reaction removes it.
+- `/search <text>` — search this chat's history.
+- `/contacts` (or `/peers`) — open the contacts pane.
+- `/chats` — open the chats (conversations) pane.
+- `/close` — close the active chat window; its history stays, and
+  reopening the chat shows it again.
+- Disappearing messages are set per chat from the chats pane (`e` on a
+  chat, then its settings), not from a slash command.
+
+### Calls
+
+Voice calls work on the Linux desktop. Video calls work on Android;
+the desktop shows incoming video but sends none.
+
+- `/call` — start a voice call with the active chat's peer.
+- `/answer` — accept an incoming call.
+- `/decline` — decline an incoming call.
+- `/hangup` — end the active call, whichever state it is in.
+
+### Presence, identity and the connection
+
+- `/status [available|away|busy]` — set how you appear to others. No
+  argument resets to available. In a chat window this targets only
+  that chat's peer; anywhere else it broadcasts to everyone you are
+  paired with.
+- `/nick [name]` — set the name sent along with your invites. No
+  argument shows your current one.
+- `/verify [peer-id] [on|off]` — mark a contact as verified. The mark
+  is kept and synced to your linked device; the screen shows no badge
+  for it.
+- `/rotate-tor` — rotate the onion address used for the active chat.
+  Refused while a call with that peer is in progress.
+- `/new-circuit` (or `/renew-circuit`) — rebuild the Tor circuit for
+  the active chat without changing the peer or the onion address.
+- `/tor-info` — show your published onion addresses and Tor's status.
+- `/about` — show the versions and uptime of `haoma-text`, `haoma`,
+  `haomad`.
+
+### Locking the device
+
+- The idle action fires after a period of no use. Two settings exist:
+  `soft-lock` (the screen locks, both daemons stay running) and
+  `safe-lock` (`haoma` stops, `haomad` keeps delivering messages in
+  the background).
+- `/set-idle-action <soft-lock|safe-lock>` — pick which one fires.
+- `/set-idle-timeout <seconds>` — how long idle before it fires.
+- `/set-pin-validity <seconds>` — how long a soft-lock accepts your
+  PIN before it escalates; `0` turns escalation off.
+- `/change-pin <old> <new>` — change the soft-lock PIN. If the current
+  PIN is still the insecure default, `<old>` is not checked.
+
+### Vault and account
+
+- `/change-pass <old> <new>` — re-seal the vault under a new master
+  passphrase. Passphrases cannot contain spaces.
+- `/set-tor-password <password>` — the control-port password for a
+  system `tor`, used only with `--system-tor`.
+- `/settings` — open the settings dialog: one place for every
+  preference above and more (chat defaults, notifications, Tor,
+  advanced).
+- `/backup [path]` — stop both daemons and write the whole vault
+  directory to a single archive file. Default path is a timestamped
+  file in your home directory. `haoma-text` exits once the backup is
+  written; start it again to keep using it.
+- To restore a backup, start `haoma-text` with
+  `--restore-backup <archive-path>` on a brand-new device (no
+  contacts, no chats, no linked device of its own yet). It asks for
+  the backed-up device's passphrase, then replaces the new device's
+  empty vault with the one from the archive.
+- `/wipe-device` — open the block that erases this device. Asks for
+  your unlock PIN and the word `ERASE`; this cannot be undone.
+
+### Other
+
+- `/help` (or `/h`) — the full command list.
+- `/quit` (or `/q`, `/panic`) — exit.
+- `Tab` — complete a slash command you are typing. A second `Tab` on
+  an ambiguous prefix lists every match.
+
+### For testing only
+
+- `/inspect <msg_id>` — dump one stored message row. Not meant for
+  normal use.
+
+## Threat profile and retention
+
+Settings → Lock asks one question, "Who is after you?", with four
+answers: No one, People at home, People with power, People with
+force. Picking one sets the idle action, retention and panic-action
+values that fit it, in one step; each can still be changed on its own
+afterward.
+
+## Logs
+
+`haoma-text` logs to `<cfg-dir>/haoma-text.log` by default (so
+nothing prints over the terminal screen while it is in use); `haoma`
+and `haomad` each log to their own file under the same directory. Pass
+`--log-level debug` for more detail, or `--log-file -` to send
+`haoma-text`'s own log to the terminal instead (only useful without
+the terminal screen active).
 
 ## Wire format
 
-`haoma-text` ↔ `haoma` over a loopback TLS-1.3 socket pinned via
-self-signed cert + bearer token. Both files at
-`~/.haoma/frontend/{cert.pem,token}`, 0600. `haoma-text` mints them
-on first run.
+`haoma-text` talks to `haoma` over a loopback TLS 1.3 connection,
+authenticated with a self-signed certificate and a bearer token.
+Both are generated on first run and stored at
+`<cfg-dir>/{cert.pem,token}` with file permissions `0600`.

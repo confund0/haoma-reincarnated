@@ -19,9 +19,13 @@ import (
 	"haoma-frontend/internal/backendapi"
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/chat"
+	"haoma-frontend/internal/devicetag"
 	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/files"
+	"haoma-frontend/internal/gapfill"
+	"haoma-frontend/internal/invitation"
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/linkeddevice"
 	"haoma-frontend/internal/msg"
 	"haoma-frontend/internal/notify"
 	"haoma-frontend/internal/paths"
@@ -43,6 +47,17 @@ type daemon struct {
 	peerSeq       *peerstate.Counters
 	peerMeta      *peerstate.Meta
 	chats         *chat.Store
+	linkedDevices *linkeddevice.Store
+	emptyMarker   *emptyMarker
+	watermarks    *gapfill.Watermarks
+	invitations   *invitation.Store
+
+	gapfill       gapfillGate
+	manualSync    manualSyncTracker
+	syncTrigger   *syncTrigger
+	contactsPush  *contactsPusher
+	fileServer    *fileServer
+	fileAsker     fileAsker
 	events        *events.Log
 	eventBus      *events.Bus
 	files         *files.Manager
@@ -55,6 +70,8 @@ type daemon struct {
 
 	backendReachable atomic.Bool
 
+	lastClockSkew atomic.Pointer[ipc.ClockSkew]
+
 	latestStatus atomic.Pointer[ipc.BackendStatusPayload]
 
 	clientFocus atomic.Pointer[ipc.ClientFocusRequest]
@@ -63,6 +80,8 @@ type daemon struct {
 
 	selfNickCache atomic.Pointer[string]
 
+	selfNickWrite sync.Mutex
+
 	chatFontScaleCache atomic.Pointer[float64]
 
 	defaultRetentionCache    atomic.Pointer[uint64]
@@ -70,15 +89,58 @@ type daemon struct {
 
 	presenceCache *presence.Cache
 
+	chatPresenceMu     sync.Mutex
+	chatPresencePushed map[chat.ChatID]presence.Snapshot
+
 	settingsSnapshot atomic.Pointer[ipc.Settings]
 
 	clientSoftLocked atomic.Bool
 
 	fileRetrySweepOnce sync.Once
 
+	siblingSealBusy sync.Map
+
+	fileSealLocks keyedLocks
+
+	seededFaults
+
+	unplacedSweep unplacedMirrorSweep
+
+	gapOfferTTL time.Duration
+
+	deliveryReconcileRunning atomic.Bool
+
+	relayCtx atomic.Value
+
+	invitationOfferRunning atomic.Bool
+
+	notePut func(invitation.Note) error
+
+	invitationWaiters sync.Map
+
+	sessionsChanged sessionSignal
+	passOnsRunning  sync.Map
+
+	sendQueue sendQueue
+
+	passOnRetryPauses []time.Duration
+
+	invitationWaitRetry    time.Duration
+	invitationWaitRetryMax time.Duration
+
+	backendReadyAt        atomic.Int64
+	invitationRetryWindow time.Duration
+
 	notifier *notify.Dispatcher
 
 	rotation *rotation.Manager
+}
+
+func (d *daemon) relayContext() context.Context {
+	if ctx, ok := d.relayCtx.Load().(context.Context); ok {
+		return ctx
+	}
+	return context.Background()
 }
 
 func (d *daemon) effectivePresenceState() string {
@@ -114,6 +176,11 @@ func run(ctx context.Context, cfg config) error {
 	}
 	slog.Info("data dir", slog.String("path", dataDir))
 
+	emptyMark, err := newEmptyMarker(root, dataDir)
+	if err != nil {
+		return err
+	}
+
 	st, err := store.Unlock(dataDir, cfg.secrets.FrontendStorePassphrase)
 	if err != nil {
 		return fmt.Errorf("unlock store: %w", err)
@@ -135,7 +202,7 @@ func run(ctx context.Context, cfg config) error {
 	}
 	slog.Info(msg,
 		slog.String("fingerprint", sum.IdentityFingerprint),
-		slog.Uint64("registration_id", uint64(sum.RegistrationID)),
+		slog.String("registration_id", devicetag.Tag(sum.RegistrationID)),
 		slog.Int("opk_count", sum.OneTimePreKeyCount),
 	)
 	stores := signal.NewStores(st, sigState)
@@ -193,6 +260,10 @@ func run(ctx context.Context, cfg config) error {
 		peerSeq:       peerstate.New(st),
 		peerMeta:      peerstate.NewMeta(st),
 		chats:         chat.NewStore(st),
+		linkedDevices: linkeddevice.New(st),
+		emptyMarker:   emptyMark,
+		watermarks:    gapfill.NewWatermarks(st),
+		invitations:   invitation.New(st),
 		events:        events.New(st, bus, nil),
 		eventBus:      bus,
 		files:         filesMgr,
@@ -201,6 +272,9 @@ func run(ctx context.Context, cfg config) error {
 		presenceCache: presence.New(),
 		notifier:      notify.New(nil, nil, ""),
 		startedAt:     time.Now().UTC(),
+
+		seededFaults: seededFaultsFromEnv(),
+		gapOfferTTL:  gapOfferLifetimeFromEnv(),
 	}
 
 	d.latestStatus.Store(&ipc.BackendStatusPayload{
@@ -209,6 +283,16 @@ func run(ctx context.Context, cfg config) error {
 	})
 
 	d.settingsSnapshot.Store(defaultSettings())
+
+	d.syncTrigger = newSyncTrigger(func(sweepCtx context.Context) sweepOutcome {
+		outcome := sweepGapFill(sweepCtx, d)
+		pruneJournalForSiblings(d)
+		return outcome
+	})
+	d.events.SetJournalGrowthHook(d.syncTrigger.note)
+
+	defer d.wireEmptyMarker()()
+
 	if err := d.loadSelfNickInto(); err != nil {
 		return fmt.Errorf("load self-nick: %w", err)
 	}
@@ -218,6 +302,8 @@ func run(ctx context.Context, cfg config) error {
 	if err := d.loadChatDefaultsInto(); err != nil {
 		return fmt.Errorf("load chat-defaults: %w", err)
 	}
+
+	dropLinkedDeviceChats(d)
 
 	tlsCfg, err := ipc.LoadOrCreateTLS(dataDir)
 	if err != nil {
@@ -267,14 +353,15 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("ready line: %w", err)
 	}
 
+	relayCtx, relayCancel := context.WithCancel(ctx)
+	defer relayCancel()
+	d.relayCtx.Store(relayCtx)
+
 	serveErr := make(chan error, 1)
 	go func() {
 		tlsLn := tls.NewListener(ln, tlsCfg)
 		serveErr <- httpSrv.Serve(tlsLn)
 	}()
-
-	relayCtx, relayCancel := context.WithCancel(ctx)
-	defer relayCancel()
 
 	var startupWg sync.WaitGroup
 	launch := func(fn func()) {
@@ -287,7 +374,16 @@ func run(ctx context.Context, cfg config) error {
 
 	launch(func() { pushTimelineEvents(relayCtx, d.eventBus, srv) })
 	launch(func() { pushTimelineDeletions(relayCtx, d.eventBus, srv) })
-	launch(func() { pushPresenceChanges(relayCtx, d.presenceCache, srv) })
+	launch(func() { pushPresenceChanges(relayCtx, d) })
+
+	launch(func() { d.syncTrigger.run(relayCtx) })
+
+	d.contactsPush = newContactsPusher(func(fingerprints []string) {
+		sendContactsPush(relayCtx, d, fingerprints)
+	})
+
+	d.fileServer = newDaemonFileServer(d)
+	launch(func() { d.fileServer.run(relayCtx) })
 
 	launch(func() { retentionSweeper(relayCtx, d) })
 
@@ -346,6 +442,8 @@ func run(ctx context.Context, cfg config) error {
 				slog.Warn("backend relay exited with error", slog.Any("err", err))
 			}
 		})
+
+		d.startEmptyCheck(relayCtx, launch)
 	} else {
 		slog.Warn("backend relay disabled — pairing and messaging unavailable until --backend-addr is set")
 	}

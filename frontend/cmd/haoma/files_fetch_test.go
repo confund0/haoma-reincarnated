@@ -37,8 +37,22 @@ type filesStub struct {
 
 	stagingStatus int
 
+	fetchState string
+
+	haomadIDs []string
+
 	sendCalls   int
 	lastSendReq backendapi.SendRequest
+
+	sentPeerIDs []string
+
+	sentPayloads [][]byte
+
+	sentKinds []string
+
+	receiptCalls  int
+	lastReceipt   backendapi.RedeemFileReceiptRequest
+	receiptStatus int
 }
 
 func startFilesStub(t *testing.T) *filesStub {
@@ -51,16 +65,22 @@ func startFilesStub(t *testing.T) *filesStub {
 		stub.fetchCalls++
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &stub.lastFetch)
+		stub.haomadIDs = append(stub.haomadIDs, stub.lastFetch.MsgID)
+		state := stub.fetchState
+		if state == "" {
+			state = "pending"
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"msg_id": stub.lastFetch.MsgID,
 			"token":  stub.lastFetch.Token,
-			"state":  "pending",
+			"state":  state,
 		})
 	})
 	mux.HandleFunc("GET /files/staging/{msg_id}", func(w http.ResponseWriter, r *http.Request) {
 		stub.mu.Lock()
+		stub.haomadIDs = append(stub.haomadIDs, r.PathValue("msg_id"))
 		body := stub.stagingBody
 		status := stub.stagingStatus
 		stub.mu.Unlock()
@@ -76,6 +96,7 @@ func startFilesStub(t *testing.T) *filesStub {
 		stub.mu.Lock()
 		defer stub.mu.Unlock()
 		stub.dropCalls++
+		stub.haomadIDs = append(stub.haomadIDs, r.PathValue("msg_id"))
 		stub.dropBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -83,11 +104,34 @@ func startFilesStub(t *testing.T) *filesStub {
 		body, _ := io.ReadAll(r.Body)
 		stub.mu.Lock()
 		stub.sendCalls++
+		stub.lastSendReq = backendapi.SendRequest{}
 		_ = json.Unmarshal(body, &stub.lastSendReq)
+		stub.sentPeerIDs = append(stub.sentPeerIDs, stub.lastSendReq.PeerID)
+		stub.sentPayloads = append(stub.sentPayloads, append([]byte(nil), stub.lastSendReq.Payload...))
+		stub.sentKinds = append(stub.sentKinds, stub.lastSendReq.Kind)
 		stub.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(backendapi.SendResponse{EnvelopeID: "env-stub-receipt-001"})
+	})
+	mux.HandleFunc("POST /files/receipts", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		stub.mu.Lock()
+		stub.receiptCalls++
+		_ = json.Unmarshal(body, &stub.lastReceipt)
+		status := stub.receiptStatus
+		token := stub.lastReceipt.Token
+		stub.mu.Unlock()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(backendapi.RedeemFileReceiptResponse{Token: token})
 	})
 	srv := httptest.NewServer(mux)
 	stub.URL = srv.URL
@@ -231,6 +275,149 @@ func TestIngestFileOffer_PersistsRowAndKicksFetch(t *testing.T) {
 	}
 }
 
+func ingestOfferFrom(t *testing.T, d *daemon, chatID chat.ChatID, fromPeerID, token string) string {
+	t.Helper()
+	msgID, err := msg.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := &msg.Wrapper{
+		V:     msg.Version,
+		Seq:   1,
+		Ts:    time.Now().Unix(),
+		MsgID: msgID,
+		Kind:  msg.KindFileOffer,
+	}
+	body := &msg.FileOfferBody{
+		Token:            token,
+		UrlPath:          "/files/" + token,
+		Name:             "secret.pdf",
+		Size:             1024,
+		Mime:             "application/pdf",
+		Sha256Ciphertext: strings.Repeat("a", 64),
+	}
+	entry := backendapi.InboxEntry{
+		ArrivalAt: time.Now().UnixNano(),
+		PeerID:    fromPeerID,
+		Envelope: backendapi.RawEnvelope{
+			ID:        "env-" + token,
+			Timestamp: wrapper.Ts,
+			Kind:      "text",
+		},
+	}
+	ingestFileOffer(context.Background(), d, chatID, entry, wrapper, body)
+	return msgID
+}
+
+func TestIngestFileOffer_RecordsTheOfferingDevice(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	const phone = "00000000000000000000000000003001"
+	const laptop = "00000000000000000000000000003002"
+	dc, _, err := d.createDirectWithDefaults(phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.chats.AttachPeerID(dc.ID, laptop); err != nil {
+		t.Fatal(err)
+	}
+
+	msgID := ingestOfferFrom(t, d, dc.ID, laptop, "tok-from-laptop")
+
+	meta, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if meta.OfferPeerID != laptop {
+		t.Fatalf("meta.OfferPeerID = %q, want %q (the device the envelope came from)", meta.OfferPeerID, laptop)
+	}
+}
+
+func TestResolveOfferPeer_AddressesTheDeviceThatSentTheOffer(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	const phone = "00000000000000000000000000003101"
+	const laptop = "00000000000000000000000000003102"
+	dc, _, err := d.createDirectWithDefaults(phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.chats.AttachPeerID(dc.ID, laptop); err != nil {
+		t.Fatal(err)
+	}
+
+	msgID := ingestOfferFrom(t, d, dc.ID, laptop, "tok-answer-target")
+
+	if got := resolveOfferPeer(d, msgID); got != laptop {
+		t.Fatalf("resolveOfferPeer = %q, want %q — the answer would go to a device holding no record of that token", got, laptop)
+	}
+}
+
+func TestResolveOfferPeer_FallsBackToThePrimaryDevice(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	const phone = "00000000000000000000000000003201"
+	const laptop = "00000000000000000000000000003202"
+	dc, _, err := d.createDirectWithDefaults(phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.chats.AttachPeerID(dc.ID, laptop); err != nil {
+		t.Fatal(err)
+	}
+
+	msgID := ingestOfferFrom(t, d, dc.ID, laptop, "tok-old-row")
+
+	meta, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.OfferPeerID = ""
+	if err := d.files.PutMeta(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveOfferPeer(d, msgID); got != phone {
+		t.Fatalf("resolveOfferPeer = %q, want the chat's primary device %q", got, phone)
+	}
+}
+
+func TestResolveOfferPeer_RetiredDeviceFallsBackToThePrimary(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	const phone = "00000000000000000000000000003301"
+	const retired = "00000000000000000000000000003302"
+	dc, _, err := d.createDirectWithDefaults(phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := dc.FanoutPeerIDs(); len(got) != 1 || got[0] != phone {
+		t.Fatalf("routing set = %v, want [%s]", got, phone)
+	}
+
+	msgID := ingestOfferFrom(t, d, dc.ID, retired, "tok-retired-device")
+
+	meta, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.OfferPeerID != retired {
+		t.Fatalf("meta.OfferPeerID = %q, want %q", meta.OfferPeerID, retired)
+	}
+	if got := resolveOfferPeer(d, msgID); got != phone {
+		t.Fatalf("resolveOfferPeer = %q, want the chat's primary device %q — a retired peerID is addressed for good", got, phone)
+	}
+}
+
+func TestResolveOfferPeer_UnknownRowAddressesNobody(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	if got := resolveOfferPeer(d, "no-such-msg-id"); got != "" {
+		t.Fatalf("resolveOfferPeer = %q, want empty", got)
+	}
+}
+
 func TestFileFetchStateHandler_Ready_PullsAndStages(t *testing.T) {
 	stub := startFilesStub(t)
 	d := newFilesTestDaemon(t, stub)
@@ -280,7 +467,7 @@ func TestFileFetchStateHandler_Ready_PullsAndStages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []byte("opaque-ciphertext-blob")
+	want := []byte(strings.Repeat("o", 4096))
 	stub.mu.Lock()
 	stub.stagingBody = want
 	stub.mu.Unlock()
@@ -372,7 +559,7 @@ func TestSweepStagedFetches_RecoversOrphan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []byte("staged-ciphertext-waiting-for-haoma")
+	want := []byte(strings.Repeat("s", 2048))
 	stub.mu.Lock()
 	stub.stagingBody = want
 	stub.mu.Unlock()
@@ -453,6 +640,67 @@ func TestSweepStagedFetches_NotStagedLeavesRow(t *testing.T) {
 	}
 }
 
+func TestSweepStagedFetches_ShortBlobKeepsKey(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+
+	const peerID = "0000000000000000000000000000d0d0"
+	dc, _, err := d.createDirectWithDefaults(peerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatID := dc.ID
+	msgID, err := msg.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = 2048
+	feBody := FileEventBody{Token: "tok-short", UrlPath: "/files/tok-short", Name: "doc.pdf", Size: size, Sha256Ciphertext: strings.Repeat("e", 64), State: string(files.StateDownloading)}
+	bodyRaw, _ := json.Marshal(feBody)
+	if _, err := d.events.AppendInbound(events.InboundParams{
+		ChatID: chatID, Kind: events.KindFile, SenderTs: time.Now().Unix(),
+		EnvelopeID: "env-short", MsgID: msgID, Status: events.DecryptOK, Body: bodyRaw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := []byte(strings.Repeat("\x11", 32))
+	nonce := []byte(strings.Repeat("\x22", 24))
+	if err := d.files.PutMeta(files.Metadata{
+		MsgID: msgID, ChatID: chatID, Direction: files.DirIn, Token: "tok-short",
+		OriginalName: "doc.pdf", Size: size, Sha256Ciphertext: strings.Repeat("e", 64),
+		KeyBytes: key, Nonce: nonce,
+		State: files.StateDownloading, CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stub.mu.Lock()
+	stub.stagingBody = []byte(strings.Repeat("h", size/2))
+	stub.mu.Unlock()
+
+	sweepStagedFetches(context.Background(), d)
+
+	meta, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.State != files.StateDownloading {
+		t.Fatalf("meta.State = %q, want downloading (a short blob must not settle the row)", meta.State)
+	}
+	if string(meta.KeyBytes) != string(key) || string(meta.Nonce) != string(nonce) {
+		t.Fatalf("key or nonce changed after a short blob: key len %d, nonce len %d", len(meta.KeyBytes), len(meta.Nonce))
+	}
+	if stagingExists(d, msgID) {
+		t.Fatal("a short blob was written to the local staging dir")
+	}
+	stub.mu.Lock()
+	dropCalls := stub.dropCalls
+	stub.mu.Unlock()
+	if dropCalls != 0 {
+		t.Fatalf("dropCalls = %d, want 0 (haomad keeps its copy)", dropCalls)
+	}
+}
+
 func TestFileFetchStateHandler_FailedPermanent_StampsRow(t *testing.T) {
 	stub := startFilesStub(t)
 	d := newFilesTestDaemon(t, stub)
@@ -517,18 +765,113 @@ func TestFileFetchStateHandler_FailedPermanent_StampsRow(t *testing.T) {
 	}
 }
 
-func TestIngestFileOffer_DefersReceipt(t *testing.T) {
+func TestFileFetchProgress_MovesAFailedRowBackToDownloading(t *testing.T) {
+	cases := []struct {
+		from files.State
+		want files.State
+	}{
+		{files.StateFailedTransient, files.StateDownloading},
+		{files.StatePending, files.StateDownloading},
+		{files.StateAwaitingKey, files.StateAwaitingKey},
+		{files.StateReady, files.StateReady},
+	}
+	for _, c := range cases {
+		t.Run(string(c.from), func(t *testing.T) {
+			stub := startFilesStub(t)
+			d := newFilesTestDaemon(t, stub)
+			dc, _, err := d.createDirectWithDefaults("0000000000000000000000000000dddd")
+			if err != nil {
+				t.Fatal(err)
+			}
+			msgID, _ := msg.NewID()
+			bodyRaw, _ := json.Marshal(FileEventBody{State: string(c.from), Token: "tok-retry"})
+			if _, err := d.events.AppendInbound(events.InboundParams{
+				ChatID:     dc.ID,
+				Kind:       events.KindFile,
+				SenderTs:   time.Now().Unix(),
+				EnvelopeID: "env-file-retry",
+				MsgID:      msgID,
+				Status:     events.DecryptOK,
+				Body:       bodyRaw,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.files.PutMeta(files.Metadata{
+				MsgID: msgID, ChatID: dc.ID, Direction: files.DirIn,
+				Token: "tok-retry", State: c.from,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			fileFetchProgressHandler(d)(backendapi.FileFetchEvent{
+				MsgID:         msgID,
+				State:         string(files.StateDownloading),
+				BytesReceived: 100,
+				TotalBytes:    1000,
+			})
+
+			ev, err := d.events.GetByMsgID(msgID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fb FileEventBody
+			if err := json.Unmarshal(ev.Body, &fb); err != nil {
+				t.Fatal(err)
+			}
+			if fb.State != string(c.want) {
+				t.Fatalf("row state after progress = %q, want %q", fb.State, c.want)
+			}
+			meta, err := d.files.GetMeta(msgID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.State != c.want {
+				t.Fatalf("meta state after progress = %q, want %q", meta.State, c.want)
+			}
+		})
+	}
+}
+
+func TestIngestFileOffer_RowAlreadyHeld_StillFetchesTheBytes(t *testing.T) {
 	stub := startFilesStub(t)
 	d := newFilesTestDaemon(t, stub)
 
-	const peerID = "0000000000000000000000000000a1a1"
-	preEstablishSession(t, d, peerID)
-	chatID := chatIDForPeer(t, d, peerID)
+	const peerID = "0000000000000000000000000000cccc"
+	dc, _, err := d.createDirectWithDefaults(peerID)
+	if err != nil {
+		t.Fatalf("createDirectWithDefaults: %v", err)
+	}
+	chatID := dc.ID
 
 	msgID, err := msg.NewID()
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	sibBody, _ := json.Marshal(FileEventBody{
+		Token:            "tok-sibling-1",
+		UrlPath:          "/files/tok-sibling-1",
+		Name:             "secret.pdf",
+		Size:             1024,
+		Mime:             "application/pdf",
+		Sha256Ciphertext: strings.Repeat("a", 64),
+		State:            string(files.StatePending),
+	})
+	if _, err := d.events.AppendInbound(events.InboundParams{
+		ChatID:              chatID,
+		Kind:                events.KindFile,
+		SenderTs:            time.Now().Unix(),
+		MsgID:               msgID,
+		Status:              events.DecryptOK,
+		Body:                sibBody,
+		MirroredFromSibling: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.files.GetMeta(msgID); err == nil {
+		t.Fatal("precondition: a recovered row must arrive with no file metadata")
+	}
+
 	wrapper := &msg.Wrapper{
 		V:     msg.Version,
 		Seq:   1,
@@ -536,57 +879,76 @@ func TestIngestFileOffer_DefersReceipt(t *testing.T) {
 		MsgID: msgID,
 		Kind:  msg.KindFileOffer,
 	}
-	body := &msg.FileOfferBody{
-		Token:            "tok-defer-receipt",
-		UrlPath:          "/files/tok-defer-receipt",
-		Name:             "secret.bin",
-		Size:             64,
-		Mime:             "application/octet-stream",
-		Sha256Ciphertext: strings.Repeat("0", 64),
+	offer := &msg.FileOfferBody{
+		Token:            "tok-mine-1",
+		UrlPath:          "/files/tok-mine-1",
+		Name:             "secret.pdf",
+		Size:             1024,
+		Mime:             "application/pdf",
+		Sha256Ciphertext: strings.Repeat("a", 64),
 	}
-	entry := backendapi.InboxEntry{
+	ingestFileOffer(context.Background(), d, chatID, backendapi.InboxEntry{
 		ArrivalAt: time.Now().UnixNano(),
 		PeerID:    peerID,
 		Envelope: backendapi.RawEnvelope{
-			ID: "env-defer-1", Timestamp: wrapper.Ts, From: "alice-onion", Kind: "text",
+			ID:        "env-file-dup-1",
+			Timestamp: wrapper.Ts,
+			From:      "alice-onion",
+			Kind:      "text",
 		},
+	}, wrapper, offer)
+
+	rows, err := d.events.List(chatID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1 — the row was already held", len(rows))
 	}
 
-	ingestFileOffer(context.Background(), d, chatID, entry, wrapper, body)
+	meta, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatalf("no file metadata after the offer arrived: %v — the attachment is unreachable and no sweep will find it", err)
+	}
+	if meta.Token != "tok-mine-1" || meta.Direction != files.DirIn || meta.State != files.StateDownloading {
+		t.Fatalf("meta = %+v, want this device's token, inbound, downloading", meta)
+	}
 
 	stub.mu.Lock()
-	sendsAfterIngest := stub.sendCalls
-	fetchesAfterIngest := stub.fetchCalls
+	fetchCalls, lastFetch := stub.fetchCalls, stub.lastFetch
 	stub.mu.Unlock()
-	if sendsAfterIngest != 0 {
-		t.Fatalf("ingestFileOffer shipped %d /send envelope(s); want 0 (receipt must defer until post-pull)", sendsAfterIngest)
+	if fetchCalls != 1 {
+		t.Fatalf("fetchCalls = %d, want 1 — no download was started for a file this device does not have", fetchCalls)
 	}
-	if fetchesAfterIngest != 1 {
-		t.Fatalf("ingestFileOffer enqueued %d fetch(es); want 1", fetchesAfterIngest)
+	if lastFetch.MsgID != msgID || lastFetch.Token != "tok-mine-1" {
+		t.Fatalf("fetch req = %+v, want msg_id=%s token=tok-mine-1", lastFetch, msgID)
 	}
 
+	want := []byte(strings.Repeat("o", 1024))
 	stub.mu.Lock()
-	stub.stagingBody = []byte("opaque-cipher")
+	stub.stagingBody = want
 	stub.mu.Unlock()
-	handler := fileFetchStateHandler(context.Background(), d)
-	handler(backendapi.FileFetchEvent{
+	fileFetchStateHandler(context.Background(), d)(backendapi.FileFetchEvent{
 		MsgID:         msgID,
-		Token:         "tok-defer-receipt",
+		Token:         "tok-mine-1",
 		State:         string(files.StateReady),
-		BytesReceived: int64(len("opaque-cipher")),
-		TotalBytes:    int64(len("opaque-cipher")),
+		BytesReceived: int64(len(want)),
+		TotalBytes:    int64(len(want)),
 		At:            time.Now().Unix(),
 	})
-
-	stub.mu.Lock()
-	sendsAfterReady := stub.sendCalls
-	lastSendPeer := stub.lastSendReq.PeerID
-	stub.mu.Unlock()
-	if sendsAfterReady != 1 {
-		t.Fatalf("post-pull shipped %d /send envelope(s); want 1 (receipt should fire after pull success)", sendsAfterReady)
+	stagingPath, err := d.files.StagingPath(msgID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if lastSendPeer != peerID {
-		t.Fatalf("post-pull receipt addressed to %q, want %q", lastSendPeer, peerID)
+	if !waitFile(stagingPath, 2*time.Second) {
+		t.Fatalf("staging file %s did not appear", stagingPath)
+	}
+	staged, err := d.files.GetMeta(msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.State != files.StateAwaitingKey {
+		t.Fatalf("meta.State = %q, want awaiting_key", staged.State)
 	}
 }
 

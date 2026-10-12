@@ -69,11 +69,18 @@ func Bootstrap(ctx context.Context, cfg Config) (*Instance, error) {
 	_ = os.Remove(cportPath)
 	_ = os.Remove(cookiePath)
 
+	localInclude := ""
+	if fi, err := os.Stat(defaultLocalTorrc(cfg.DataDir)); err == nil && fi.Mode().IsRegular() {
+		localInclude = defaultLocalTorrc(cfg.DataDir)
+		slog.Info("embedded tor: torrc.local included", slog.String("path", localInclude))
+	}
+
 	torrcBody := renderTorrc(torrcConfig{
 		DataDir:         cfg.DataDir,
 		ControlPortFile: cportPath,
 		CookieAuthFile:  cookiePath,
 		NoticeLog:       noticePath,
+		LocalInclude:    localInclude,
 	})
 	if err := os.WriteFile(torrcPath, []byte(torrcBody), 0o600); err != nil {
 		return nil, fmt.Errorf("embedded: write torrc %s: %w", torrcPath, err)

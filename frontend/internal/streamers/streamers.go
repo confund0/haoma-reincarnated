@@ -419,7 +419,7 @@ func (s *Stream) teardown(ctx context.Context) error {
 		)
 	}
 	if waitDone(s.doneCh, exitGrace) {
-		return swallowSignalKill(s.waitErr)
+		return swallowStopExit(s.waitErr)
 	}
 
 	if s.cmd.Process != nil {
@@ -428,7 +428,7 @@ func (s *Stream) teardown(ctx context.Context) error {
 		}
 	}
 	if waitDone(s.doneCh, sigtermGrace) {
-		return swallowSignalKill(s.waitErr)
+		return swallowStopExit(s.waitErr)
 	}
 
 	if s.cmd.Process != nil {
@@ -439,7 +439,7 @@ func (s *Stream) teardown(ctx context.Context) error {
 	}
 	select {
 	case <-s.doneCh:
-		return swallowSignalKill(s.waitErr)
+		return swallowStopExit(s.waitErr)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -460,6 +460,20 @@ func swallowSignalKill(err error) error {
 				return nil
 			}
 		}
+	}
+	return err
+}
+
+const exitAcceptInterrupted = 4
+
+func swallowStopExit(err error) error {
+	err = swallowSignalKill(err)
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == exitAcceptInterrupted {
+		return nil
 	}
 	return err
 }
@@ -493,7 +507,7 @@ func (m *Manager) Teardown(callID string) error {
 	if !ok {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), totalTeardownBudget)
+	ctx, cancel := context.WithTimeout(context.Background(), totalTeardownTimeout)
 	defer cancel()
 	var errs []error
 	if sess.Mic != nil {
@@ -540,4 +554,4 @@ var exitGrace = 1 * time.Second
 
 var sigtermGrace = 2 * time.Second
 
-var totalTeardownBudget = 6 * time.Second
+var totalTeardownTimeout = 6 * time.Second

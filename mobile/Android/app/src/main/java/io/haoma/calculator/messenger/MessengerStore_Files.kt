@@ -45,6 +45,7 @@ fun MessengerStore.attachFromUri(
             val reply = c.request(
                 type = FrameType.SendFile,
                 payload = SendFileRequest(peerId, copied.path, mode, caption).toJson(),
+                timeout = SEND_REQUEST_TIMEOUT,
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)

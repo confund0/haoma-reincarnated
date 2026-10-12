@@ -2,6 +2,7 @@ package io.haoma.calculator.messenger
 
 import android.app.Activity
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,7 +31,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.messenger.calls.ChatCallHistoryScreen
 import io.haoma.calculator.ShareAttach
@@ -82,6 +86,7 @@ fun MessengerScaffold(store: MessengerStore) {
     val chats by store.chats.collectAsStateWithLifecycle()
 
     KeepScreenOnDuringCalls(store = store)
+    MessengerToasts(store = store)
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -122,6 +127,9 @@ fun MessengerScaffold(store: MessengerStore) {
             RingerDialogHost(store = store)
 
             
+            DestroyNoticeHost(store = store)
+
+            
             pendingShareUri?.let { uri ->
                 ShareTargetPicker(
                     chats = chats,
@@ -132,6 +140,26 @@ fun MessengerScaffold(store: MessengerStore) {
                     },
                     onCancel = { app.pendingShareUri.value = null },
                 )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun MessengerToasts(store: MessengerStore) {
+    val context = LocalContext.current.applicationContext
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(store, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var last: Toast? = null
+            try {
+                store.toasts.collect { text ->
+                    last?.cancel()
+                    last = Toast.makeText(context, text, Toast.LENGTH_SHORT).also { it.show() }
+                }
+            } finally {
+                last?.cancel()
             }
         }
     }

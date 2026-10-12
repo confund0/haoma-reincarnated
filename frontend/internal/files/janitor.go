@@ -91,6 +91,10 @@ func (j *Janitor) handle(chatID chat.ChatID, msgID, trigger string) {
 	meta, err := j.mgr.GetMeta(msgID)
 	metaMissing := errors.Is(err, ErrMetaNotFound)
 	if metaMissing {
+
+		if err := j.mgr.DeleteWantedFile(msgID); err != nil {
+			logger.Warn("wanted file not removed", slog.Any("err", err))
+		}
 		logger.Debug("no metadata row; nothing to clean")
 		return
 	}
@@ -114,23 +118,39 @@ func (j *Janitor) handle(chatID chat.ChatID, msgID, trigger string) {
 	if err := j.mgr.DeleteStaging(msgID); err != nil {
 		logger.Warn("delete staging failed", slog.Any("err", err))
 	}
-	if err := j.mgr.DeleteMeta(msgID); err != nil {
+
+	if deleted, found, err := j.mgr.DeleteMetaReturning(msgID); err != nil {
 		logger.Warn("delete metadata failed", slog.Any("err", err))
+	} else if found {
+		meta = deleted
 	}
 
-	if meta.Direction != DirOut {
-		return
-	}
 	if j.remote == nil {
-		logger.Debug("outbound cascade skipped: no remote dropper wired")
+		logger.Debug("remote cascade skipped: no remote dropper wired")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := j.remote.DropFile(ctx, msgID); err != nil {
-		logger.Warn("remote drop failed", slog.Any("err", err))
-		return
+
+	switch {
+	case meta.Direction != DirOut:
+		logger.Debug("msg id drop skipped: inbound, nothing hosted under the msg id")
+	case meta.FetchedFromSibling:
+		logger.Debug("msg id drop skipped: fetched from my other device, nothing hosted under the msg id")
+	default:
+		if err := j.remote.DropFile(ctx, msgID); err != nil {
+			logger.Warn("remote drop failed", slog.Any("err", err))
+		} else {
+			logger.Debug("remote drop ok")
+		}
 	}
-	logger.Debug("remote drop ok")
+
+	for _, id := range meta.SiblingStagingIDs {
+		if err := j.remote.DropFile(ctx, id); err != nil {
+			logger.Warn("remote drop of a sibling blob failed", slog.String("staging_id", id), slog.Any("err", err))
+			continue
+		}
+		logger.Debug("remote drop of a sibling blob ok", slog.String("staging_id", id))
+	}
 }

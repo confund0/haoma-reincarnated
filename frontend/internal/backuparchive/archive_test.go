@@ -25,9 +25,17 @@ func makeCfg(t *testing.T) string {
 	mk("vault.enc.1", []byte("OLDER"))
 	mk("vault.enc.2", []byte("OLDEST"))
 	mk("vault.lock", []byte("flock-sentinel"))
+	mk("vault.enc.lock", []byte(""))
+	mk("vault.enc.tmp-123", []byte("HALF-WRITTEN"))
 	mk("disguise.enc", []byte("DISGUISE"))
+	mk("calc-help.txt", []byte("KEYS"))
 	mk("haoma-text.log", []byte("a log line\n"))
+	mk("haoma-text.log.prev", []byte("an older log line\n"))
 	mk("haomad.runtime.json", []byte(`{"pid":1}`))
+
+	mk("tor/torrc", []byte("SocksPort 0\n"))
+	mk("tor/torrc.local", []byte("Bridge obfs4 ...\n"))
+	mk("tor/cached-certs", []byte("CERTS"))
 
 	mk("backend/MANIFEST", []byte("manifest"))
 	mk("backend/000001.sst", []byte("sst-data"))
@@ -36,10 +44,14 @@ func makeCfg(t *testing.T) string {
 	mk("backend/haomad.log", []byte("ignored"))
 	mk("backend/haomad.pid", []byte("12345"))
 	mk("backend/api.sock", []byte("socket-bytes"))
+	mk("backend/haomad.stderr", []byte("panic trace, possibly unredacted"))
+	mk("backend/haomad.stderr.prev", []byte("older panic trace"))
 
 	mk("frontend/MANIFEST", []byte("frontend-manifest"))
 	mk("frontend/haoma-token", []byte("token-bytes"))
 	mk("frontend/haoma.log", []byte("ignored"))
+	mk("frontend/haoma.stderr", []byte("panic trace, possibly unredacted"))
+	mk("frontend/haoma.stderr.prev", []byte("older panic trace"))
 
 	mk("textUI/last-invite.json", []byte(`{"v":1}`))
 
@@ -66,6 +78,7 @@ func TestCreateAndExtractRoundTrip(t *testing.T) {
 	expected := []string{
 		"vault.enc", "vault.enc.1", "vault.enc.2",
 		"disguise.enc",
+		"calc-help.txt",
 		"backend/MANIFEST", "backend/000001.sst",
 		"backend/cert.pem", "backend/cert.key",
 		"frontend/MANIFEST", "frontend/haoma-token",
@@ -80,12 +93,22 @@ func TestCreateAndExtractRoundTrip(t *testing.T) {
 
 	excluded := []string{
 		"vault.lock",
+		"vault.enc.lock",
+		"vault.enc.tmp-123",
 		"haoma-text.log",
+		"haoma-text.log.prev",
 		"haomad.runtime.json",
+		"tor/torrc",
+		"tor/torrc.local",
+		"tor/cached-certs",
 		"backend/haomad.log",
 		"backend/haomad.pid",
 		"backend/api.sock",
+		"backend/haomad.stderr",
+		"backend/haomad.stderr.prev",
 		"frontend/haoma.log",
+		"frontend/haoma.stderr",
+		"frontend/haoma.stderr.prev",
 		"scratch/random.tmp",
 	}
 	for _, rel := range excluded {

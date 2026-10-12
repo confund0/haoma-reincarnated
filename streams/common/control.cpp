@@ -17,8 +17,6 @@ namespace {
 
 std::mutex g_emit_mu;
 
-// Find the value of "key": "..." somewhere in s.  Doesn't handle JSON
-// escapes — the wire vocabulary has none.
 struct StringField { std::string value; bool found = false; };
 StringField extract_string_field(const std::string& s, const std::string& key) {
   std::string needle = "\"" + key + "\"";
@@ -36,7 +34,6 @@ StringField extract_string_field(const std::string& s, const std::string& key) {
   return {s.substr(open, close - open), true};
 }
 
-// Find "key": <integer>.  Returns {value, true} on success.
 struct IntField { long long value = 0; bool found = false; };
 IntField extract_int_field(const std::string& s, const std::string& key) {
   std::string needle = "\"" + key + "\"";
@@ -48,7 +45,6 @@ IntField extract_int_field(const std::string& s, const std::string& key) {
   after++;
   while (after < s.size() && std::isspace((unsigned char)s[after])) after++;
   if (after >= s.size()) return {};
-  // Optional sign
   size_t end = after;
   if (s[end] == '-' || s[end] == '+') end++;
   size_t digits_start = end;
@@ -62,7 +58,7 @@ IntField extract_int_field(const std::string& s, const std::string& key) {
   }
 }
 
-}  // namespace
+}  
 
 ControlMsg parse_command(const std::string& line) {
   ControlMsg msg;
@@ -75,7 +71,7 @@ ControlMsg parse_command(const std::string& line) {
   else if (cmd.value == "exit")    msg.cmd = Command::Exit;
   else if (cmd.value == "bitrate") {
     auto kbps = extract_int_field(line, "kbps");
-    if (!kbps.found) return msg;  // missing arg → Unknown
+    if (!kbps.found) return msg;  
     msg.cmd     = Command::Bitrate;
     msg.int_arg = (int)kbps.value;
   }
@@ -91,9 +87,6 @@ void emit_line(const char* json) {
   std::fflush(stdout);
 }
 
-// Tiny JSON-string escaper for free-form `reason` fields.  Backslash
-// and quote get escaped; everything else passes through as-is.  No
-// control-char handling — reasons are short ASCII strings minted by us.
 std::string esc(const std::string& in) {
   std::string out;
   out.reserve(in.size() + 4);
@@ -104,7 +97,7 @@ std::string esc(const std::string& in) {
   return out;
 }
 
-}  // namespace
+}  
 
 void emit_ready() {
   emit_line("{\"type\":\"ready\"}");
@@ -160,8 +153,6 @@ void emit_clock_sample(int64_t local_ns, int64_t sender_pts_ns) {
 }
 
 double CpuSampler::sample() {
-  // /proc/self/stat: pid (comm) state ppid pgrp ... utime(14) stime(15) ...
-  // comm can contain spaces and parentheses, so parse from the LAST ')'.
   std::FILE* f = std::fopen("/proc/self/stat", "r");
   if (!f) return 0.0;
   char buf[1024];
@@ -171,7 +162,6 @@ double CpuSampler::sample() {
   char* rp = std::strrchr(buf, ')');
   if (!rp) return 0.0;
   unsigned long utime = 0, stime = 0;
-  // After the ')', fields are 0-indexed offset.  utime=12, stime=13.
   int n = std::sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
                       &utime, &stime);
   if (n != 2) return 0.0;
@@ -201,7 +191,6 @@ void JitterTracker::on_frame_arrival(std::chrono::steady_clock::time_point now) 
     primed_ = true;
     return;
   }
-  // Sender pacing = 20 ms per frame.  |actual - 20ms| feeds RFC3550 EWMA.
   double iat_ms   = std::chrono::duration<double, std::milli>(now - last_).count();
   double dev_ms   = iat_ms - 20.0;
   if (dev_ms < 0) dev_ms = -dev_ms;
@@ -235,7 +224,7 @@ void control_loop(int fd,
       if (errno == EINTR) continue;
       return;
     }
-    if (n == 0) return;  // EOF — quietly stop reading; streamer keeps running.
+    if (n == 0) return;  
 
     for (ssize_t i = 0; i < n; ++i) {
       char c = buf[i];
@@ -246,7 +235,7 @@ void control_loop(int fd,
         }
       } else if (c != '\r') {
         if (line.size() < 1024) line.push_back(c);
-        else line.clear();  // pathological: drop oversized line
+        else line.clear();  
       }
     }
   }
@@ -258,7 +247,7 @@ void stats_loop(Stats& s,
                 std::atomic<bool>& trace,
                 std::atomic<bool>& request_now) {
   CpuSampler cpu;
-  cpu.sample();  // prime — first real value comes next iteration
+  cpu.sample();  
   while (!done.load()) {
     int target_ms = trace.load() ? 200 : 2000;
     for (int slept = 0; slept < target_ms && !done.load(); slept += 100) {
@@ -273,10 +262,10 @@ void stats_loop(Stats& s,
 }
 
 void JitterTracker::store_into(Stats& s) const {
-  double v = j_ms_ * 100.0;  // 0.01 ms units
+  double v = j_ms_ * 100.0;  
   if (v < 0) v = 0;
   if (v > (double)UINT32_MAX) v = (double)UINT32_MAX;
   s.jitter_ms_x100.store((uint32_t)v);
 }
 
-}  // namespace haoma::streams
+}  

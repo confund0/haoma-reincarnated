@@ -17,13 +17,14 @@ import (
 	"haoma-frontend/internal/backendapi"
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/msg"
 	"haoma-frontend/internal/streamers"
 )
 
 const streamerReadyTimeout = 5 * time.Second
 
-const spawnReadyBudget = 8 * time.Second
+const spawnReadyTimeout = 8 * time.Second
 
 func streamIDForModality(modality string) string {
 	switch modality {
@@ -84,10 +85,10 @@ func peerOnionURL(ctx context.Context, d *daemon, peerID, modality, token string
 	}
 	peer, err := d.backendClient.Peer(ctx, peerID)
 	if err != nil {
-		return "", fmt.Errorf("calls: resolve peer %s: %w", peerID, err)
+		return "", fmt.Errorf("calls: resolve peer %s: %w", logid.Short(peerID), err)
 	}
 	if len(peer.KnownAddresses) == 0 {
-		return "", fmt.Errorf("calls: peer %s has no known onion addresses", peerID)
+		return "", fmt.Errorf("calls: peer %s has no known onion addresses", logid.Short(peerID))
 	}
 	addr := strings.TrimSuffix(peer.KnownAddresses[0], ".onion")
 	return fmt.Sprintf("http://%s.onion/%s/%s", addr, modality, token), nil
@@ -133,7 +134,7 @@ func spawnSenderLeg(ctx context.Context, d *daemon, callID, modality, token stri
 		slog.String("side", string(side)),
 		slog.Int("port", port),
 	)
-	spawnCtx, spawnCancel := context.WithTimeout(ctx, spawnReadyBudget)
+	spawnCtx, spawnCancel := context.WithTimeout(ctx, spawnReadyTimeout)
 	defer spawnCancel()
 	stream, err := spawnFn(spawnCtx, callID, port, subkey, streamID)
 	if err != nil {
@@ -220,7 +221,7 @@ func spawnReceiverLeg(ctx context.Context, d *daemon, callID, peerID, modality, 
 		slog.String("side", string(side)),
 		slog.Int("port", port),
 	)
-	spawnCtx, spawnCancel := context.WithTimeout(ctx, spawnReadyBudget)
+	spawnCtx, spawnCancel := context.WithTimeout(ctx, spawnReadyTimeout)
 	defer spawnCancel()
 	stream, err := spawnFn(spawnCtx, callID, port, subkey, streamID)
 	if err != nil {

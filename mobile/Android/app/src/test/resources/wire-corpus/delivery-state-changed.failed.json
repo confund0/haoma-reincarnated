@@ -1,0 +1,10 @@
+{
+  "type": "delivery.state-changed",
+  "payload": {
+    "envelope_id": "70c3b1e9a24d85f06b3c9e1740da285b",
+    "state": "failed",
+    "at": 1754901337408225000,
+    "attempts": 6,
+    "last_error": "dial onion: SOCKS connect: host unreachable"
+  }
+}

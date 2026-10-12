@@ -12,12 +12,10 @@ void be64(uint8_t* p, uint64_t v) {
 }
 
 void make_nonce(uint64_t counter, uint8_t out[AEAD_NONCE_BYTES]) {
-  std::memset(out, 0, 4);     // 4-byte zero pad
-  be64(out + 4, counter);     // 8-byte BE counter
+  std::memset(out, 0, 4);     
+  be64(out + 4, counter);     
 }
 
-// AAD = stream_id ASCII || be64(counter) || be64(pts_ns). Returned via
-// out_buf which the caller sizes to stream_id.size() + 16.
 size_t make_aad(const std::string& stream_id, uint64_t counter, uint64_t pts_ns,
                 uint8_t* out_buf, size_t out_cap) {
   size_t need = stream_id.size() + 16;
@@ -28,7 +26,7 @@ size_t make_aad(const std::string& stream_id, uint64_t counter, uint64_t pts_ns,
   return need;
 }
 
-}  // namespace
+}  
 
 Aead::~Aead() {
   sodium_memzero(key_, sizeof(key_));
@@ -57,7 +55,7 @@ bool Aead::seal(uint64_t counter, uint64_t pts_ns,
   uint8_t nonce[AEAD_NONCE_BYTES];
   make_nonce(counter, nonce);
 
-  uint8_t aad_buf[64];   // mic/cam/screen <= 6 bytes + 8 counter + 8 pts; cap 64 is plenty
+  uint8_t aad_buf[64];   
   size_t aad_len = make_aad(stream_id_, counter, pts_ns, aad_buf, sizeof(aad_buf));
   if (aad_len == 0) return false;
 

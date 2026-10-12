@@ -1,0 +1,26 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4193,
+      "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+      "direction": "out",
+      "kind": "text",
+      "display_ts": 1754903001,
+      "sender_ts": 1754903001,
+      "recv_ts": 1754903001,
+      "sender_seq": 613,
+      "envelope_id": "5e08fa73c1b6429d0af35c8b17e26d40",
+      "envelope_ids": [
+        "5e08fa73c1b6429d0af35c8b17e26d40"
+      ],
+      "msg_id": "83b1e5f06d2a4739c1085ba7e394f2d6",
+      "body": {
+        "text": "the six twenty, not the six"
+      },
+      "delivery_state": "delivered",
+      "expire_seconds": 604800,
+      "edited_at": 1754903044
+    }
+  }
+}

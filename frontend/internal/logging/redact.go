@@ -14,6 +14,11 @@ var sensitiveStringKeys = map[string]bool{
 	"dest":        true,
 	"token":       true,
 	"fingerprint": true,
+
+	"from": true,
+	"peer": true,
+
+	"offering_device": true,
 }
 
 var urlStringKeys = map[string]bool{
@@ -23,6 +28,11 @@ var urlStringKeys = map[string]bool{
 var opaqueStringKeys = map[string]bool{
 	"nick":        true,
 	"sender_nick": true,
+
+	"label":        true,
+	"alias":        true,
+	"inviter_nick": true,
+	"joiner_nick":  true,
 }
 
 type redactHandler struct {
@@ -69,16 +79,17 @@ func redactAttr(a slog.Attr) slog.Attr {
 	if urlStringKeys[a.Key] && v.Kind() == slog.KindString {
 		return slog.String(a.Key, logid.RedactURLTokens(v.String()))
 	}
-	if a.Key == "err" {
-		var s string
-		switch v.Kind() {
-		case slog.KindString:
-			s = v.String()
-		default:
-			s = fmt.Sprintf("%v", v.Any())
+
+	switch {
+	case v.Kind() == slog.KindString:
+		if s := v.String(); logid.HasOnion(s) {
+			return slog.String(a.Key, logid.RedactOnions(s))
 		}
-		if logid.HasOnion(s) {
-			return slog.String("err", logid.RedactOnions(s))
+	case v.Kind() == slog.KindAny:
+		if e, ok := v.Any().(error); ok && e != nil {
+			if s := fmt.Sprintf("%v", e); logid.HasOnion(s) {
+				return slog.String(a.Key, logid.RedactOnions(s))
+			}
 		}
 	}
 	return a

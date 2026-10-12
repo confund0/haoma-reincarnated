@@ -11,12 +11,14 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/store"
 )
 
 const (
 	prefixChat       = "chat:"
 	prefixChatByPeer = "chat-by-peer:"
+	prefixChatByFP   = "chat-by-fp:"
 )
 
 var ErrNotFound = errors.New("chat: not found")
@@ -34,6 +36,12 @@ const MaxMembersDirect = 2
 
 const MaxMembersGroup = 20
 
+type SettingsStamps struct {
+	Muted        int64 `json:"muted,omitempty"`
+	Receipts     int64 `json:"receipts,omitempty"`
+	NickOverride int64 `json:"nick_override,omitempty"`
+}
+
 type BaseChat struct {
 	ID                ChatID   `json:"id"`
 	Members           []string `json:"members"`
@@ -50,15 +58,24 @@ type BaseChat struct {
 
 	NotificationsMuted bool `json:"notifications_muted,omitempty"`
 
+	SettingsAt SettingsStamps `json:"settings_at,omitempty"`
+
 	NickOverride string `json:"nick_override,omitempty"`
 }
 
 type DirectChat struct {
 	BaseChat
-	MaxMembers int    `json:"max_members"`
-	PeerID     string `json:"peer_id"`
+	MaxMembers int `json:"max_members"`
+
+	PeerID string `json:"peer_id"`
 
 	PeerIDs []string `json:"peer_ids,omitempty"`
+
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	WaitingForSession bool  `json:"waiting_for_session,omitempty"`
+	WaitingForContact bool  `json:"waiting_for_contact,omitempty"`
+	ChatStartedAt     int64 `json:"chat_started_at,omitempty"`
 }
 
 func (d *DirectChat) Kind() Kind { return KindDirect }
@@ -89,6 +106,10 @@ type Chat interface {
 	TimerChangeTs() int64
 	ReadReceiptsDisabled() bool
 	IsNotificationsMuted() bool
+
+	Stamps() SettingsStamps
+
+	NickOverrideValue() string
 }
 
 func (d *DirectChat) ChatID() ChatID             { return d.ID }
@@ -103,6 +124,10 @@ func (d *DirectChat) ReadReceiptsDisabled() bool { return d.DisableReadReceipts 
 func (g *GroupChat) ReadReceiptsDisabled() bool  { return g.DisableReadReceipts }
 func (d *DirectChat) IsNotificationsMuted() bool { return d.NotificationsMuted }
 func (g *GroupChat) IsNotificationsMuted() bool  { return g.NotificationsMuted }
+func (d *DirectChat) Stamps() SettingsStamps     { return d.SettingsAt }
+func (g *GroupChat) Stamps() SettingsStamps      { return g.SettingsAt }
+func (d *DirectChat) NickOverrideValue() string  { return d.NickOverride }
+func (g *GroupChat) NickOverrideValue() string   { return g.NickOverride }
 
 type record struct {
 	Kind Kind            `json:"kind"`
@@ -114,6 +139,17 @@ type Store struct {
 	now func() time.Time
 
 	writeMu sync.Mutex
+
+	beforeGrow func() error
+}
+
+func (s *Store) SetBeforeGrow(fn func() error) { s.beforeGrow = fn }
+
+func (s *Store) runBeforeGrow() error {
+	if s.beforeGrow == nil {
+		return nil
+	}
+	return s.beforeGrow()
 }
 
 func NewStore(st *store.Store) *Store {
@@ -131,6 +167,9 @@ func NewID() (ChatID, error) {
 func (s *Store) CreateDirect(peerID string) (*DirectChat, error) {
 	if peerID == "" {
 		return nil, errors.New("chat: CreateDirect: empty peer id")
+	}
+	if err := s.runBeforeGrow(); err != nil {
+		return nil, fmt.Errorf("chat: CreateDirect: %w", err)
 	}
 
 	if existing, err := s.GetByDirectPeer(peerID); err == nil {
@@ -160,21 +199,41 @@ func (s *Store) CreateDirect(peerID string) (*DirectChat, error) {
 	return dc, nil
 }
 
-func (s *Store) putDirect(dc *DirectChat) error {
+func encodeDirect(dc *DirectChat) ([]byte, error) {
 	data, err := json.Marshal(dc)
 	if err != nil {
-		return fmt.Errorf("chat: marshal direct: %w", err)
+		return nil, fmt.Errorf("chat: marshal direct: %w", err)
 	}
-	rec := record{Kind: KindDirect, Data: data}
-	raw, err := json.Marshal(rec)
+	raw, err := json.Marshal(record{Kind: KindDirect, Data: data})
 	if err != nil {
-		return fmt.Errorf("chat: marshal record: %w", err)
+		return nil, fmt.Errorf("chat: marshal record: %w", err)
 	}
+	return raw, nil
+}
+
+func (s *Store) putDirect(dc *DirectChat) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	return s.putDirectLocked(dc)
+}
+
+func (s *Store) putDirectLocked(dc *DirectChat) error {
+	raw, err := encodeDirect(dc)
+	if err != nil {
+		return err
+	}
 	return s.st.Update(func(txn *badger.Txn) error {
 		if err := txn.Set(chatKey(dc.ID), raw); err != nil {
 			return err
+		}
+		if dc.Fingerprint != "" {
+			if err := txn.Set(byFingerprintKey(dc.Fingerprint), []byte(dc.ID)); err != nil {
+				return err
+			}
+		}
+		if dc.PeerID == "" {
+
+			return nil
 		}
 		return txn.Set(byPeerKey(dc.PeerID), []byte(dc.ID))
 	})
@@ -207,7 +266,7 @@ func (s *Store) GetByDirectPeer(peerID string) (*DirectChat, error) {
 	}
 	dc, ok := c.(*DirectChat)
 	if !ok {
-		return nil, fmt.Errorf("chat: by-peer index for %s points at a non-direct chat", peerID)
+		return nil, fmt.Errorf("chat: by-peer index for %s points at a non-direct chat", logid.Short(peerID))
 	}
 	return dc, nil
 }
@@ -319,15 +378,14 @@ func (s *Store) SetDisableReadReceipts(id ChatID, disabled bool) error {
 	if id == "" {
 		return errors.New("chat: SetDisableReadReceipts: empty id")
 	}
+	now := time.Now().Unix()
 	return s.mutate(id, func(c Chat) error {
-		switch v := c.(type) {
-		case *DirectChat:
-			v.DisableReadReceipts = disabled
-		case *GroupChat:
-			v.DisableReadReceipts = disabled
-		default:
+		b := baseOf(c)
+		if b == nil {
 			return fmt.Errorf("chat: SetDisableReadReceipts: unknown chat type %T", c)
 		}
+		b.DisableReadReceipts = disabled
+		b.SettingsAt.Receipts = now
 		return nil
 	})
 }
@@ -336,32 +394,40 @@ func (s *Store) SetNotificationsMuted(id ChatID, muted bool) error {
 	if id == "" {
 		return errors.New("chat: SetNotificationsMuted: empty id")
 	}
+	now := time.Now().Unix()
 	return s.mutate(id, func(c Chat) error {
-		switch v := c.(type) {
-		case *DirectChat:
-			v.NotificationsMuted = muted
-		case *GroupChat:
-			v.NotificationsMuted = muted
-		default:
+		b := baseOf(c)
+		if b == nil {
 			return fmt.Errorf("chat: SetNotificationsMuted: unknown chat type %T", c)
 		}
+		b.NotificationsMuted = muted
+		b.SettingsAt.Muted = now
 		return nil
 	})
+}
+
+func baseOf(c Chat) *BaseChat {
+	switch v := c.(type) {
+	case *DirectChat:
+		return &v.BaseChat
+	case *GroupChat:
+		return &v.BaseChat
+	}
+	return nil
 }
 
 func (s *Store) SetNickOverride(id ChatID, value string) error {
 	if id == "" {
 		return errors.New("chat: SetNickOverride: empty id")
 	}
+	now := time.Now().Unix()
 	return s.mutate(id, func(c Chat) error {
-		switch v := c.(type) {
-		case *DirectChat:
-			v.NickOverride = value
-		case *GroupChat:
-			v.NickOverride = value
-		default:
+		b := baseOf(c)
+		if b == nil {
 			return fmt.Errorf("chat: SetNickOverride: unknown chat type %T", c)
 		}
+		b.NickOverride = value
+		b.SettingsAt.NickOverride = now
 		return nil
 	})
 }
@@ -465,6 +531,66 @@ func (s *Store) ClearUnread(id ChatID) (bool, error) {
 	return changed, err
 }
 
+func (s *Store) SetUnread(id ChatID, count uint32) (bool, error) {
+	if id == "" {
+		return false, errors.New("chat: SetUnread: empty id")
+	}
+	var changed bool
+	err := s.mutate(id, func(c Chat) error {
+		switch v := c.(type) {
+		case *DirectChat:
+			if v.UnreadCount != count {
+				v.UnreadCount = count
+				changed = true
+			}
+		case *GroupChat:
+			if v.UnreadCount != count {
+				v.UnreadCount = count
+				changed = true
+			}
+		default:
+			return fmt.Errorf("chat: SetUnread: unknown chat type %T", c)
+		}
+		return nil
+	})
+	return changed, err
+}
+
+func (s *Store) SetWaitingForStart(id ChatID, holdsSession bool) error {
+	if id == "" {
+		return errors.New("chat: SetWaitingForStart: empty id")
+	}
+	return s.mutate(id, func(c Chat) error {
+		dc, ok := c.(*DirectChat)
+		if !ok || dc.ChatStartedAt != 0 {
+			return nil
+		}
+		dc.WaitingForSession = !holdsSession
+		dc.WaitingForContact = holdsSession
+		return nil
+	})
+}
+
+func (d *DirectChat) WaitingToStart() bool { return d.WaitingForSession || d.WaitingForContact }
+
+func (s *Store) MarkChatStarted(id ChatID, at int64) (changed bool, err error) {
+	if id == "" {
+		return false, errors.New("chat: MarkChatStarted: empty id")
+	}
+	err = s.mutate(id, func(c Chat) error {
+		dc, ok := c.(*DirectChat)
+		if !ok || !dc.WaitingToStart() {
+			return nil
+		}
+		dc.WaitingForSession = false
+		dc.WaitingForContact = false
+		dc.ChatStartedAt = at
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
 func (s *Store) mutate(id ChatID, mutFn func(Chat) error) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -542,9 +668,27 @@ func (s *Store) Delete(id ChatID) error {
 		if err != nil {
 			return err
 		}
-		if dc, ok := c.(*DirectChat); ok && dc.PeerID != "" {
-			if err := txn.Delete(byPeerKey(dc.PeerID)); err != nil {
+		if dc, ok := c.(*DirectChat); ok {
+
+			for _, pid := range dc.FanoutPeerIDs() {
+				if err := txn.Delete(byPeerKey(pid)); err != nil {
+					return err
+				}
+			}
+
+			keys, err := peerIndexEntriesFor(txn, id)
+			if err != nil {
 				return err
+			}
+			for _, k := range keys {
+				if err := txn.Delete(k); err != nil {
+					return err
+				}
+			}
+			if dc.Fingerprint != "" {
+				if err := txn.Delete(byFingerprintKey(dc.Fingerprint)); err != nil {
+					return err
+				}
 			}
 		}
 		return txn.Delete(chatKey(id))
@@ -616,5 +760,12 @@ func byPeerKey(peerID string) []byte {
 	out := make([]byte, 0, len(prefixChatByPeer)+len(peerID))
 	out = append(out, prefixChatByPeer...)
 	out = append(out, peerID...)
+	return out
+}
+
+func byFingerprintKey(fp string) []byte {
+	out := make([]byte, 0, len(prefixChatByFP)+len(fp))
+	out = append(out, prefixChatByFP...)
+	out = append(out, fp...)
 	return out
 }

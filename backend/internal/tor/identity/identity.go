@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"haoma/internal/logid"
 	"haoma/internal/store"
 	"haoma/internal/tor/control"
 )
@@ -67,10 +68,10 @@ func (id *Identity) Republish(p Publisher, portsPerSlot [][]control.OnionPort) e
 	for i, slot := range id.Active {
 		o, err := p.AddOnion(slot.PrivateKey, portsPerSlot[i])
 		if err != nil {
-			return fmt.Errorf("identity: republish slot %d (%s): %w", i, slot.ServiceID, err)
+			return fmt.Errorf("identity: republish slot %d (%s): %w", i, logid.Short(slot.ServiceID), err)
 		}
 		if o.ServiceID != slot.ServiceID {
-			return fmt.Errorf("identity: republish slot %d: key reproduced %s, expected %s", i, o.ServiceID, slot.ServiceID)
+			return fmt.Errorf("identity: republish slot %d: key reproduced %s, expected %s", i, logid.Short(o.ServiceID), logid.Short(slot.ServiceID))
 		}
 	}
 	return nil
@@ -122,11 +123,11 @@ func republish(st *store.Store, p Publisher, portsPerSlot [][]control.OnionPort,
 		o, err := p.AddOnion(entry.PrivateKey, portsPerSlot[i])
 		if err != nil {
 			rollback()
-			return nil, fmt.Errorf("identity: republish %s: %w", entry.ServiceID, err)
+			return nil, fmt.Errorf("identity: republish %s: %w", logid.Short(entry.ServiceID), err)
 		}
 		if o.ServiceID != entry.ServiceID {
 			rollback()
-			return nil, fmt.Errorf("identity: republish %s returned different ServiceID %q", entry.ServiceID, o.ServiceID)
+			return nil, fmt.Errorf("identity: republish %s returned different ServiceID %q", logid.Short(entry.ServiceID), logid.Short(o.ServiceID))
 		}
 		id.Active = append(id.Active, entry)
 	}

@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -160,7 +161,50 @@ func TestDelOnion_NotFound(t *testing.T) {
 		s.Write([]byte("552 Unknown onion service\r\n"))
 	})
 	defer c.Close()
-	if err := c.DelOnion(fakeServiceID); err == nil {
-		t.Error("expected error from 552 reply")
+	err := c.DelOnion(fakeServiceID)
+	if err == nil {
+		t.Fatal("expected error from 552 reply")
+	}
+	if !errors.Is(err, ErrUnknownOnionService) {
+		t.Errorf("err = %v, want it to wrap ErrUnknownOnionService", err)
+	}
+}
+
+func TestAddOnion_CollisionClassifiedByStatusCode(t *testing.T) {
+	c := mockTor(t, func(s net.Conn) {
+		readLine(t, s)
+		s.Write([]byte("550 Some future wording for a collision\r\n"))
+	})
+	defer c.Close()
+
+	_, err := c.AddOnion("existingkey", []OnionPort{{VirtPort: 80}})
+	if err == nil {
+		t.Fatal("expected error from 550 reply")
+	}
+	if !errors.Is(err, ErrOnionAddressCollision) {
+		t.Errorf("err = %v, want it to wrap ErrOnionAddressCollision", err)
+	}
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v, want it to carry a *StatusError", err)
+	}
+	if se.Code != 550 || se.Command != "ADD_ONION" {
+		t.Errorf("StatusError = %+v, want ADD_ONION/550", se)
+	}
+}
+
+func TestAddOnion_NonCollisionRefusalIsNotAddressCollision(t *testing.T) {
+	c := mockTor(t, func(s net.Conn) {
+		readLine(t, s)
+		s.Write([]byte("551 Failed to add Onion Service\r\n"))
+	})
+	defer c.Close()
+
+	_, err := c.AddOnion("existingkey", []OnionPort{{VirtPort: 80}})
+	if err == nil {
+		t.Fatal("expected error from 551 reply")
+	}
+	if errors.Is(err, ErrOnionAddressCollision) {
+		t.Errorf("err = %v, want a 551 not to read as a collision", err)
 	}
 }

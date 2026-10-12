@@ -64,6 +64,9 @@ class Daemon private constructor(
     
     val isAlive: Boolean get() = process.isAlive
 
+    
+    fun awaitExit(timeoutMs: Long): Boolean = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+
     private fun runReader() {
         var delivered = false
         try {

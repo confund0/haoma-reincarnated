@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -69,84 +68,198 @@ func newTestController(t *testing.T) *vaultController {
 	return newVaultController(path, []byte(pw), payload, fastParams, bin)
 }
 
-func TestApplyThreatPreset_Domestic(t *testing.T) {
-	vc := newTestController(t)
-	if err := vc.ApplyThreatPreset(vault.PresetDomestic); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	got := vc.snapshot()
-	want := vault.ThreatPresetBundles[vault.PresetDomestic]
-	if got.ThreatProfile != vault.PresetDomestic {
-		t.Errorf("ThreatProfile = %q, want %q", got.ThreatProfile, vault.PresetDomestic)
-	}
-	if got.IdleAction != want.IdleAction {
-		t.Errorf("IdleAction = %q, want %q", got.IdleAction, want.IdleAction)
-	}
-	if got.IdleTimeoutSeconds != want.IdleTimeoutSeconds {
-		t.Errorf("IdleTimeoutSeconds = %d, want %d", got.IdleTimeoutSeconds, want.IdleTimeoutSeconds)
-	}
-	if got.PinValiditySec != want.PinValiditySec {
-		t.Errorf("PinValiditySec = %d, want %d", got.PinValiditySec, want.PinValiditySec)
-	}
-	if got.PanicAction != want.PanicAction {
-		t.Errorf("PanicAction = %q, want %q", got.PanicAction, want.PanicAction)
+func presetVaultCells(p vault.Payload) vault.ThreatPresetBundle {
+	return vault.ThreatPresetBundle{
+		ShowLoginForm:          p.ShowLoginForm,
+		SayPassphraseIsDefault: p.SayPassphraseIsDefault,
+
+		IdleAction:         p.IdleAction,
+		IdleTimeoutSeconds: p.IdleTimeoutSeconds,
+		PinValiditySec:     p.PinValiditySec,
+		PanicAction:        p.PanicAction,
+
+		NotifyShellEnabled:     p.NotifyShellEnabled,
+		NotifyShowSender:       p.NotifyShowSender,
+		NotifyShowBody:         p.NotifyShowBody,
+		NotifyDisguiseEnabled:  p.NotifyDisguiseEnabled,
+		NotifyNoisy:            p.NotifyNoisy,
+		NotifyPersistUntilOpen: p.NotifyPersistUntilOpen,
+		NotifyDeepLink:         p.NotifyDeepLink,
+		NotificationsOnLock:    p.NotificationsOnLock,
+
+		ShareTargetEnabled:        p.ShareTargetEnabled,
+		ShowFailedDestroyAttempts: p.ShowFailedDestroyAttempts,
 	}
 }
 
-func TestApplyThreatPreset_Privacy(t *testing.T) {
+func wantVaultCells(b vault.ThreatPresetBundle) vault.ThreatPresetBundle {
+	b.DefaultRetentionSec = 0
+	b.BypassSlotEnabled = false
+	return b
+}
+
+func TestApplyThreatPreset_EveryTierWritesEveryVaultCell(t *testing.T) {
+	for _, preset := range []string{
+		vault.PresetNobody,
+		vault.PresetDomestic,
+		vault.PresetPower,
+		vault.PresetForce,
+	} {
+		t.Run(preset, func(t *testing.T) {
+			vc := newTestController(t)
+			if err := vc.ApplyThreatPreset(preset); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			got := vc.snapshot()
+			if got.ThreatProfile != preset {
+				t.Errorf("ThreatProfile = %q, want %q", got.ThreatProfile, preset)
+			}
+			want := wantVaultCells(vault.ThreatPresetBundles[preset])
+			if diff := presetVaultCells(got); diff != want {
+				t.Errorf("vault cells differ from the bundle:\n got  %+v\n want %+v", diff, want)
+			}
+		})
+	}
+}
+
+func TestThreatPresetBundles_TiersDiffer(t *testing.T) {
+	seen := map[vault.ThreatPresetBundle]string{}
+	for _, preset := range []string{
+		vault.PresetNobody,
+		vault.PresetDomestic,
+		vault.PresetPower,
+		vault.PresetForce,
+	} {
+		b, ok := vault.ThreatPresetBundles[preset]
+		if !ok {
+			t.Fatalf("%s has no bundle", preset)
+		}
+		if other, dup := seen[b]; dup {
+			t.Errorf("%s and %s hold the same bundle", preset, other)
+		}
+		seen[b] = preset
+		if b.DefaultRetentionSec == 0 {
+			t.Errorf("%s keeps messages for ever — no tier may", preset)
+		}
+		if b.NotifyShowBody {
+			t.Errorf("%s shows the message body — no tier may", preset)
+		}
+	}
+}
+
+func TestThreatPresetBundles_MatchTheMatrix(t *testing.T) {
+	want := map[string]vault.ThreatPresetBundle{
+		vault.PresetNobody: {
+			ShowLoginForm: false, SayPassphraseIsDefault: false, BypassSlotEnabled: true,
+			IdleAction: "soft-lock", IdleTimeoutSeconds: 900, PinValiditySec: 0, PanicAction: "safe-lock",
+			DefaultRetentionSec: 28 * 24 * 3600,
+			NotifyShellEnabled:  true, NotifyShowSender: true, NotifyShowBody: false,
+			NotifyDisguiseEnabled: false, NotifyNoisy: true, NotifyPersistUntilOpen: true,
+			NotifyDeepLink: true, NotificationsOnLock: true,
+			ShareTargetEnabled: true, ShowFailedDestroyAttempts: true,
+		},
+		vault.PresetDomestic: {
+			ShowLoginForm: true, SayPassphraseIsDefault: true, BypassSlotEnabled: true,
+			IdleAction: "soft-lock", IdleTimeoutSeconds: 300, PinValiditySec: 86400, PanicAction: "safe-lock",
+			DefaultRetentionSec: 7 * 24 * 3600,
+			NotifyShellEnabled:  true, NotifyShowSender: false, NotifyShowBody: false,
+			NotifyDisguiseEnabled: true, NotifyNoisy: false, NotifyPersistUntilOpen: true,
+			NotifyDeepLink: false, NotificationsOnLock: true,
+			ShareTargetEnabled: false, ShowFailedDestroyAttempts: false,
+		},
+		vault.PresetPower: {
+			ShowLoginForm: true, SayPassphraseIsDefault: true, BypassSlotEnabled: false,
+			IdleAction: "safe-lock", IdleTimeoutSeconds: 60, PinValiditySec: 300, PanicAction: "hard-lock",
+			DefaultRetentionSec: 24 * 3600,
+			NotifyShellEnabled:  true, NotifyShowSender: false, NotifyShowBody: false,
+			NotifyDisguiseEnabled: true, NotifyNoisy: false, NotifyPersistUntilOpen: false,
+			NotifyDeepLink: false, NotificationsOnLock: false,
+			ShareTargetEnabled: false, ShowFailedDestroyAttempts: false,
+		},
+		vault.PresetForce: {
+			ShowLoginForm: true, SayPassphraseIsDefault: true, BypassSlotEnabled: false,
+			IdleAction: "hard-lock", IdleTimeoutSeconds: 30, PinValiditySec: 0, PanicAction: "self-destruct",
+			DefaultRetentionSec: 3600,
+			NotifyShellEnabled:  false, NotifyShowSender: false, NotifyShowBody: false,
+			NotifyDisguiseEnabled: true, NotifyNoisy: false, NotifyPersistUntilOpen: false,
+			NotifyDeepLink: false, NotificationsOnLock: false,
+			ShareTargetEnabled: false, ShowFailedDestroyAttempts: false,
+		},
+	}
+	if len(vault.ThreatPresetBundles) != len(want) {
+		t.Fatalf("bundle count = %d, want %d", len(vault.ThreatPresetBundles), len(want))
+	}
+	for preset, w := range want {
+		if got := vault.ThreatPresetBundles[preset]; got != w {
+			t.Errorf("%s bundle:\n got  %+v\n want %+v", preset, got, w)
+		}
+	}
+}
+
+func TestApplyThreatPreset_NobodyCarriesTheOldBaseline(t *testing.T) {
 	vc := newTestController(t)
-	if err := vc.ApplyThreatPreset(vault.PresetPrivacy); err != nil {
+	if err := vc.ApplyThreatPreset(vault.PresetNobody); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	got := vc.snapshot()
-	want := vault.ThreatPresetBundles[vault.PresetPrivacy]
-	if got.ThreatProfile != vault.PresetPrivacy {
-		t.Errorf("ThreatProfile = %q, want %q", got.ThreatProfile, vault.PresetPrivacy)
+	if !got.ShareTargetEnabled {
+		t.Error("nobody must offer the share sheet — that is the baseline it took over")
 	}
-	if got.IdleAction != want.IdleAction || got.IdleTimeoutSeconds != want.IdleTimeoutSeconds ||
-		got.PinValiditySec != want.PinValiditySec || got.PanicAction != want.PanicAction {
-		t.Errorf("bundle drift:\n got  %+v\n want %+v", got, want)
+	if !got.ShowFailedDestroyAttempts {
+		t.Error("nobody must show failed destroy attempts")
+	}
+	if got.ShowLoginForm {
+		t.Error("nobody must skip the login form")
+	}
+	if got.SayPassphraseIsDefault {
+		t.Error("nobody must not say the passphrase is the default")
+	}
+}
+
+func TestApplyThreatPreset_ShareTargetSurvivesWhenTheTierSaysOn(t *testing.T) {
+	vc := newTestController(t)
+	if err := vc.Mutate("share", func(p *vault.Payload) error {
+		p.ShareTargetEnabled = true
+		return nil
+	}); err != nil {
+		t.Fatalf("seed share target: %v", err)
+	}
+	if err := vc.ApplyThreatPreset(vault.PresetNobody); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !vc.snapshot().ShareTargetEnabled {
+		t.Error("nobody force-cleared the share target — it is an ordinary cell now")
 	}
 }
 
 func TestApplyThreatPreset_PersistsAcrossReopen(t *testing.T) {
 	vc := newTestController(t)
-	if err := vc.ApplyThreatPreset(vault.PresetPrivacy); err != nil {
+	if err := vc.ApplyThreatPreset(vault.PresetForce); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	reopened, _, err := vault.Open(vc.path, vc.passphrase)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	if reopened.ThreatProfile != vault.PresetPrivacy {
-		t.Errorf("disk ThreatProfile = %q, want %q", reopened.ThreatProfile, vault.PresetPrivacy)
+	if reopened.ThreatProfile != vault.PresetForce {
+		t.Errorf("disk ThreatProfile = %q, want %q", reopened.ThreatProfile, vault.PresetForce)
 	}
-	want := vault.ThreatPresetBundles[vault.PresetPrivacy]
-	if reopened.IdleTimeoutSeconds != want.IdleTimeoutSeconds {
-		t.Errorf("disk IdleTimeoutSeconds = %d, want %d", reopened.IdleTimeoutSeconds, want.IdleTimeoutSeconds)
-	}
-	if reopened.PanicAction != want.PanicAction {
-		t.Errorf("disk PanicAction = %q, want %q", reopened.PanicAction, want.PanicAction)
+	want := wantVaultCells(vault.ThreatPresetBundles[vault.PresetForce])
+	if got := presetVaultCells(reopened); got != want {
+		t.Errorf("disk cells differ from the bundle:\n got  %+v\n want %+v", got, want)
 	}
 }
 
-func TestApplyThreatPreset_Activist_NotImplemented(t *testing.T) {
+func TestApplyThreatPreset_RetiredNamesRejected(t *testing.T) {
 	vc := newTestController(t)
-	before := vc.snapshot()
-	err := vc.ApplyThreatPreset(vault.PresetActivist)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("error = %v, want substring 'not yet implemented'", err)
-	}
-	after := vc.snapshot()
-	if after.ThreatProfile != before.ThreatProfile ||
-		after.IdleAction != before.IdleAction ||
-		after.IdleTimeoutSeconds != before.IdleTimeoutSeconds ||
-		after.PinValiditySec != before.PinValiditySec ||
-		after.PanicAction != before.PanicAction {
-		t.Error("activist failure mutated payload — should be no-op")
+	for _, retired := range []string{"minimal", "privacy", "activist"} {
+		before := vc.snapshot()
+		if err := vc.ApplyThreatPreset(retired); err == nil {
+			t.Errorf("ApplyThreatPreset(%q) = nil, want an error", retired)
+		}
+		if after := vc.snapshot(); after.ThreatProfile != before.ThreatProfile {
+			t.Errorf("%q mutated the payload — a rejected preset writes nothing", retired)
+		}
 	}
 }
 
@@ -202,7 +315,7 @@ func TestVaultController_Wipe_ZerosPassphraseAndIsIdempotent(t *testing.T) {
 	vc := newTestController(t)
 
 	backing := vc.passphrase
-	vc.Wipe()
+	vc.Zero()
 	if vc.passphrase != nil {
 		t.Errorf("Wipe should nil the slice header; got %v", vc.passphrase)
 	}
@@ -212,7 +325,7 @@ func TestVaultController_Wipe_ZerosPassphraseAndIsIdempotent(t *testing.T) {
 		}
 	}
 
-	vc.Wipe()
+	vc.Zero()
 }
 
 func TestSetTorPassword_PersistsToDisk(t *testing.T) {
@@ -318,14 +431,130 @@ func itoa(n int) string {
 
 func TestSetThreatProfile_NewVocabulary(t *testing.T) {
 	vc := newTestController(t)
-	for _, ok := range []string{"", vault.PresetDomestic, vault.PresetPrivacy, vault.PresetActivist} {
+	for _, ok := range []string{
+		"", vault.PresetNobody, vault.PresetDomestic, vault.PresetPower, vault.PresetForce,
+	} {
 		if err := vc.SetThreatProfile(ok); err != nil {
 			t.Errorf("SetThreatProfile(%q) = %v, want nil", ok, err)
 		}
 	}
-	for _, bad := range []string{"casual", "investigator", "international", "custom", "DOMESTIC"} {
+	for _, bad := range []string{
+		"minimal", "privacy", "activist", "casual", "investigator", "custom", "DOMESTIC",
+	} {
 		if err := vc.SetThreatProfile(bad); err == nil {
-			t.Errorf("SetThreatProfile(%q) = nil, want error (old vocab should be rejected)", bad)
+			t.Errorf("SetThreatProfile(%q) = nil, want an error — that name is retired", bad)
 		}
+	}
+}
+
+func TestEmptyThreatProfile_IsNotATier(t *testing.T) {
+	if _, ok := vault.ThreatPresetBundles[""]; ok {
+		t.Error("the empty profile has a bundle — it means the picker has not run, not a tier")
+	}
+	vc := newTestController(t)
+	if err := vc.ApplyThreatPreset(""); err == nil {
+		t.Error("ApplyThreatPreset(\"\") = nil, want an error")
+	}
+
+	if err := vc.ApplyThreatPreset(vault.PresetForce); err != nil {
+		t.Fatalf("apply force: %v", err)
+	}
+	before := vc.snapshot()
+	if err := vc.SetThreatProfile(""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	after := vc.snapshot()
+	if after.ThreatProfile != "" {
+		t.Errorf("ThreatProfile = %q, want empty", after.ThreatProfile)
+	}
+	before.ThreatProfile = ""
+	if presetVaultCells(after) != presetVaultCells(before) {
+		t.Error("clearing the label changed a setting — it must only clear the label")
+	}
+}
+
+func TestMintFreshPayload_SeedsTheUnlockBools(t *testing.T) {
+	p, err := vault.MintFreshPayload()
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if p.ThreatProfile != "" {
+		t.Errorf("ThreatProfile = %q, want empty — the picker has not run", p.ThreatProfile)
+	}
+	if !p.ShowLoginForm {
+		t.Error("ShowLoginForm = false on a fresh vault — the login form must be shown")
+	}
+	if !p.SayPassphraseIsDefault {
+		t.Error("SayPassphraseIsDefault = false on a fresh vault — the notice must be said")
+	}
+}
+
+func TestSaysPassphraseIsDefault_OnlyTheLowestTierStaysQuiet(t *testing.T) {
+	for _, tc := range []struct {
+		preset string
+		want   bool
+	}{
+		{vault.PresetNobody, false},
+		{vault.PresetDomestic, true},
+		{vault.PresetPower, true},
+		{vault.PresetForce, true},
+	} {
+		t.Run(tc.preset, func(t *testing.T) {
+			vc := newTestController(t)
+			if err := vc.ApplyThreatPreset(tc.preset); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			if got := vc.SaysPassphraseIsDefault(); got != tc.want {
+				t.Errorf("SaysPassphraseIsDefault() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSaysPassphraseIsDefault_AnOldVaultAtTheLowestTierStaysQuiet(t *testing.T) {
+	vc := newTestController(t)
+	if err := vc.SetThreatProfile(vault.PresetNobody); err != nil {
+		t.Fatalf("set profile: %v", err)
+	}
+
+	vc.mu.Lock()
+	vc.payload.SayPassphraseIsDefault = vault.DefaultSayPassphraseIsDefault
+	vc.mu.Unlock()
+
+	if vc.SaysPassphraseIsDefault() {
+		t.Error("an upgraded nobody device must stay quiet without re-applying its tier")
+	}
+}
+
+func TestCheckPIN(t *testing.T) {
+	vc := newTestController(t)
+	const pin = "9137"
+	if err := vc.ChangePIN("", pin); err != nil {
+		t.Fatalf("set the PIN: %v", err)
+	}
+
+	if !vc.CheckPIN(pin) {
+		t.Error("the right PIN was refused")
+	}
+	if vc.CheckPIN("9138") {
+		t.Error("a wrong PIN was accepted")
+	}
+	if vc.CheckPIN("") {
+		t.Error("an empty answer was accepted")
+	}
+	if vc.CheckPIN(pin + " ") {
+		t.Error("a PIN with a trailing space was accepted")
+	}
+}
+
+func TestCheckPIN_RefusesWhenNoPINIsSet(t *testing.T) {
+	vc := newTestController(t)
+	vc.payload.PIN = ""
+
+	if vc.CheckPIN("") {
+		t.Error("an empty answer was accepted on a device with no PIN")
+	}
+	if vc.CheckPIN("0000") {
+		t.Error("a guess was accepted on a device with no PIN")
 	}
 }

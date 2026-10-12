@@ -167,19 +167,24 @@ func TestBuild_NoOPKsErrors(t *testing.T) {
 }
 
 type fakeOPKSource struct {
-	consumed map[uint32]bool
-	pubs     map[uint32][]byte
+	consumed  map[uint32]bool
+	dispensed map[uint32]bool
+	pubs      map[uint32][]byte
 }
 
-func (f *fakeOPKSource) AvailableOPK() (uint32, []byte, error) {
+func (f *fakeOPKSource) DispenseOPK() (uint32, []byte, error) {
 	for id := uint32(1); id <= 1000; id++ {
-		if f.consumed[id] {
+		if f.consumed[id] || f.dispensed[id] {
 			continue
 		}
 		pub, ok := f.pubs[id]
 		if !ok {
 			continue
 		}
+		if f.dispensed == nil {
+			f.dispensed = map[uint32]bool{}
+		}
+		f.dispensed[id] = true
 		return id, pub, nil
 	}
 	return 0, nil, signal.ErrOPKPoolEmpty

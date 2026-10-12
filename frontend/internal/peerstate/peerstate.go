@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/store"
 )
 
@@ -15,6 +18,9 @@ const (
 	prefix        = "peer:"
 	suffixSendSeq = ":send_seq"
 	suffixMeta    = ":meta"
+
+	suffixCountAt    = ":count_at"
+	suffixUnlinkedAt = ":unlinked_at"
 )
 
 type Counters struct {
@@ -46,11 +52,11 @@ func (c *Counters) NextSendSeq(peerID string) (uint64, error) {
 			return next, nil
 		}
 		if !errors.Is(err, badger.ErrConflict) {
-			return 0, fmt.Errorf("peerstate: next send seq for %s: %w", peerID, err)
+			return 0, fmt.Errorf("peerstate: next send seq for %s: %w", logid.Short(peerID), err)
 		}
 
 	}
-	return 0, fmt.Errorf("peerstate: next send seq for %s: exceeded %d conflict retries", peerID, maxConflictRetries)
+	return 0, fmt.Errorf("peerstate: next send seq for %s: exceeded %d conflict retries", logid.Short(peerID), maxConflictRetries)
 }
 
 const maxConflictRetries = 256
@@ -66,7 +72,7 @@ func (c *Counters) PeekSendSeq(peerID string) (uint64, error) {
 		return err
 	})
 	if err != nil {
-		return 0, fmt.Errorf("peerstate: peek send seq for %s: %w", peerID, err)
+		return 0, fmt.Errorf("peerstate: peek send seq for %s: %w", logid.Short(peerID), err)
 	}
 	return v, nil
 }
@@ -112,6 +118,10 @@ type MetaRecord struct {
 	VerifiedAt int64 `json:"verified_at,omitempty"`
 	Blocked    bool  `json:"blocked,omitempty"`
 	BlockedAt  int64 `json:"blocked_at,omitempty"`
+
+	PairedAt int64 `json:"paired_at,omitempty"`
+
+	SendsUnlinkNoticeAt int64 `json:"sends_unlink_notice_at,omitempty"`
 }
 
 type Meta struct {
@@ -121,6 +131,44 @@ type Meta struct {
 func NewMeta(st *store.Store) *Meta { return &Meta{st: st} }
 
 func (m *Meta) Get(peerID string) (MetaRecord, error) {
+	rec, err := m.peerRecord(peerID)
+	if err != nil {
+		return MetaRecord{}, err
+	}
+	if rec.Fingerprint == "" {
+		slog.Debug("peer-meta: read a peer with no person to fold in",
+			slog.String("peer_id", peerID),
+		)
+		return rec, nil
+	}
+	person, err := m.GetPerson(rec.Fingerprint)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+
+			slog.Warn("peer-meta: reading the person failed; the alias is missing from this row",
+				slog.String("peer_id", peerID),
+				slog.String("fingerprint", rec.Fingerprint),
+				slog.Any("err", err),
+			)
+			return rec, nil
+		}
+		slog.Debug("peer-meta: read a peer whose person is not stored here",
+			slog.String("peer_id", peerID),
+			slog.String("fingerprint", rec.Fingerprint),
+		)
+		return rec, nil
+	}
+	before := rec
+	foldMeta(&rec, person)
+	slog.Debug("peer-meta: read a peer and folded in the person",
+		slog.String("peer_id", peerID),
+		slog.String("fingerprint", rec.Fingerprint),
+		slog.Bool("person_won", rec != before),
+	)
+	return rec, nil
+}
+
+func (m *Meta) peerRecord(peerID string) (MetaRecord, error) {
 	if peerID == "" {
 		return MetaRecord{}, errors.New("peerstate: empty peer id")
 	}
@@ -131,25 +179,84 @@ func (m *Meta) Get(peerID string) (MetaRecord, error) {
 		return err
 	})
 	if err != nil {
-		return MetaRecord{}, fmt.Errorf("peerstate: get meta for %s: %w", peerID, err)
+		return MetaRecord{}, fmt.Errorf("peerstate: get meta for %s: %w", logid.Short(peerID), err)
 	}
 	return rec, nil
+}
+
+func (m *Meta) PairedAt(peerID string) (int64, error) {
+	rec, err := m.peerRecord(peerID)
+	if err != nil {
+		return 0, err
+	}
+	return rec.PairedAt, nil
+}
+
+func (m *Meta) MarkSendsUnlinkNotice(peerID string, at int64) (changed bool, err error) {
+	if peerID == "" {
+		return false, errors.New("peerstate: empty peer id")
+	}
+	if at <= 0 {
+		return false, errors.New("peerstate: no time for the unlink-notice marker")
+	}
+	return m.mutate(peerID, func(rec *MetaRecord) bool {
+		if rec.SendsUnlinkNoticeAt != 0 {
+			return false
+		}
+		rec.SendsUnlinkNoticeAt = at
+		return true
+	})
+}
+
+func (m *Meta) SendsUnlinkNotice(peerID string) (bool, error) {
+	rec, err := m.peerRecord(peerID)
+	if err != nil {
+		return false, err
+	}
+	return rec.SendsUnlinkNoticeAt != 0, nil
 }
 
 func (m *Meta) SetAlias(peerID, alias string, ts int64) (changed bool, err error) {
 	if peerID == "" {
 		return false, errors.New("peerstate: empty peer id")
 	}
-	return m.mutate(peerID, func(rec *MetaRecord) bool {
-		if ts > rec.AliasAt {
-			rec.AliasAt = ts
+	peer, err := m.peerRecord(peerID)
+	if err != nil {
+		return false, err
+	}
+	slog.Debug("peer-meta: alias write asked for",
+		slog.String("peer_id", peerID),
+		slog.String("fingerprint", peer.Fingerprint),
+		slog.Bool("clears", alias == ""),
+	)
+	key, subject, home := personKey(peer.Fingerprint), peer.Fingerprint, "person"
+	if peer.Fingerprint == "" {
+		key, subject, home = metaKey(peerID), peerID, "peer"
+	}
+	changed, err = m.mutateKey(key, subject, func(rec *MetaRecord) bool {
+		if rec.Fingerprint == "" {
+			rec.Fingerprint = peer.Fingerprint
 		}
 		if rec.Alias == alias {
+
+			if ts > rec.AliasAt {
+				rec.AliasAt = ts
+			}
 			return false
 		}
-		rec.Alias = alias
+		rec.Alias, rec.AliasAt = alias, bumpPast(ts, rec.AliasAt)
 		return true
 	})
+	if err != nil {
+		return false, err
+	}
+	slog.Debug("peer-meta: alias written",
+		slog.String("peer_id", peerID),
+		slog.String("fingerprint", peer.Fingerprint),
+		slog.String("stored_under", home),
+		slog.Bool("changed", changed),
+	)
+	return changed, nil
 }
 
 func (m *Meta) SetVerified(peerID string, verified bool, ts int64) (changed bool, err error) {
@@ -214,25 +321,68 @@ func (m *Meta) SetNick(peerID, nick string, ts int64) (changed bool, err error) 
 }
 
 func (m *Meta) SetFingerprint(peerID, fingerprint string) (changed bool, prev string, err error) {
+	return m.SetFingerprintAt(peerID, fingerprint, time.Now().Unix())
+}
+
+func (m *Meta) SetFingerprintAt(peerID, fingerprint string, pairedAt int64) (changed bool, prev string, err error) {
 	if peerID == "" {
 		return false, "", errors.New("peerstate: empty peer id")
 	}
 	if fingerprint == "" {
 		return false, "", nil
 	}
+	var strandedAlias string
+	var strandedAt int64
 	changed, err = m.mutate(peerID, func(rec *MetaRecord) bool {
 		prev = rec.Fingerprint
+		strandedAlias, strandedAt = rec.Alias, rec.AliasAt
 		if rec.Fingerprint == fingerprint {
 			return false
 		}
 		rec.Fingerprint = fingerprint
+		if rec.PairedAt == 0 {
+			rec.PairedAt = pairedAt
+		}
 		return true
 	})
-	return changed, prev, err
+	if err != nil || !changed || strandedAlias == "" {
+		return changed, prev, err
+	}
+	if mErr := m.adoptStrandedAlias(peerID, fingerprint, strandedAlias, strandedAt); mErr != nil {
+		return changed, prev, mErr
+	}
+	return changed, prev, nil
+}
+
+func (m *Meta) adoptStrandedAlias(peerID, fingerprint, alias string, at int64) error {
+	if _, err := m.MergePerson(fingerprint, MetaRecord{
+		Fingerprint: fingerprint,
+		Alias:       alias,
+		AliasAt:     at,
+	}); err != nil {
+		return fmt.Errorf("peerstate: adopt stranded alias for %s: %w", logid.Short(peerID), err)
+	}
+	if _, err := m.mutate(peerID, func(rec *MetaRecord) bool {
+		if rec.Alias == "" {
+			return false
+		}
+		rec.Alias, rec.AliasAt = "", 0
+		return true
+	}); err != nil {
+		return fmt.Errorf("peerstate: clear stranded alias for %s: %w", logid.Short(peerID), err)
+	}
+	slog.Debug("peer-meta: an alias written before the fingerprint was known now lives on the person",
+		slog.String("peer_id", peerID),
+		slog.String("fingerprint", fingerprint),
+	)
+	return nil
 }
 
 func (m *Meta) mutate(peerID string, fn func(*MetaRecord) bool) (bool, error) {
-	key := metaKey(peerID)
+	return m.mutateKey(metaKey(peerID), peerID, fn)
+}
+
+func (m *Meta) mutateKey(key []byte, subject string, fn func(*MetaRecord) bool) (bool, error) {
 	var changed bool
 	for attempt := 0; attempt < maxConflictRetries; attempt++ {
 		err := m.st.Update(func(txn *badger.Txn) error {
@@ -251,10 +401,10 @@ func (m *Meta) mutate(peerID string, fn func(*MetaRecord) bool) (bool, error) {
 			return changed, nil
 		}
 		if !errors.Is(err, badger.ErrConflict) {
-			return false, fmt.Errorf("peerstate: mutate meta for %s: %w", peerID, err)
+			return false, fmt.Errorf("peerstate: mutate meta for %s: %w", logid.Short(subject), err)
 		}
 	}
-	return false, fmt.Errorf("peerstate: mutate meta for %s: exceeded %d conflict retries", peerID, maxConflictRetries)
+	return false, fmt.Errorf("peerstate: mutate meta for %s: exceeded %d conflict retries", logid.Short(subject), maxConflictRetries)
 }
 
 func loadMeta(txn *badger.Txn, key []byte) (MetaRecord, error) {

@@ -1,0 +1,15 @@
+{
+  "type": "destroy_pin_listed",
+  "id": "c-12",
+  "payload": {
+    "set": true,
+    "set_at": 1754902895,
+    "siblings": [
+      {
+        "peer_id": "5b2e94a07c1d43f8ae60b3d519f78c24",
+        "salt_held": true,
+        "received_at": 1754902934
+      }
+    ]
+  }
+}

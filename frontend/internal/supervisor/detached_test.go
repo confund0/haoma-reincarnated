@@ -142,6 +142,9 @@ func TestAttachOrSpawn_AttachToLiveTokenAccepted(t *testing.T) {
 	if d.APIAddr != "127.0.0.1:9999" {
 		t.Errorf("APIAddr = %q, want 127.0.0.1:9999", d.APIAddr)
 	}
+	if !d.Attached() {
+		t.Error("Attached() = false for a daemon found running")
+	}
 }
 
 func TestAttachOrSpawn_AttachWithFailingHealthCheckErrors(t *testing.T) {
@@ -232,6 +235,9 @@ func TestAttachOrSpawn_NoRuntimeFile_Spawns(t *testing.T) {
 	}()
 	if !isProcessAlive(d.PID) {
 		t.Errorf("spawned PID %d not alive", d.PID)
+	}
+	if d.Attached() {
+		t.Error("Attached() = true for a daemon this call started")
 	}
 }
 
@@ -371,6 +377,69 @@ func TestDetached_Stop_KillFallback(t *testing.T) {
 	}
 }
 
+func TestAttachOrSpawn_StderrRotatesOnRespawn(t *testing.T) {
+	dir := t.TempDir()
+	runtimePath := filepath.Join(dir, "haomad.runtime.json")
+	logPath := filepath.Join(dir, "child.stderr")
+	prevPath := logPath + capturePrevSuffix
+
+	if err := os.WriteFile(logPath, []byte("earlier-run-bytes\n"), 0o600); err != nil {
+		t.Fatalf("seed log: %v", err)
+	}
+
+	spawnAndFail := func(marker string) {
+		t.Helper()
+		t.Setenv("HAOMA_SUPERVISOR_TEST_MODE", "exit-after-stderr")
+		t.Setenv("HAOMA_TEST_STDERR_EXTRA", marker)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, err := AttachOrSpawn(ctx, "mock", os.Args[0],
+			[]string{"-test.run=^$"}, nil, runtimePath, logPath, healthOK)
+		if err == nil {
+			t.Fatal("want ready-line error (exit-after-stderr never emits ready), got nil")
+		}
+	}
+
+	spawnAndFail("first")
+	live, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read live: %v", err)
+	}
+	if strings.Contains(string(live), "earlier-run-bytes") {
+		t.Errorf("live file still holds the pre-spawn generation; want it rotated away: %q", live)
+	}
+	if !strings.Contains(string(live), "synthetic-stderr-from-mock-first") {
+		t.Errorf("live file missing this run's bytes; got %q", live)
+	}
+	prev, err := os.ReadFile(prevPath)
+	if err != nil {
+		t.Fatalf("read prev: %v", err)
+	}
+	if !strings.Contains(string(prev), "earlier-run-bytes") {
+		t.Errorf("prev generation = %q, want the pre-spawn bytes", prev)
+	}
+
+	spawnAndFail("second")
+	live, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read live after second respawn: %v", err)
+	}
+	if !strings.Contains(string(live), "synthetic-stderr-from-mock-second") {
+		t.Errorf("live file missing second run's bytes; got %q", live)
+	}
+	prev, err = os.ReadFile(prevPath)
+	if err != nil {
+		t.Fatalf("read prev after second respawn: %v", err)
+	}
+	if strings.Contains(string(prev), "earlier-run-bytes") {
+		t.Errorf("oldest generation survived a second rotation; got %q", prev)
+	}
+	if !strings.Contains(string(prev), "synthetic-stderr-from-mock-first") {
+		t.Errorf("prev generation after second rotate = %q, want the first run's bytes", prev)
+	}
+}
+
 func TestAttachOrSpawn_SpawnReadyLineGarbage_KillsChild(t *testing.T) {
 	dir := t.TempDir()
 	runtimePath := filepath.Join(dir, "haomad.runtime.json")
@@ -388,5 +457,33 @@ func TestAttachOrSpawn_SpawnReadyLineGarbage_KillsChild(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ready-line") {
 		t.Errorf("err = %v, want ready-line context", err)
+	}
+}
+
+func TestAttachOrSpawn_AttachReadsTheTor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		bin  string
+		dir  string
+	}{
+		{"own tor", `{"pid":%d,"api_addr":"127.0.0.1:9","started_at":"2026-01-01T00:00:00Z","manage_tor":"/usr/bin/tor","tor_data_dir":"/r/tor"}`, "/usr/bin/tor", "/r/tor"},
+		{"older daemon", `{"pid":%d,"api_addr":"127.0.0.1:9","started_at":"2026-01-01T00:00:00Z"}`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			runtimePath := filepath.Join(dir, "haomad.runtime.json")
+			if err := os.WriteFile(runtimePath, []byte(fmt.Sprintf(tc.body, os.Getpid())), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			d, err := AttachOrSpawn(context.Background(), "haomad", "/nonexistent/binary", nil, nil,
+				runtimePath, filepath.Join(dir, "child.log"), healthOK)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !d.Attached() || d.ManageTor != tc.bin || d.TorDataDir != tc.dir {
+				t.Fatalf("attached %v, tor %q dir %q; want %q %q", d.Attached(), d.ManageTor, d.TorDataDir, tc.bin, tc.dir)
+			}
+		})
 	}
 }

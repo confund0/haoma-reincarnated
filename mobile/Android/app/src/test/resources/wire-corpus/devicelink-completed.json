@@ -1,0 +1,7 @@
+{
+  "type": "devicelink.completed",
+  "payload": {
+    "handle_id": "8e40c7b12df9463a05e8b1c73fa0d629",
+    "peer_id": "5b2e94a07c1d43f8ae60b3d519f78c24"
+  }
+}

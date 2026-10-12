@@ -20,7 +20,7 @@ class VaultSession(
     private var payload: JSONObject = JSONObject(initialPayload.toString(Charsets.UTF_8))
 
     init {
-        Logger.d("vault", "session created pass_len=${passphrase.size}")
+        Logger.d("vault", "session created empty=${passphrase.isEmpty()}")
     }
 
     

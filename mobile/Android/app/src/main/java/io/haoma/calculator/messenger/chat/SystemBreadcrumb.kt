@@ -10,6 +10,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.haoma.calculator.messenger.CallAnsweredElsewhere
+import io.haoma.calculator.messenger.isCallNoAnswer
 import io.haoma.calculator.messenger.EventKind
 import io.haoma.calculator.messenger.LocalHaomaTypography
 import io.haoma.calculator.messenger.TimelineEvent
@@ -95,8 +97,9 @@ private fun describeCallSummary(body: org.json.JSONObject): String {
         "missed" -> "missed"
         "cancelled" -> "cancelled"
         "rejected" -> "declined"
-        "failed" -> "failed"
+        "failed" -> if (isCallNoAnswer(outcome, body.optString("fail_reason"))) "no answer" else "failed"
         "disrupted" -> "disrupted"
+        CallAnsweredElsewhere -> "answered on another device"
         else -> ""
     }
     return if (tail.isEmpty()) "$dirGlyph $modality" else "$dirGlyph $modality · $tail"
@@ -116,8 +119,13 @@ private fun formatCallDuration(secs: Long): String {
 
 private fun breadcrumbColor(event: TimelineEvent): Color {
     if (event.kind == EventKind.CALL_SUMMARY) {
-        val outcome = event.body?.optString("outcome")
-        return if (outcome == "completed") ChatPalette.CallSummaryOk else ChatPalette.CallSummaryBad
+        val outcome = event.body?.optString("outcome").orEmpty()
+        val failReason = event.body?.optString("fail_reason").orEmpty()
+        return when {
+            outcome == "completed" || outcome == CallAnsweredElsewhere -> ChatPalette.CallSummaryOk
+            isCallNoAnswer(outcome, failReason) -> ChatPalette.CallSummaryNeutral
+            else -> ChatPalette.CallSummaryBad
+        }
     }
     if (event.kind == EventKind.ONION_ROTATION) {
         val stage = event.body?.optString("stage")

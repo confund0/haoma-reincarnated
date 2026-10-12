@@ -632,7 +632,11 @@ private fun MessageFooter(event: TimelineEvent) {
             )
         }
         if (event.isOutbound) {
-            DeliveryGlyph(state = event.deliveryState, isFile = event.kind == EventKind.FILE)
+            DeliveryGlyph(
+                state = event.deliveryState,
+                isFile = event.kind == EventKind.FILE,
+                mirrored = event.mirroredFromSibling,
+            )
         }
     }
 }

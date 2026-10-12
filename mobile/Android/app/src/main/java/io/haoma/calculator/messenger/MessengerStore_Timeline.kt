@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 
 fun MessengerStore.timelineFor(chatId: String): StateFlow<TimelineCache> =
@@ -62,6 +64,9 @@ fun MessengerStore.loadTimeline(chatId: String, head: Boolean = false) {
             upsertTimeline(chatId) {
                 if (head) mergeTimelineHead(it, page) else mergeTimelinePage(it, page)
             }
+            
+            
+            _pendingTexts.update { dropSentPendingTexts(it, chatId) }
         } catch (t: Throwable) {
             appendStatus("list_timeline failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
             upsertTimeline(chatId) { it.copy(loading = false) }
@@ -139,36 +144,63 @@ private const val MAX_ANCHOR_PAGES = 20
 private const val ANCHOR_POLL_MS = 25L
 
 
+internal val SEND_REQUEST_TIMEOUT: Duration = 90.seconds
+
+
 fun MessengerStore.sendText(chatId: String, text: String) {
     val trimmed = text.trim()
     if (chatId.isEmpty() || trimmed.isEmpty()) return
-    val peerId = peerIdOrWarn(chatId, "send") ?: return
+    
     val replyMsgId = replyTargets.value[chatId]?.msgId.orEmpty()
     
     
     clearDraft(chatId)
     clearReplyTarget(chatId)
+    val localId = pendingTextSeq.incrementAndGet()
+    _pendingTexts.update {
+        addPendingText(it, PendingText(localId, chatId, trimmed, System.currentTimeMillis() / 1000L))
+    }
+    val fail = { reason: String ->
+        _pendingTexts.update { markPendingFailed(it, chatId, localId, reason) }
+    }
+    
+    
+    val peerId = peerIdOrWarn(chatId, "send") ?: run {
+        fail("chat not found")
+        return
+    }
     scope.launch {
         val c = ipc ?: run {
             appendStatus("send: ipc not connected", level = StatusLevel.WARN)
+            fail("not connected to haoma")
             return@launch
         }
         try {
             val reply = c.request(
                 type = FrameType.SendText,
                 payload = SendTextRequest(peerId, trimmed, replyMsgId).toJson(),
+                timeout = SEND_REQUEST_TIMEOUT,
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)
                 appendStatus("send error: ${err?.message ?: "?"}", level = StatusLevel.WARN)
+                fail(err?.message.orEmpty())
                 return@launch
             }
-            val resp = reply.payload?.let(SendTextResponse::fromJson) ?: return@launch
+            val resp = reply.payload?.let(SendTextResponse::fromJson)
+            if (resp == null) {
+                fail("no answer from haoma")
+                return@launch
+            }
             if (resp.envelopeId.isNotEmpty()) {
                 rememberEnvelope(resp.envelopeId, chatId)
             }
+            val rowPresent = resp.msgId.isNotEmpty() &&
+                _timelines.value[chatId]?.events?.any { it.msgId == resp.msgId } == true
+            _pendingTexts.update { markPendingSent(it, chatId, localId, resp.msgId, rowPresent) }
         } catch (t: Throwable) {
             appendStatus("send failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+            fail(t.message ?: "send failed")
         }
     }
 }
@@ -186,6 +218,7 @@ fun MessengerStore.sendReaction(chatId: String, targetMsgId: String, emoji: Stri
             val reply = c.request(
                 type = FrameType.SendReaction,
                 payload = SendReactionRequest(peerId, targetMsgId, emoji).toJson(),
+                timeout = SEND_REQUEST_TIMEOUT,
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)
@@ -211,6 +244,7 @@ fun MessengerStore.sendEdit(chatId: String, targetMsgId: String, text: String) {
             val reply = c.request(
                 type = FrameType.SendEdit,
                 payload = SendEditRequest(peerId, targetMsgId, trimmed).toJson(),
+                timeout = SEND_REQUEST_TIMEOUT,
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)
@@ -235,6 +269,7 @@ fun MessengerStore.sendDelete(chatId: String, targetMsgId: String) {
             val reply = c.request(
                 type = FrameType.SendDelete,
                 payload = SendDeleteRequest(peerId, targetMsgId).toJson(),
+                timeout = SEND_REQUEST_TIMEOUT,
             )
             if (reply.type == FrameType.Error) {
                 val err = reply.payload?.let(ErrorPayload::fromJson)
@@ -242,6 +277,30 @@ fun MessengerStore.sendDelete(chatId: String, targetMsgId: String) {
             }
         } catch (t: Throwable) {
             appendStatus("delete failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
+        }
+    }
+}
+
+
+fun MessengerStore.retryFailedFiles() {
+    Logger.d("files", "retry requested from the long-press menu")
+    scope.launch {
+        val c = ipc ?: run {
+            appendStatus("file retry: ipc not connected", level = StatusLevel.WARN)
+            return@launch
+        }
+        try {
+            val reply = c.request(type = FrameType.RetryFiles)
+            if (reply.type == FrameType.Error) {
+                val err = reply.payload?.let(ErrorPayload::fromJson)
+                appendStatus("file retry error: ${err?.message ?: "?"}", level = StatusLevel.WARN)
+                return@launch
+            }
+            val enqueued = reply.payload?.optInt("enqueued", 0) ?: 0
+            Logger.d("files", "retry answered enqueued=$enqueued")
+            appendStatus("file retry: $enqueued download(s) queued again")
+        } catch (t: Throwable) {
+            appendStatus("file retry failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
         }
     }
 }

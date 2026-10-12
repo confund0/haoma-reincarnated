@@ -12,6 +12,37 @@ import (
 )
 
 func NewTorHTTPClient(socksAddr, isoTag string) (*http.Client, error) {
+	if _, err := socksDialer(socksAddr, isoTag); err != nil {
+		return nil, err
+	}
+	return NewTorHTTPClientFunc(func() string { return socksAddr }, isoTag)
+}
+
+func NewTorHTTPClientFunc(socksAddr func() string, isoTag string) (*http.Client, error) {
+	if isoTag == "" {
+		return nil, errors.New("xport: isoTag must not be empty (circuit isolation)")
+	}
+	if socksAddr == nil {
+		return nil, errors.New("xport: no SOCKS address")
+	}
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			cd, err := socksDialer(socksAddr(), isoTag)
+			if err != nil {
+				return nil, err
+			}
+			return cd.DialContext(ctx, network, addr)
+		},
+		MaxIdleConns: 4,
+
+		IdleConnTimeout:       10 * time.Minute,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{Transport: tr}, nil
+}
+
+func socksDialer(socksAddr, isoTag string) (proxy.ContextDialer, error) {
 	if isoTag == "" {
 		return nil, errors.New("xport: isoTag must not be empty (circuit isolation)")
 	}
@@ -24,16 +55,5 @@ func NewTorHTTPClient(socksAddr, isoTag string) (*http.Client, error) {
 	if !ok {
 		return nil, errors.New("xport: socks5 dialer lacks ContextDialer")
 	}
-
-	tr := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return cd.DialContext(ctx, network, addr)
-		},
-		MaxIdleConns: 4,
-
-		IdleConnTimeout:       10 * time.Minute,
-		ResponseHeaderTimeout: 60 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	return &http.Client{Transport: tr}, nil
+	return cd, nil
 }

@@ -1,0 +1,8 @@
+{
+  "type": "destroy_pin_verified",
+  "id": "c-15",
+  "payload": {
+    "answered": true,
+    "verified": true
+  }
+}

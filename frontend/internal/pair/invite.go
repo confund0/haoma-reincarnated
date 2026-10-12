@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"go.mau.fi/libsignal/ecc"
 	"go.mau.fi/libsignal/keys/identity"
@@ -14,6 +15,7 @@ import (
 	"go.mau.fi/libsignal/util/optional"
 
 	"haoma-frontend/internal/backendapi"
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/signal"
 )
 
@@ -59,7 +61,7 @@ type PreKeyInfo struct {
 var ErrNoPreKeysAvailable = errors.New("pair: no one-time prekeys available")
 
 type OPKSource interface {
-	AvailableOPK() (id uint32, pub []byte, err error)
+	DispenseOPK() (id uint32, pub []byte, err error)
 }
 
 func Build(state *signal.State, opks OPKSource, addresses []string, nickname string, keys *MyKeys) (*Invite, *MyKeys, error) {
@@ -96,13 +98,18 @@ func Build(state *signal.State, opks OPKSource, addresses []string, nickname str
 		}
 	}
 
-	opkID, opkPub, err := opks.AvailableOPK()
+	opkID, opkPub, err := opks.DispenseOPK()
 	if err != nil {
 		if errors.Is(err, signal.ErrOPKPoolEmpty) {
 			return nil, nil, ErrNoPreKeysAvailable
 		}
 		return nil, nil, fmt.Errorf("pair: opk pick: %w", err)
 	}
+
+	slog.Debug("invite bundle names a one-time prekey",
+		slog.String("peer", logid.Short(peerID)),
+		slog.Uint64("opk_id", uint64(opkID)),
+		slog.Uint64("spk_id", uint64(state.SignedPreKey.ID())))
 
 	spkSig := state.SignedPreKey.Signature()
 	inv := &Invite{
@@ -205,6 +212,18 @@ func (i *Invite) Validate() error {
 		return fmt.Errorf("pair: one_time_pre_key.public length %d, want 33", len(opkPub))
 	}
 	return nil
+}
+
+func (i *Invite) IdentityFingerprint() (string, error) {
+	raw, err := hex.DecodeString(i.Frontend.Signal.IdentityKey)
+	if err != nil {
+		return "", fmt.Errorf("pair: identity_key not hex: %w", err)
+	}
+	pub, err := ecc.DecodePoint(raw, 0)
+	if err != nil {
+		return "", fmt.Errorf("pair: decode identity key: %w", err)
+	}
+	return identity.NewKey(pub).Fingerprint(), nil
 }
 
 func (i *Invite) ToBundle() (*prekey.Bundle, error) {

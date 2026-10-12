@@ -15,14 +15,14 @@ func TestSaveAllDirtySettings_CallsRegisteredHandlers(t *testing.T) {
 	calls := []string{}
 	a.settings = &settingsPage{
 		dirty: map[string]bool{
-			settingsDomainProfile: true,
-			settingsDomainLock:    true,
-			settingsDomainTor:     false,
+			settingsDomainProfile:  true,
+			settingsDomainSecurity: true,
+			settingsDomainTor:      false,
 		},
 		saveHandlers: map[string]func() error{
-			settingsDomainProfile: func() error { calls = append(calls, "profile"); return nil },
-			settingsDomainLock:    func() error { calls = append(calls, "lock"); return nil },
-			settingsDomainTor:     func() error { calls = append(calls, "tor"); return nil },
+			settingsDomainProfile:  func() error { calls = append(calls, "profile"); return nil },
+			settingsDomainSecurity: func() error { calls = append(calls, "lock"); return nil },
+			settingsDomainTor:      func() error { calls = append(calls, "tor"); return nil },
 		},
 	}
 	proceeded := false
@@ -70,15 +70,15 @@ func TestRenderAdvisory_SeverityBranches(t *testing.T) {
 
 func TestSettingsPage_MarkDirtyClean(t *testing.T) {
 	sp := &settingsPage{dirty: map[string]bool{}}
-	sp.markDirty(settingsDomainLock)
-	if !sp.dirty[settingsDomainLock] {
+	sp.markDirty(settingsDomainSecurity)
+	if !sp.dirty[settingsDomainSecurity] {
 		t.Error("markDirty failed to flip the bit")
 	}
 	if sp.dirty[settingsDomainProfile] {
 		t.Error("markDirty leaked to other domains")
 	}
-	sp.markClean(settingsDomainLock)
-	if sp.dirty[settingsDomainLock] {
+	sp.markClean(settingsDomainSecurity)
+	if sp.dirty[settingsDomainSecurity] {
 		t.Error("markClean failed to clear the bit")
 	}
 }
@@ -222,25 +222,24 @@ func TestBuildLockForm_SeedsFields(t *testing.T) {
 			IdleTimeoutSeconds: 600,
 			PinValiditySec:     120,
 			PanicAction:        "hard-lock",
-			ThreatProfile:      vault.PresetPrivacy,
+			ThreatProfile:      vault.PresetPower,
 		},
 		dirty: map[string]bool{},
 	}
-	prim := buildLockForm(&App{}, sp)
+	prim := buildSecurityForm(&App{}, sp)
 	flex, ok := prim.(*tview.Flex)
 	if !ok {
-		t.Fatalf("buildLockForm should return *tview.Flex, got %T", prim)
+		t.Fatalf("buildSecurityForm should return *tview.Flex, got %T", prim)
 	}
 
-	if flex.GetItemCount() != 5 {
-		t.Fatalf("Flex item count = %d, want 5 (status TV + formA + bundle TV + formB + formD)", flex.GetItemCount())
+	if flex.GetItemCount() != 6 {
+		t.Fatalf("Flex item count = %d, want 6 (status TV + formA + summary TV + note TV + formB + formD)", flex.GetItemCount())
 	}
 
-	if _, isTV := flex.GetItem(0).(*tview.TextView); !isTV {
-		t.Errorf("Flex item 0 should be the standalone status TextView, got %T", flex.GetItem(0))
-	}
-	if _, isTV := flex.GetItem(2).(*tview.TextView); !isTV {
-		t.Errorf("Flex item 2 should be the standalone bundle TextView, got %T", flex.GetItem(2))
+	for _, idx := range []int{0, 2, 3} {
+		if _, isTV := flex.GetItem(idx).(*tview.TextView); !isTV {
+			t.Errorf("Flex item %d should be a standalone TextView, got %T", idx, flex.GetItem(idx))
+		}
 	}
 
 	formA, ok := flex.GetItem(1).(*tview.Form)
@@ -251,13 +250,14 @@ func TestBuildLockForm_SeedsFields(t *testing.T) {
 	if len(itemsA) != 1 {
 		t.Fatalf("Form A items = %d, want 1 (preset dropdown only)", len(itemsA))
 	}
-	if !strings.HasPrefix(itemsA[0], "dropdown:Preset") || !strings.Contains(itemsA[0], "Privacy") {
-		t.Errorf("Form A[0] should be preset dropdown seeded to Privacy: %v", itemsA[0])
+	if !strings.HasPrefix(itemsA[0], "dropdown:"+threatPickerQuestion) ||
+		!strings.Contains(itemsA[0], "People with power") {
+		t.Errorf("Form A[0] should be the tier picker seeded to \"People with power\": %v", itemsA[0])
 	}
 
-	formB, ok := flex.GetItem(3).(*tview.Form)
+	formB, ok := flex.GetItem(4).(*tview.Form)
 	if !ok {
-		t.Fatalf("Flex item 3 is %T, want *tview.Form", flex.GetItem(3))
+		t.Fatalf("Flex item 4 is %T, want *tview.Form", flex.GetItem(4))
 	}
 	itemsB := inspectForm(formB)
 	if len(itemsB) != 4 {
@@ -276,9 +276,9 @@ func TestBuildLockForm_SeedsFields(t *testing.T) {
 		t.Errorf("panic action should seed to hard-lock: %v", itemsB[3])
 	}
 
-	formD, ok := flex.GetItem(4).(*tview.Form)
+	formD, ok := flex.GetItem(5).(*tview.Form)
 	if !ok {
-		t.Fatalf("Flex item 4 is %T, want *tview.Form", flex.GetItem(4))
+		t.Fatalf("Flex item 5 is %T, want *tview.Form", flex.GetItem(5))
 	}
 	if formD.GetButtonCount() != 2 {
 		t.Errorf("Form D should have 2 buttons (Save, Cancel), got %d", formD.GetButtonCount())
@@ -287,43 +287,38 @@ func TestBuildLockForm_SeedsFields(t *testing.T) {
 
 func TestThreatModelStatusLine(t *testing.T) {
 	dom := vault.ThreatPresetBundles[vault.PresetDomestic]
+	clean := func(preset string, b vault.ThreatPresetBundle) ipc.Settings {
+		return ipc.Settings{
+			ThreatProfile:             preset,
+			IdleAction:                b.IdleAction,
+			IdleTimeoutSeconds:        b.IdleTimeoutSeconds,
+			PinValiditySec:            b.PinValiditySec,
+			PanicAction:               b.PanicAction,
+			NotifyShellEnabled:        b.NotifyShellEnabled,
+			NotifyShowSender:          b.NotifyShowSender,
+			NotifyShowBody:            b.NotifyShowBody,
+			NotificationsOnLock:       b.NotificationsOnLock,
+			NotifyPersistUntilOpen:    b.NotifyPersistUntilOpen,
+			NotifyDeepLink:            b.NotifyDeepLink,
+			ShowFailedDestroyAttempts: b.ShowFailedDestroyAttempts,
+		}
+	}
+	driftedTimeout := clean(vault.PresetDomestic, dom)
+	driftedTimeout.IdleTimeoutSeconds++
+	driftedNotify := clean(vault.PresetDomestic, dom)
+	driftedNotify.NotifyShowSender = !dom.NotifyShowSender
+
 	cases := []struct {
 		name string
 		s    ipc.Settings
 		want string
 	}{
-		{
-			name: "unset is Custom",
-			s:    ipc.Settings{},
-			want: "Custom",
-		},
-		{
-			name: "domestic clean",
-			s: ipc.Settings{
-				ThreatProfile:      vault.PresetDomestic,
-				IdleAction:         dom.IdleAction,
-				IdleTimeoutSeconds: dom.IdleTimeoutSeconds,
-				PinValiditySec:     dom.PinValiditySec,
-				PanicAction:        dom.PanicAction,
-			},
-			want: "Domestic",
-		},
-		{
-			name: "domestic-modified when timeout drifts",
-			s: ipc.Settings{
-				ThreatProfile:      vault.PresetDomestic,
-				IdleAction:         dom.IdleAction,
-				IdleTimeoutSeconds: dom.IdleTimeoutSeconds + 1,
-				PinValiditySec:     dom.PinValiditySec,
-				PanicAction:        dom.PanicAction,
-			},
-			want: "Domestic-modified",
-		},
-		{
-			name: "activist surfaces unwired notice",
-			s:    ipc.Settings{ThreatProfile: vault.PresetActivist},
-			want: "not yet wired",
-		},
+		{"empty means the picker has not run", ipc.Settings{}, "not picked yet"},
+		{"nobody clean", clean(vault.PresetNobody, vault.ThreatPresetBundles[vault.PresetNobody]), "No one"},
+		{"domestic clean", clean(vault.PresetDomestic, dom), "People at home"},
+		{"power clean", clean(vault.PresetPower, vault.ThreatPresetBundles[vault.PresetPower]), "People with power"},
+		{"force clean", clean(vault.PresetForce, vault.ThreatPresetBundles[vault.PresetForce]), "People with force"},
+		{"a retired name is named", ipc.Settings{ThreatProfile: "privacy"}, "retired answer"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -333,9 +328,238 @@ func TestThreatModelStatusLine(t *testing.T) {
 			}
 		})
 	}
+
+	driftCases := []struct {
+		name string
+		s    ipc.Settings
+		want string
+	}{
+		{"an unanswered picker has nothing to compare", ipc.Settings{}, ""},
+		{"a clean tier reads clean", clean(vault.PresetDomestic, dom), ""},
+		{"a changed timeout is seen", driftedTimeout, "Some settings changed"},
+		{"a changed notification row is seen", driftedNotify, "Some settings changed"},
+		{"a retired name says why nothing saves", ipc.Settings{ThreatProfile: "privacy"}, "No settings can be saved"},
+	}
+	for _, c := range driftCases {
+		t.Run("drift/"+c.name, func(t *testing.T) {
+			got := threatModelDriftNote(c.s)
+			if c.want == "" {
+				if got != "" {
+					t.Errorf("threatModelDriftNote = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, c.want) {
+				t.Errorf("threatModelDriftNote = %q, want substring %q", got, c.want)
+			}
+		})
+	}
 }
 
-func TestBuildNotificationsForm_SeedsAllSix(t *testing.T) {
+type countingVault struct {
+	stubVaultInPackage
+	mutations int
+}
+
+func (v *countingVault) Mutate(_ string, transform func(*vault.Payload) error) error {
+	v.mutations++
+	return transform(&vault.Payload{})
+}
+
+type stubVaultInPackage struct{}
+
+func (stubVaultInPackage) ChangePassphrase(_, _ []byte) error              { return nil }
+func (stubVaultInPackage) ChangePIN(_, _ string) error                     { return nil }
+func (stubVaultInPackage) SetIdleAction(string) error                      { return nil }
+func (stubVaultInPackage) SetIdleTimeoutSeconds(int) error                 { return nil }
+func (stubVaultInPackage) SetPinValiditySec(int) error                     { return nil }
+func (stubVaultInPackage) SetTorPassword(string) error                     { return nil }
+func (stubVaultInPackage) IsInsecureDefaultPassphrase() bool               { return false }
+func (stubVaultInPackage) IsInsecureDefaultPIN() bool                      { return false }
+func (stubVaultInPackage) SetNotifyShellEnabled(bool) error                { return nil }
+func (stubVaultInPackage) SetNotifyShowSender(bool) error                  { return nil }
+func (stubVaultInPackage) SetNotifyShowBody(bool) error                    { return nil }
+func (stubVaultInPackage) SetNotificationsOnLock(bool) error               { return nil }
+func (stubVaultInPackage) SetNotifyPersistUntilOpen(bool) error            { return nil }
+func (stubVaultInPackage) SetNotifyDeepLink(bool) error                    { return nil }
+func (stubVaultInPackage) SetThreatProfile(string) error                   { return nil }
+func (stubVaultInPackage) SetPanicAction(string) error                     { return nil }
+func (stubVaultInPackage) ApplyThreatPreset(string) error                  { return nil }
+func (stubVaultInPackage) SetDefaultSaveDir(string) error                  { return nil }
+func (stubVaultInPackage) SetDefaultAttachStartDir(string) error           { return nil }
+func (stubVaultInPackage) Settings() ipc.Settings                          { return ipc.Settings{} }
+func (stubVaultInPackage) Mutate(string, func(*vault.Payload) error) error { return nil }
+func (stubVaultInPackage) CheckPIN(string) bool                            { return false }
+
+func TestBuildLockForm_SaveRefusesWhileTheStoredAnswerIsRetired(t *testing.T) {
+	build := func(profile string) (*App, *countingVault) {
+		vc := &countingVault{}
+		a := &App{VaultCtl: vc}
+		sp := &settingsPage{
+			initial: ipc.Settings{
+				ThreatProfile:      profile,
+				IdleAction:         "soft-lock",
+				IdleTimeoutSeconds: 600,
+				PinValiditySec:     120,
+				PanicAction:        "hard-lock",
+			},
+			dirty:        map[string]bool{},
+			saveHandlers: map[string]func() error{},
+		}
+		buildSecurityForm(a, sp)
+		a.settings = sp
+		return a, vc
+	}
+
+	a, vc := build("privacy")
+	err := a.settings.saveHandlers[settingsDomainSecurity]()
+	if err == nil {
+		t.Fatal("the save went through on a retired answer — it deletes the stored answer and says nothing")
+	}
+	for _, want := range []string{"retired", "privacy", threatAnswerApplyButton} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q, it has to name %q so a person knows what to do", err, want)
+		}
+	}
+	if vc.mutations != 0 {
+		t.Errorf("the refused save still wrote to the vault %d times", vc.mutations)
+	}
+
+	for _, live := range []string{"", vault.PresetNobody, vault.PresetDomestic, vault.PresetPower, vault.PresetForce} {
+		if err := retiredAnswerRefusal(live); err != nil {
+			t.Errorf("answer %q is live and was refused: %v", live, err)
+		}
+	}
+}
+
+func TestThreatModelDriftNote_CleanTierIsNotReportedAsChanged(t *testing.T) {
+	for _, preset := range []string{
+		vault.PresetNobody, vault.PresetDomestic, vault.PresetPower, vault.PresetForce,
+	} {
+		b := vault.ThreatPresetBundles[preset]
+		s := ipc.Settings{
+			ThreatProfile:             preset,
+			IdleAction:                b.IdleAction,
+			IdleTimeoutSeconds:        b.IdleTimeoutSeconds,
+			PinValiditySec:            b.PinValiditySec,
+			PanicAction:               b.PanicAction,
+			NotifyShellEnabled:        b.NotifyShellEnabled,
+			NotifyShowSender:          b.NotifyShowSender,
+			NotifyShowBody:            b.NotifyShowBody,
+			NotificationsOnLock:       b.NotificationsOnLock,
+			NotifyPersistUntilOpen:    b.NotifyPersistUntilOpen,
+			NotifyDeepLink:            b.NotifyDeepLink,
+			ShowFailedDestroyAttempts: b.ShowFailedDestroyAttempts,
+		}
+		if got := threatModelDriftNote(s); got != "" {
+			t.Errorf("%s reads as changed straight after an apply: %q", preset, got)
+		}
+	}
+}
+
+func TestThreatTierTable_MatchesTheBundles(t *testing.T) {
+	tiers := 0
+	for _, row := range threatTierOrder {
+		if row.token == "" {
+			if row.answer != "(not picked yet)" {
+				t.Errorf("the first row is %q, want \"(not picked yet)\"", row.answer)
+			}
+			continue
+		}
+		tiers++
+		if _, ok := vault.ThreatPresetBundles[row.token]; !ok {
+			t.Errorf("tier %q is on the picker with no bundle", row.token)
+		}
+		if row.line == "" {
+			t.Errorf("tier %q has no line under its answer", row.token)
+		}
+		if got := threatTierIndex(row.token); threatTierOrder[got].token != row.token {
+			t.Errorf("threatTierIndex(%q) landed on %q", row.token, threatTierOrder[got].token)
+		}
+	}
+	if tiers != len(vault.ThreatPresetBundles) {
+		t.Errorf("picker holds %d tiers, the bundle map holds %d", tiers, len(vault.ThreatPresetBundles))
+	}
+	if threatTierIndex("") != 0 || threatTierIndex("privacy") != 0 {
+		t.Error("an empty or retired token must land on the not-picked-yet row")
+	}
+}
+
+func TestThreatAnswerSummary_SaysWhatEachAnswerSets(t *testing.T) {
+	cases := map[string][]string{
+		vault.PresetNobody:   {"No one", "soft-lock after 900s", "until restart", "safe-lock", "4w"},
+		vault.PresetDomestic: {"People at home", "soft-lock after 300s", "86400s", "safe-lock", "1w"},
+		vault.PresetPower:    {"People with power", "safe-lock after 60s", "300s", "hard-lock", "1d"},
+		vault.PresetForce:    {"People with force", "hard-lock after 30s", "until restart", "self-destruct", "1h"},
+	}
+	for token, wants := range cases {
+		got := threatAnswerSummary(token)
+		for _, want := range wants {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s summary is missing %q:\n%s", token, want, got)
+			}
+		}
+	}
+	if !strings.Contains(threatAnswerSummary(""), "Pick an answer") {
+		t.Error("the not-picked-yet row must say to pick an answer, not print a bundle")
+	}
+	if !strings.Contains(threatAnswerSummary("privacy"), "retired") {
+		t.Error("a retired token must be named as retired")
+	}
+}
+
+const summaryPaneWidth = 80 - 28 - 2
+
+func TestThreatAnswerSummary_FitsAnEightyColumnTerminal(t *testing.T) {
+	tokens := []string{"", "privacy", vault.PresetNobody, vault.PresetDomestic, vault.PresetPower, vault.PresetForce}
+	for _, token := range tokens {
+		for _, line := range strings.Split(threatAnswerSummary(token), "\n") {
+
+			plain := stripStyleTags(line)
+			if n := len([]rune(plain)); n > summaryPaneWidth {
+				t.Errorf("token %q line is %d columns, the pane is %d:\n%s", token, n, summaryPaneWidth, plain)
+			}
+		}
+	}
+}
+
+func TestLockPageNotes_FitAnEightyColumnTerminal(t *testing.T) {
+	notes := []string{
+		retentionNoteWaiting,
+		retentionNoteRefused,
+		retentionNoteUnknown,
+		"How long messages are kept: " + retentionSummaryWord(vault.ThreatPresetBundles[vault.PresetNobody].DefaultRetentionSec) + ".",
+		threatModelDriftNote(ipc.Settings{ThreatProfile: vault.PresetForce}),
+		threatModelDriftNote(ipc.Settings{ThreatProfile: "privacy"}),
+	}
+	for _, tier := range []string{"", vault.PresetNobody, vault.PresetDomestic, vault.PresetPower, vault.PresetForce, "privacy"} {
+		notes = append(notes, threatAnswerStatusPrefix+threatModelStatusLine(ipc.Settings{ThreatProfile: tier}))
+	}
+	for _, note := range notes {
+		plain := stripStyleTags(note)
+		if n := len([]rune(plain)); n > summaryPaneWidth {
+			t.Errorf("note is %d columns, the pane is %d: %s", n, summaryPaneWidth, plain)
+		}
+	}
+}
+
+func stripStyleTags(s string) string {
+	var out strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '[':
+			depth++
+		case r == ']' && depth > 0:
+			depth--
+		case depth == 0:
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+func TestBuildNotificationsForm_SeedsEveryToggle(t *testing.T) {
 	sp := &settingsPage{
 		initial: ipc.Settings{
 			NotifyShellEnabled:     true,
@@ -344,23 +568,25 @@ func TestBuildNotificationsForm_SeedsAllSix(t *testing.T) {
 			NotificationsOnLock:    true,
 			NotifyPersistUntilOpen: true,
 			NotifyDeepLink:         false,
+
+			ShowFailedDestroyAttempts: true,
 		},
 		dirty: map[string]bool{},
 	}
 	form := buildNotificationsForm(&App{}, sp)
 	items := inspectForm(form)
 
-	if len(items) != 7 {
-		t.Fatalf("Notifications form items = %d, want 7", len(items))
+	if len(items) != 8 {
+		t.Fatalf("Notifications form items = %d, want 8", len(items))
 	}
-	wantStates := []string{"true", "true", "false", "true", "true", "false"}
+	wantStates := []string{"true", "true", "false", "true", "true", "false", "true"}
 	for i, w := range wantStates {
 		if !strings.HasSuffix(items[i], ":"+w) {
 			t.Errorf("checkbox %d state = %v, want suffix %q", i, items[i], w)
 		}
 	}
-	if !strings.HasPrefix(items[6], "textview:Privacy posture") {
-		t.Errorf("last item should be the privacy banner: %v", items[6])
+	if !strings.HasPrefix(items[7], "textview:Privacy posture") {
+		t.Errorf("last item should be the privacy banner: %v", items[7])
 	}
 }
 
@@ -377,8 +603,8 @@ func TestBuildAdvancedForm_SeedsSecurityWarnings(t *testing.T) {
 	if !ok {
 		t.Fatalf("Advanced root = %T, want *tview.Flex", prim)
 	}
-	if flex.GetItemCount() != 1 {
-		t.Fatalf("Advanced flex items = %d, want 1", flex.GetItemCount())
+	if flex.GetItemCount() != 2 {
+		t.Fatalf("Advanced flex items = %d, want 2", flex.GetItemCount())
 	}
 	tv, ok := flex.GetItem(0).(*tview.TextView)
 	if !ok {
@@ -391,12 +617,16 @@ func TestBuildAdvancedForm_SeedsSecurityWarnings(t *testing.T) {
 
 func TestBuildTorForm_PasswordSetIndicator(t *testing.T) {
 	cases := []struct {
-		name string
-		set  bool
-		want string
+		name   string
+		system bool
+		set    bool
+		want   string
 	}{
-		{"set", true, "configured"},
-		{"unset", false, "not set"},
+		{"system tor, set", true, true, "configured"},
+		{"system tor, unset", true, false, "not set"},
+
+		{"own tor, set", false, true, "not used"},
+		{"own tor, unset", false, false, "not needed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -404,7 +634,7 @@ func TestBuildTorForm_PasswordSetIndicator(t *testing.T) {
 				initial: ipc.Settings{HasTorPassword: c.set},
 				dirty:   map[string]bool{},
 			}
-			form := buildTorForm(&App{}, sp)
+			form := buildTorForm(&App{SystemTor: c.system}, sp)
 
 			if form.GetFormItemCount() != 1 {
 				t.Fatalf("Tor form items = %d, want 1", form.GetFormItemCount())
@@ -415,8 +645,38 @@ func TestBuildTorForm_PasswordSetIndicator(t *testing.T) {
 			}
 			text := tv.GetText(false)
 			if !strings.Contains(text, c.want) {
-				t.Errorf("HasTorPassword=%v: textview = %q, want substring %q", c.set, text, c.want)
+				t.Errorf("SystemTor=%v HasTorPassword=%v: textview = %q, want substring %q", c.system, c.set, text, c.want)
+			}
+
+			if warned := strings.Contains(text, "⚠"); warned != (c.system && !c.set) {
+				t.Errorf("SystemTor=%v HasTorPassword=%v: warning shown = %v", c.system, c.set, warned)
 			}
 		})
+	}
+}
+
+func TestNewApp_ChatDefaultsMirrorStartsOnTheDaemonFallbacks(t *testing.T) {
+	a := New(nil)
+	if !a.defaultSendReceipts {
+		t.Error("the receipts mirror starts OFF; the daemon's shipped fallback is ON")
+	}
+	if a.defaultRetentionSec != 28*24*3600 {
+		t.Errorf("the retention mirror starts at %d; the daemon's shipped fallback is 4 weeks", a.defaultRetentionSec)
+	}
+	if a.chatDefaultsKnown {
+		t.Error("the mirror claims the daemon has spoken before any frame arrived")
+	}
+}
+
+func TestSendPresetRetention_RefusesBeforeTheDaemonHasSpoken(t *testing.T) {
+	a := New(nil)
+	a.chatDefaultsKnown = false
+	sp := &settingsPage{dirty: map[string]bool{}}
+	a.sendPresetRetention(sp, vault.PresetForce)
+	if sp.retentionPending {
+		t.Error("a frame went out before the daemon said what its chat defaults are")
+	}
+	if sp.retentionNote != retentionNoteUnknown {
+		t.Errorf("the page says %q, want %q", sp.retentionNote, retentionNoteUnknown)
 	}
 }

@@ -9,56 +9,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
-    <!--
-        Conversations' "FGS-type cascade" trick: if the user has granted
-        RECORD_AUDIO (eagerly at first unlock — see MainActivity) we run
-        the FGS as type=microphone for stronger backgrounding posture.
-        On Honor/Huawei/Xiaomi this is the difference between "killed
-        within seconds of screen-off" and "stays alive". The mic isn't
-        actually opened until a real call starts — Android's permission
-        model trusts mic-grant holders to maintain the FGS longer.
-
-        CAMERA is the same cascade applied to video calls: once the user
-        has granted CAMERA (lazily on first long-press → Video call) and
-        a live call carries a video modality, we OR camera into the type
-        bitmap. Without it the OS can blacklist the camera mid-call when
-        the activity backgrounds. The camera isn't opened until a video
-        call accepts — haoma-cam owns the capture (V-1.5).
-
-        SYSTEM_EXEMPTED is the fallback when the user is on the doze
-        allowlist (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS exemption).
-        SPECIAL_USE is the last-ditch fallback when neither applies;
-        Android 14+ rejects FGS-type-none, so we always pick something.
-    -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
-    <!--
-        Required on API 31+ before AudioManager will hand us user-friendly
-        Bluetooth device names from getAvailableCommunicationDevices() and
-        before setCommunicationDevice() will route to a paired BT headset /
-        hearing aid. We don't need it to *list* the devices — only to name
-        them and route to them — so the runtime prompt is lazy: fired only
-        when the user actually picks a Bluetooth entry from the in-call
-        audio-route picker. Pre-grant, BT slots show up as "Bluetooth
-        device" placeholders so the user can see routing is available.
-    -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!--
-        MODIFY_AUDIO_SETTINGS is a normal-level permission auto-granted at
-        install time; some OEMs (notably Huawei EMUI) silently no-op
-        AudioManager.setMode(MODE_IN_COMMUNICATION) and the legacy
-        startBluetoothSco() ladder without it. Conversations declares it
-        for the same reason. No runtime prompt.
-
-        BLUETOOTH is the pre-API-31 permission for the deprecated
-        startBluetoothSco / setBluetoothScoOn pair we rely on for sticky
-        SCO link control during in-call. maxSdkVersion gate keeps it off
-        the API 31+ runtime prompt list (BLUETOOTH_CONNECT covers it
-        there).
-    -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 
@@ -81,22 +37,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!--
-            Share target. A dedicated trampoline activity (NOT an alias or
-            a filter on MainActivity): presence in other apps' share sheets
-            is an OS-level component toggle (ships android:enabled="false",
-            flipped at runtime only when the user opts in AND the threat
-            profile is the no-threat baseline). Own honest label + haoma-
-            sprig icon (the launcher is the calculator disguise); no
-            LAUNCHER category, so it never adds a home-screen icon.
-
-            SECURITY: taskAffinity="" + excludeFromRecents + noHistory keep
-            the share out of the SHARING app's task and out of recents. The
-            trampoline immediately relaunches MainActivity into Haoma's own
-            task (see ShareReceiverActivity) so the lock/disguise gate and
-            swipe-kill lock apply — an alias can't set these task attributes.
-            Translucent theme so the momentary trampoline never flashes UI.
-        -->
         <activity
             android:name=".ShareReceiverActivity"
             android:enabled="false"
@@ -115,12 +55,6 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
-        <!--
-            QR scanner host. Subclasses zxing-android-embedded's
-            CaptureActivity solely so we can pin portrait orientation —
-            the library default twists the device into landscape mid-pair,
-            which reads as broken on a phone-shape UX.
-        -->
         <activity
             android:name=".messenger.invites.PortraitCaptureActivity"
             android:exported="false"
@@ -132,13 +66,6 @@
             android:name=".core.HaomaCoreService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging|microphone|camera|systemExempted|specialUse">
-            <!--
-                Android 14 mandates a SPECIAL_USE subtype when the FGS
-                declares specialUse in its type bitmap. The value is a
-                free-form string surfaced to Play Store reviewers; we
-                ship on F-Droid so it's informational only. "private-
-                messenger" matches Conversations' "xmpp-im" shape.
-            -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="private-messenger" />

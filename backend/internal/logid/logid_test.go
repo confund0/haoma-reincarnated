@@ -1,6 +1,10 @@
 package logid_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -25,16 +29,16 @@ func TestShort(t *testing.T) {
 }
 
 func TestRedactOnions(t *testing.T) {
-	in := `Post "http://s3zsmprypzrpuwwppb3isi4aeuexquidnnuiboj2qmmmot3ykffx7zyd.onion/message": socks connect tcp 127.0.0.1:43039->s3zsmprypzrpuwwppb3isi4aeuexquidnnuiboj2qmmmot3ykffx7zyd.onion:80: unknown error host unreachable`
+	in := `Post "http://dummyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion/message": socks connect tcp 127.0.0.1:43039->dummyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion:80: unknown error host unreachable`
 	got := logid.RedactOnions(in)
-	if strings.Contains(got, "s3zsmprypzrpuwwppb3isi4aeuexquidnnuiboj2qmmmot3ykffx7zyd") {
+	if strings.Contains(got, "dummyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad") {
 		t.Errorf("full onion still present after redaction: %q", got)
 	}
-	if !strings.Contains(got, "s3zsmpry….onion") {
+	if !strings.Contains(got, "dummyaaa….onion") {
 		t.Errorf("expected short-id .onion form, got: %q", got)
 	}
-	if strings.Count(got, "s3zsmpry….onion") != 2 {
-		t.Errorf("expected 2 redacted occurrences, got %d in %q", strings.Count(got, "s3zsmpry….onion"), got)
+	if strings.Count(got, "dummyaaa….onion") != 2 {
+		t.Errorf("expected 2 redacted occurrences, got %d in %q", strings.Count(got, "dummyaaa….onion"), got)
 	}
 }
 
@@ -67,9 +71,9 @@ func TestHash(t *testing.T) {
 }
 
 func TestRedactURLTokens(t *testing.T) {
-	in := "http://s3zsmprypzrpuwwppb3isi4aeuexquidnnuiboj2qmmmot3ykffx7zyd.onion/audio/zAB4Q4L62pyYMGXFqUIVTo5PLEFezNWXsRF0UjkeaiY"
+	in := "http://dummyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad.onion/audio/zAB4Q4L62pyYMGXFqUIVTo5PLEFezNWXsRF0UjkeaiY"
 	got := logid.RedactURLTokens(in)
-	if strings.Contains(got, "s3zsmprypzrpuwwppb3isi4aeuexquidnnuiboj2qmmmot3ykffx7zyd") {
+	if strings.Contains(got, "dummyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad") {
 		t.Errorf("onion not redacted: %q", got)
 	}
 	if strings.Contains(got, "zAB4Q4L62pyYMGXFqUIVTo5PLEFezNWXsRF0UjkeaiY") {
@@ -87,7 +91,33 @@ func TestHasOnion(t *testing.T) {
 	if logid.HasOnion("nothing here") {
 		t.Error("HasOnion returned true on a plain string")
 	}
-	if !logid.HasOnion("http://uhrvvclzwwdfrxm6f336w6qiidgxniw6vbzij7j6rdh2scpxlzgppwqd.onion/") {
+	if !logid.HasOnion("http://dummybbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd.onion/") {
 		t.Error("HasOnion returned false on a URL containing a v3 onion")
+	}
+}
+
+func TestRedactURLError(t *testing.T) {
+	const (
+		id    = "196d2fa679205436444893960a08e45c"
+		onion = "dummyaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad"
+	)
+	for _, u := range []string{"https://127.0.0.1:42123/inbox/" + id, "http://" + onion + ".onion/files/" + id} {
+		got := fmt.Errorf("wrapped: %w", logid.RedactURLError(&url.Error{Op: "Delete", URL: u, Err: context.Canceled}))
+		if strings.Contains(got.Error(), id) || strings.Contains(got.Error(), onion) {
+			t.Errorf("a full value reached the error: %v", got)
+		}
+		if !strings.Contains(got.Error(), "/196d2fa6…") {
+			t.Errorf("the error does not name the short id: %v", got)
+		}
+		if !errors.Is(got, context.Canceled) {
+			t.Errorf("errors.Is(err, context.Canceled) = false for %v", got)
+		}
+	}
+	plain := errors.New("plain " + id)
+	if logid.RedactURLError(plain) != plain {
+		t.Error("an error without a URL was changed")
+	}
+	if logid.RedactURLError(nil) != nil {
+		t.Error("nil came back as an error")
 	}
 }

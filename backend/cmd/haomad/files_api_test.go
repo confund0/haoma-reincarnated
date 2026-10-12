@@ -432,3 +432,214 @@ func TestPeerOnion_FetchFile_BlobMissing(t *testing.T) {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+func putStagingFetch(t *testing.T, d *daemon, token string, state files.FetchState) {
+	t.Helper()
+	row := files.Fetch{
+		Token:          token,
+		MsgID:          filesTestMsgID,
+		PeerID:         filesPeerA,
+		UrlPath:        "/files/" + token,
+		ExpectedSize:   5,
+		ExpectedSha256: strings.Repeat("a", 64),
+		State:          files.FetchStatePending,
+	}
+	if err := d.files.PutFetch(row); err != nil {
+		t.Fatal(err)
+	}
+	row.State = state
+	if err := d.files.UpdateFetch(row); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeStagingFile(t *testing.T, path string, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func deleteStaging(t *testing.T, srv *httptest.Server, msgID, token string) int {
+	t.Helper()
+	code, _ := deleteStagingCT(t, srv, msgID, token)
+	return code
+}
+
+func deleteStagingCT(t *testing.T, srv *httptest.Server, msgID, token string) (int, string) {
+	t.Helper()
+	raw, _ := json.Marshal(map[string]string{"token": token})
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/files/staging/"+msgID, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get("Content-Type")
+}
+
+func TestAPI_StagingGet_404WhileDownloading(t *testing.T) {
+	d := newFilesTestDaemon(t)
+	srv := httptest.NewServer(d.apiHandler())
+	defer srv.Close()
+
+	putStagingFetch(t, d, "tok-get", files.FetchStateDownloading)
+	writeStagingFile(t, d.files.StagingPartPath(filesTestMsgID), "par")
+
+	for _, id := range []string{filesTestMsgID, filesTestMsgID + files.StagingPartSuffix} {
+		resp, err := http.Get(srv.URL + "/files/staging/" + id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("GET %s while downloading: status = %d, want 404", id, resp.StatusCode)
+		}
+	}
+
+	if err := os.Rename(d.files.StagingPartPath(filesTestMsgID), d.files.StagingPath(filesTestMsgID)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(srv.URL + "/files/staging/" + filesTestMsgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(got) != "par" {
+		t.Fatalf("GET after the rename: status %d body %q, want 200 %q", resp.StatusCode, got, "par")
+	}
+}
+
+func TestAPI_StagingDelete_409WhileInFlight(t *testing.T) {
+	for _, state := range []files.FetchState{files.FetchStatePending, files.FetchStateDownloading} {
+		t.Run(string(state), func(t *testing.T) {
+			d := newFilesTestDaemon(t)
+			srv := httptest.NewServer(d.apiHandler())
+			defer srv.Close()
+
+			putStagingFetch(t, d, "tok-del", state)
+			writeStagingFile(t, d.files.StagingPartPath(filesTestMsgID), "par")
+
+			for _, tok := range []string{"tok-del", ""} {
+				got, ct := deleteStagingCT(t, srv, filesTestMsgID, tok)
+				if got != http.StatusConflict {
+					t.Fatalf("DELETE (token %q) status = %d, want 409", tok, got)
+				}
+				if ct != "application/json" {
+					t.Fatalf("DELETE (token %q) Content-Type = %q, want the JSON error every haomad error uses", tok, ct)
+				}
+			}
+			if _, err := os.Stat(d.files.StagingPartPath(filesTestMsgID)); err != nil {
+				t.Fatalf(".part file gone after a refused DELETE: %v", err)
+			}
+			if row, err := d.files.GetFetch("tok-del"); err != nil || row.State != state {
+				t.Fatalf("fetch row after a refused DELETE = %+v, %v; want state %s", row, err, state)
+			}
+		})
+	}
+}
+
+func TestAPI_StagingDelete_RemovesWhenNotInFlight(t *testing.T) {
+	for _, state := range []files.FetchState{files.FetchStateReady, files.FetchStateFailedTransient} {
+		t.Run(string(state), func(t *testing.T) {
+			d := newFilesTestDaemon(t)
+			srv := httptest.NewServer(d.apiHandler())
+			defer srv.Close()
+
+			putStagingFetch(t, d, "tok-del", state)
+			writeStagingFile(t, d.files.StagingPath(filesTestMsgID), "whole")
+			writeStagingFile(t, d.files.StagingPartPath(filesTestMsgID), "par")
+
+			if got := deleteStaging(t, srv, filesTestMsgID, "tok-del"); got != http.StatusNoContent {
+				t.Fatalf("DELETE status = %d, want 204", got)
+			}
+			for _, p := range []string{d.files.StagingPath(filesTestMsgID), d.files.StagingPartPath(filesTestMsgID)} {
+				if _, err := os.Stat(p); !os.IsNotExist(err) {
+					t.Fatalf("%s left after DELETE: stat err = %v", filepath.Base(p), err)
+				}
+			}
+			if _, err := d.files.GetFetch("tok-del"); err == nil {
+				t.Fatalf("fetch row left after DELETE")
+			}
+		})
+	}
+}
+
+func TestAPI_StagingDelete_RefusesPartName(t *testing.T) {
+	d := newFilesTestDaemon(t)
+	srv := httptest.NewServer(d.apiHandler())
+	defer srv.Close()
+	writeStagingFile(t, d.files.StagingPartPath(filesTestMsgID), "par")
+
+	if got := deleteStaging(t, srv, filesTestMsgID+files.StagingPartSuffix, ""); got != http.StatusBadRequest {
+		t.Fatalf("DELETE of a .part name status = %d, want 400", got)
+	}
+	if _, err := os.Stat(d.files.StagingPartPath(filesTestMsgID)); err != nil {
+		t.Fatalf(".part file gone: %v", err)
+	}
+}
+
+func TestAPI_FetchFile_ReadyRowWithBlobIsKept(t *testing.T) {
+	cases := map[string]struct {
+		state     files.FetchState
+		blob      bool
+		wantState files.FetchState
+	}{
+		"ready, blob staged":          {state: files.FetchStateReady, blob: true, wantState: files.FetchStateReady},
+		"ready, blob gone":            {state: files.FetchStateReady, wantState: files.FetchStatePending},
+		"failed permanent, blob gone": {state: files.FetchStateFailedPermanent, wantState: files.FetchStatePending},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := newFilesTestDaemon(t)
+			srv := httptest.NewServer(d.apiHandler())
+			defer srv.Close()
+
+			req := fetchFileRequest{
+				MsgID:          filesTestMsgID,
+				PeerID:         filesPeerA,
+				Token:          "tok-again",
+				UrlPath:        "/files/tok-again",
+				ExpectedSize:   5,
+				ExpectedSha256: strings.Repeat("a", 64),
+			}
+			resp := postJSON(t, srv, "/files/fetch", req)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("first POST status = %d, want 202", resp.StatusCode)
+			}
+			row, err := d.files.GetFetch("tok-again")
+			if err != nil {
+				t.Fatal(err)
+			}
+			row.State = c.state
+			row.BytesReceived = 5
+			if err := d.files.UpdateFetch(row); err != nil {
+				t.Fatal(err)
+			}
+			if c.blob {
+				writeStagingFile(t, d.files.StagingPath(filesTestMsgID), "whole")
+			}
+
+			resp = postJSON(t, srv, "/files/fetch", req)
+			var out fetchFileResponse
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusAccepted || out.State != c.wantState {
+				t.Fatalf("second POST = %d state %q, want 202 state %q", resp.StatusCode, out.State, c.wantState)
+			}
+			got, err := d.files.GetFetch("tok-again")
+			if err != nil || got.State != c.wantState {
+				t.Fatalf("row after the second POST = %+v, %v; want state %q", got, err, c.wantState)
+			}
+		})
+	}
+}

@@ -51,7 +51,7 @@ func TestPayloadValidateRejectsBadEnums(t *testing.T) {
 func TestPayloadValidateAcceptsKnownEnums(t *testing.T) {
 	idleVals := []string{"", "soft-lock", "safe-lock", "hard-lock"}
 	panicVals := []string{"", "safe-lock", "hard-lock", "self-destruct"}
-	profileVals := []string{"", vault.PresetDomestic, vault.PresetPrivacy, vault.PresetActivist}
+	profileVals := []string{"", vault.PresetNobody, vault.PresetDomestic, vault.PresetPower, vault.PresetForce}
 	for _, ia := range idleVals {
 		for _, pa := range panicVals {
 			for _, pr := range profileVals {

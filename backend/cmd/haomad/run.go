@@ -18,13 +18,14 @@ import (
 	"golang.org/x/time/rate"
 
 	"haoma/internal/auth"
-	"haoma/internal/peers"
 	"haoma/internal/eventbus"
 	"haoma/internal/extprobe"
 	"haoma/internal/files"
 	"haoma/internal/ids"
+	"haoma/internal/logid"
 	"haoma/internal/outbox"
 	"haoma/internal/pair"
+	"haoma/internal/peers"
 	"haoma/internal/proxy"
 	"haoma/internal/secrets"
 	"haoma/internal/store"
@@ -35,7 +36,10 @@ import (
 )
 
 type config struct {
-	storeDir      string
+	storeDir string
+
+	dataRoot string
+
 	secrets       secrets.Secrets
 	apiAddr       string
 	tokenFile     string
@@ -59,8 +63,17 @@ type daemon struct {
 	ids         *ids.IDS
 	torPoller   *health.Poller
 
+	stopRun context.CancelFunc
+	runDone <-chan struct{}
+
+	eraseOnce sync.Once
+
+	railAnswers railAnswerGate
+
 	ctrlMu   sync.Mutex
 	ctrlConn *control.Conn
+
+	published publishedOnions
 
 	verifiedSlotsMu sync.RWMutex
 	verifiedSlots   []torSlot
@@ -74,6 +87,8 @@ type daemon struct {
 	onionDriver     *pair.OnionDriver
 	onionInvites    *onionInviteRegistry
 	bgCtx           context.Context
+
+	rendezvous *rendezvousStore
 
 	pairLimiter     *rate.Limiter
 	pairLimiterOnce sync.Once
@@ -96,6 +111,28 @@ type daemon struct {
 
 	hsfetchMu     sync.Mutex
 	hsfetchLastAt map[string]time.Time
+
+	kickMu     sync.Mutex
+	kickLastAt map[string]time.Time
+
+	netChange networkChangeGate
+	liveness  networkLiveness
+
+	socks atomic.Pointer[string]
+
+	torNetworkOff bool
+
+	socksPinnedFrom string
+
+	resetRetryMu     sync.Mutex
+	resetRetryCancel context.CancelFunc
+
+	unreachableMu   sync.Mutex
+	unreachableSent map[string]bool
+
+	routes routeBook
+
+	stallFault *stallFault
 
 	extProbe  *extprobe.Prober
 	selfProbe *peerSelfProbe
@@ -156,13 +193,31 @@ func (d *daemon) publishPeerOnion(p peers.Peer) error {
 	if conn == nil {
 		return errors.New("tor control conn not yet up")
 	}
-	o, err := conn.AddOnion(p.MyOnionPrivateKey, ports)
+	published, err := d.published.publishOnce(conn, p.MyOnionAddr, func() (string, error) {
+		o, aerr := conn.AddOnion(p.MyOnionPrivateKey, ports)
+		if aerr != nil {
+			return "", fmt.Errorf("ADD_ONION peer %s at %s: %w", logid.Short(p.ID), logid.Short(p.MyOnionAddr), aerr)
+		}
+		if o.ServiceID != p.MyOnionAddr {
+
+			return o.ServiceID, fmt.Errorf("ADD_ONION peer %s: tor returned %s, registry has %s", logid.Short(p.ID), logid.Short(o.ServiceID), logid.Short(p.MyOnionAddr))
+		}
+		return o.ServiceID, nil
+	})
 	if err != nil {
-		return fmt.Errorf("ADD_ONION peer %s: %w", p.ID, err)
+		return err
 	}
-	if o.ServiceID != p.MyOnionAddr {
-		return fmt.Errorf("ADD_ONION peer %s: tor returned %s, registry has %s", p.ID, o.ServiceID, p.MyOnionAddr)
+	if !published {
+		slog.Debug("peer onion already published on this tor control connection, publish skipped",
+			slog.String("peer_id", p.ID),
+			slog.String("service_id", p.MyOnionAddr),
+		)
+		return nil
 	}
+	slog.Debug("peer onion published from its stored key",
+		slog.String("peer_id", p.ID),
+		slog.String("service_id", p.MyOnionAddr),
+	)
 	return nil
 }
 
@@ -176,12 +231,20 @@ func (d *daemon) unpublishPeerOnion(addr string) {
 	if conn == nil {
 		return
 	}
-	if err := conn.DelOnion(addr); err != nil {
+	err := conn.DelOnion(addr)
+	d.published.forget(conn, addr, err)
+	if err != nil {
 		slog.Warn("DelOnion peer-pair onion failed",
 			slog.String("service_id", addr),
+
+			slog.Bool("still_published", !torDroppedOnion(err)),
 			slog.Any("err", err),
 		)
+		return
 	}
+	slog.Debug("peer-pair onion unpublished",
+		slog.String("service_id", addr),
+	)
 }
 
 func (d *daemon) unpublishPeerOnionsFromSnapshot(p *peers.Peer) {
@@ -194,7 +257,7 @@ func (d *daemon) unpublishPeerOnionsFromSnapshot(p *peers.Peer) {
 	}
 }
 
-func (d *daemon) republishAllPeerOnions(conn *control.Conn) error {
+func (d *daemon) republishAllPeerOnions(conn *control.Conn, recovered bool) error {
 	peerList, err := d.registry.List()
 	if err != nil {
 		return fmt.Errorf("registry list: %w", err)
@@ -204,13 +267,35 @@ func (d *daemon) republishAllPeerOnions(conn *control.Conn) error {
 		return errors.New("xport listener not yet bound")
 	}
 	var lastErr error
-	count := 0
+
+	var republished []string
+	count, skipped, taken := 0, 0, 0
 	for _, p := range peerList {
 		if p.MyOnionPrivateKey == "" || p.RetiredAt != 0 {
 			continue
 		}
-		o, err := conn.AddOnion(p.MyOnionPrivateKey, ports)
+		published, err := d.published.publishOnce(conn, p.MyOnionAddr, func() (string, error) {
+			o, aerr := conn.AddOnion(p.MyOnionPrivateKey, ports)
+			if aerr != nil {
+				return "", aerr
+			}
+			if o.ServiceID != p.MyOnionAddr {
+
+				return o.ServiceID, fmt.Errorf("service_id mismatch for peer %s: tor returned %s", logid.Short(p.ID), logid.Short(o.ServiceID))
+			}
+			return o.ServiceID, nil
+		})
 		if err != nil {
+			if errors.Is(err, control.ErrOnionAddressCollision) {
+
+				taken++
+				slog.Error("peer onion address is served by something else; this peer is unreachable until it is freed",
+					slog.String("peer_id", p.ID),
+					slog.String("service_id", p.MyOnionAddr),
+					slog.Any("err", err),
+				)
+				continue
+			}
 			slog.Error("AddOnion failed during republish",
 				slog.String("peer_id", p.ID),
 				slog.String("service_id", p.MyOnionAddr),
@@ -219,36 +304,45 @@ func (d *daemon) republishAllPeerOnions(conn *control.Conn) error {
 			lastErr = err
 			continue
 		}
-		if o.ServiceID != p.MyOnionAddr {
-			slog.Error("AddOnion returned mismatched service_id",
+		if !published {
+			slog.Debug("peer onion already published on this tor control connection, republish skipped",
 				slog.String("peer_id", p.ID),
-				slog.String("expected", p.MyOnionAddr),
-				slog.String("got", o.ServiceID),
+				slog.String("service_id", p.MyOnionAddr),
 			)
-			lastErr = fmt.Errorf("service_id mismatch for peer %s", p.ID)
-			continue
+			skipped++
+		} else {
+			count++
+			republished = append(republished, p.ID)
+			slog.Info("peer onion published",
+				slog.String("peer_id", p.ID),
+				slog.String("service_id", p.MyOnionAddr),
+			)
 		}
-		slog.Info("peer onion published",
-			slog.String("peer_id", p.ID),
-			slog.String("service_id", p.MyOnionAddr),
-		)
-		count++
 
 		if p.PrevMyOnion != nil && p.PrevMyOnion.ExpiresAt > time.Now().Unix() {
-			po, perr := conn.AddOnion(p.PrevMyOnion.PrivateKey, ports)
-			if perr != nil {
+			prevPublished, perr := d.published.publishOnce(conn, p.PrevMyOnion.Address, func() (string, error) {
+				po, aerr := conn.AddOnion(p.PrevMyOnion.PrivateKey, ports)
+				if aerr != nil {
+					return "", aerr
+				}
+				if po.ServiceID != p.PrevMyOnion.Address {
+					return po.ServiceID, fmt.Errorf("prev-onion service_id mismatch for peer %s: tor returned %s", logid.Short(p.ID), logid.Short(po.ServiceID))
+				}
+				return po.ServiceID, nil
+			})
+			switch {
+			case perr != nil:
 				slog.Warn("AddOnion (prev) failed during republish",
 					slog.String("peer_id", p.ID),
 					slog.String("service_id", p.PrevMyOnion.Address),
 					slog.Any("err", perr),
 				)
-			} else if po.ServiceID != p.PrevMyOnion.Address {
-				slog.Warn("AddOnion (prev) returned mismatched service_id",
+			case !prevPublished:
+				slog.Debug("peer prev-onion already published on this tor control connection, republish skipped",
 					slog.String("peer_id", p.ID),
-					slog.String("expected", p.PrevMyOnion.Address),
-					slog.String("got", po.ServiceID),
+					slog.String("service_id", p.PrevMyOnion.Address),
 				)
-			} else {
+			default:
 				slog.Info("peer prev-onion republished (grace)",
 					slog.String("peer_id", p.ID),
 					slog.String("service_id", p.PrevMyOnion.Address),
@@ -259,16 +353,45 @@ func (d *daemon) republishAllPeerOnions(conn *control.Conn) error {
 	}
 	slog.Debug("republishAllPeerOnions complete",
 		slog.Int("published", count),
+		slog.Int("already_published", skipped),
+		slog.Int("address_taken", taken),
 		slog.Int("total_peers", len(peerList)),
 	)
+
+	if recovered {
+		d.kickPeers(republished, kickSignalRepublish)
+	} else if len(republished) > 0 {
+		slog.Debug("peer onions published on a first connection; the queued backoff stands",
+			slog.Int("peer_count", len(republished)),
+		)
+	}
 	return lastErr
+}
+
+func (d *daemon) adoptCtrlConn(conn *control.Conn) error {
+	d.ctrlMu.Lock()
+	d.ctrlConn = conn
+	d.ctrlMu.Unlock()
+	if err := d.republishAllPeerOnions(conn, false); err != nil {
+		d.ctrlMu.Lock()
+		if d.ctrlConn == conn {
+			d.ctrlConn = nil
+		}
+		d.ctrlMu.Unlock()
+		conn.Close()
+		slog.Warn("tor control connection dropped: peer onions could not be published onto it",
+			slog.Any("err", err),
+		)
+		return err
+	}
+	return nil
 }
 
 func wipeSecrets(label string, s *secrets.Secrets) {
 	slog.Info("secrets: wiping in-memory blob",
 		slog.String("which", label),
-		slog.Int("haomad_store_passphrase_len", len(s.HaomadStorePassphrase)),
-		slog.Int("frontend_store_passphrase_len", len(s.FrontendStorePassphrase)),
+		slog.Bool("haomad_store_passphrase_empty", s.HaomadStorePassphrase == ""),
+		slog.Bool("frontend_store_passphrase_empty", s.FrontendStorePassphrase == ""),
 		slog.Int("haomad_token_len", len(s.HaomadToken)),
 		slog.Int("tor_password_len", len(s.TorPassword)),
 		slog.Int("haomad_url_len", len(s.HaomadURL)),
@@ -283,6 +406,11 @@ func wipeSecrets(label string, s *secrets.Secrets) {
 }
 
 func run(ctx context.Context, cfg config) error {
+
+	ctx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
+	runDone := make(chan struct{})
+	defer close(runDone)
 
 	s, err := store.Unlock(cfg.storeDir, cfg.secrets.HaomadStorePassphrase)
 	if err != nil {
@@ -304,6 +432,16 @@ func run(ctx context.Context, cfg config) error {
 	if err != nil {
 		return fmt.Errorf("files manager: %w", err)
 	}
+
+	if scan, err := filesMgr.ReconcileStaging(); err != nil {
+		slog.Warn("staging dir: startup scan failed", slog.Any("err", err))
+	} else if scan.MovedToPart+scan.RestoredFinal+scan.Removed > 0 {
+		slog.Info("staging dir: startup scan moved or removed files",
+			slog.Int("moved_to_part", scan.MovedToPart),
+			slog.Int("restored_final", scan.RestoredFinal),
+			slog.Int("removed", scan.Removed),
+		)
+	}
 	d := &daemon{
 		cfg:          cfg,
 		store:        s,
@@ -315,13 +453,19 @@ func run(ctx context.Context, cfg config) error {
 		files:        filesMgr,
 		proxy:        proxy.NewManager(slog.Default()),
 		onionInvites: newOnionInviteRegistry(),
+		rendezvous:   newRendezvousStore(s),
 		bgCtx:        ctx,
+		stopRun:      stopRun,
+		runDone:      runDone,
 		torPassword:  cfg.secrets.TorPassword,
 		torKick:      make(chan struct{}, 1),
 		startedAt:    time.Now().UTC(),
+		stallFault:   readStallFault(os.Getenv),
 	}
 
 	go bridgeIDSToBus(ctx, idsEngine, bus)
+
+	go d.sweepUnlinkDeadline(ctx)
 	if n, err := d.dhtPairCache.SweepExpired(time.Now()); err != nil {
 		slog.Warn("dht pair cache: startup sweep failed", slog.Any("err", err))
 	} else if n > 0 {
@@ -365,14 +509,14 @@ func run(ctx context.Context, cfg config) error {
 
 	xportSender := &perPeerSender{d: d}
 
-	pairHTTP, err := xport.NewTorHTTPClient(cfg.torSocks, "haomad-pair")
+	pairHTTP, err := xport.NewTorHTTPClientFunc(d.socksAddr, "haomad-pair")
 	if err != nil {
 		return fmt.Errorf("tor SOCKS client (pair): %w", err)
 	}
 	pairHTTP.Timeout = 30 * time.Second
 	d.torHTTP = pairHTTP
 
-	extHTTP, err := xport.NewTorHTTPClient(cfg.torSocks, "haomad-extprobe")
+	extHTTP, err := xport.NewTorHTTPClientFunc(d.socksAddr, "haomad-extprobe")
 	if err != nil {
 		return fmt.Errorf("tor SOCKS client (extprobe): %w", err)
 	}
@@ -395,12 +539,21 @@ func run(ctx context.Context, cfg config) error {
 	outboxStore := outbox.NewStore(s)
 	outboxBus := &outbox.Bus{}
 	d.worker = outbox.NewWorker(outboxStore, xportSender, ackVerifier, outboxBus)
+	applyGiveUpOverride(d.worker)
 	d.worker.Gate = d.torPoller.Ready
+
+	d.worker.SkipDest = d.unlinkRefusesDest
 	d.worker.OnDialFailure = func(dest string) {
 		if onion := onionFromDest(dest); onion != "" {
 			d.HsfetchPeer(onion)
 		}
 	}
+
+	wireReachabilityKicks(d)
+
+	wireUnreachableMarks(d)
+	foldOutboxIntoMarks(d, outboxStore)
+	seedUnreachableSent(d)
 
 	go bridgeOutboxToBus(ctx, outboxBus, bus)
 
@@ -479,11 +632,7 @@ func run(ctx context.Context, cfg config) error {
 	)
 
 	if cfg.runtimeFile != "" {
-		info := RuntimeInfo{
-			PID:       os.Getpid(),
-			APIAddr:   apiLn.Addr().String(),
-			StartedAt: time.Now().UTC(),
-		}
+		info := runtimeInfoFor(cfg, apiLn.Addr().String(), time.Now())
 		if err := writeRuntimeFile(cfg.runtimeFile, info); err != nil {
 			return fmt.Errorf("write runtime file %q: %w", cfg.runtimeFile, err)
 		}
@@ -598,36 +747,41 @@ func tryBringUpTorTier(
 		return nil, fmt.Errorf("tor auth: %w", err)
 	}
 	slog.Debug("tor control authenticated", slog.String("addr", cfg.torControl), slog.String("method", string(method)))
-	d.ctrlMu.Lock()
-	d.ctrlConn = ctrlConn
-	d.ctrlMu.Unlock()
 
-	if err := d.republishAllPeerOnions(ctrlConn); err != nil {
-		ctrlConn.Close()
+	d.watchNetworkLiveness(ctx, ctrlConn)
+	if err := d.adoptCtrlConn(ctrlConn); err != nil {
 		return nil, fmt.Errorf("republish per-peer onions: %w", err)
 	}
 
-	onVerified := func(_ context.Context, peerID string) {
-
-		peer, err := d.registry.Get(peerID)
-		if err != nil {
-			return
-		}
-		dests := make([]string, 0, len(peer.KnownAddresses))
-		for _, addr := range peer.KnownAddresses {
-			dests = append(dests, "http://"+addr+".onion")
-		}
-		go func() {
-			if _, err := d.worker.KickByDests(dests); err != nil {
-				slog.Warn("KickByDests failed",
-					slog.String("peer_id", peerID),
-					slog.Any("err", err),
-				)
-			}
-		}()
+	if err := d.republishStoredRendezvous(); err != nil {
+		slog.Warn("pair: republishing stored rendezvous failed", slog.Any("err", err))
 	}
-	verifier := &peers.HMACVerifier{Registry: d.registry, IDS: idsEngine, OnVerifySuccess: onVerified}
+
+	hmacVerifier := &peers.HMACVerifier{Registry: d.registry, IDS: idsEngine, OnVerifySuccess: d.onInboundVerified}
+
+	verifier := xport.VerifierFunc(func(vctx context.Context, env xport.Envelope) error {
+		if err := hmacVerifier.Verify(vctx, env); err != nil {
+			return err
+		}
+		peerID := xport.PeerIDFromContext(vctx)
+		if peerID == "" || d.unlinkAcceptsKind(peerID, env.EffectiveKind()) {
+			return nil
+		}
+		slog.Info("unlink: dropped an envelope from the device being removed",
+			slog.String("peer_id", peerID),
+			slog.String("kind", env.EffectiveKind()),
+			slog.String("envelope_id", env.ID),
+		)
+		return errUnlinkNarrowed
+	})
+
 	responder := xport.StatusResponderFunc(func(rctx context.Context, req xport.Envelope) (xport.Envelope, error) {
+		if req.EffectiveKind() == xport.KindDestroy {
+			return respondDestroy(d, rctx, req)
+		}
+		if req.EffectiveKind() == xport.KindDestroyVerify {
+			return respondDestroyVerify(d, rctx, req)
+		}
 		return buildStatusResponse(d, rctx, req)
 	})
 	sentAcker := xport.SentAckResponderFunc(func(rctx context.Context, req xport.Envelope) (xport.Envelope, error) {
@@ -652,7 +806,7 @@ func tryBringUpTorTier(
 		slog.Debug("envelope received and queued to inbox",
 			slog.String("envelope_id", e.ID),
 			slog.String("peer_id", peerID),
-			slog.String("from", e.From),
+			slog.String("from", logid.Short(e.From)),
 			slog.String("kind", e.EffectiveKind()),
 			slog.String("presence_source", e.PresenceSource),
 			slog.Int("payload_bytes", len(e.Payload)),
@@ -678,7 +832,8 @@ func tryBringUpTorTier(
 		mux.HandleFunc("GET /video/{token}", d.handleProxyStreamGet)
 		mux.HandleFunc("GET /screen/{token}", d.handleProxyStreamGet)
 		mux.Handle("/", xportHandler)
-		xportSrv = &http.Server{Handler: mux}
+
+		xportSrv = &http.Server{Handler: d.unlinkGate(mux)}
 		go func() {
 			if err := xportSrv.Serve(xportLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("xport server exited", slog.Any("err", err))
@@ -691,6 +846,10 @@ func tryBringUpTorTier(
 	go startRetiredAddrsSweeper(ctx, d)
 
 	resolver := files.PeerResolverFunc(func(peerID string) ([]string, error) {
+
+		if d.unlinkRefusesPeer(peerID) {
+			return nil, errUnlinkPeerRemoved
+		}
 		p, err := d.registry.Get(peerID)
 		if err != nil {
 			return nil, err
@@ -735,7 +894,9 @@ func tryBringUpTorTier(
 					if p.MyOnionAddr == "" || p.RetiredAt != 0 {
 						continue
 					}
-					if derr := conn.DelOnion(p.MyOnionAddr); derr != nil {
+					derr := conn.DelOnion(p.MyOnionAddr)
+					d.published.forget(conn, p.MyOnionAddr, derr)
+					if derr != nil {
 						slog.Warn("DelOnion on shutdown failed",
 							slog.String("peer_id", p.ID),
 							slog.String("service_id", p.MyOnionAddr),
@@ -762,40 +923,50 @@ func startOnionWatchdog(ctx context.Context, d *daemon) {
 			return
 		case <-d.torKick:
 
-			watchdogReconnect(ctx, d, "tor-password kick")
+			watchdogReconnect(ctx, d, "tor-password kick", false)
 		case <-tick.C:
-			if !d.torPoller.Ready() {
-				d.clearVerifiedSlots()
-				continue
-			}
-
-			d.ctrlMu.Lock()
-			conn := d.ctrlConn
-			d.ctrlMu.Unlock()
-			if conn == nil {
-				continue
-			}
-			_, pingErr := conn.GetInfo("version")
-			if pingErr != nil {
-				slog.Warn("tor control connection lost; reconnecting", slog.Any("err", pingErr))
-				if !watchdogReconnect(ctx, d, "ping failed") {
-					continue
-				}
-				d.ctrlMu.Lock()
-				conn = d.ctrlConn
-				d.ctrlMu.Unlock()
-				if conn == nil {
-					continue
-				}
-			}
-
-			raw, err := conn.GetInfo("onions/current")
-			if err != nil {
-				d.clearVerifiedSlots()
-			} else {
-				d.updateVerifiedSlots(raw)
-			}
+			watchdogTick(ctx, d)
 		}
+	}
+}
+
+func watchdogTick(ctx context.Context, d *daemon) {
+
+	d.restoreTorNetwork()
+	if !d.torPoller.Ready() {
+		d.clearVerifiedSlots()
+		return
+	}
+	watchdogCheck(ctx, d)
+}
+
+func watchdogCheck(ctx context.Context, d *daemon) {
+
+	d.ctrlMu.Lock()
+	conn := d.ctrlConn
+	d.ctrlMu.Unlock()
+	if conn == nil {
+		return
+	}
+	_, pingErr := conn.GetInfo("version")
+	if pingErr != nil {
+		slog.Warn("tor control connection lost; reconnecting", slog.Any("err", pingErr))
+		if !watchdogReconnect(ctx, d, "ping failed", true) {
+			return
+		}
+		d.ctrlMu.Lock()
+		conn = d.ctrlConn
+		d.ctrlMu.Unlock()
+		if conn == nil {
+			return
+		}
+	}
+
+	raw, err := conn.GetInfo("onions/current")
+	if err != nil {
+		d.clearVerifiedSlots()
+	} else {
+		d.updateVerifiedSlots(raw)
 	}
 }
 
@@ -819,14 +990,14 @@ func startRetiredAddrsSweeper(ctx context.Context, d *daemon) {
 				continue
 			}
 			for _, addr := range toDelete {
-				slog.Info("retired-own-onion DEL_ONION", slog.String("addr", addr))
+				slog.Info("retired-own-onion DEL_ONION", slog.String("addr", logid.Short(addr)))
 				d.unpublishPeerOnion(addr)
 			}
 		}
 	}
 }
 
-func watchdogReconnect(ctx context.Context, d *daemon, reason string) bool {
+func watchdogReconnect(ctx context.Context, d *daemon, reason string, recovered bool) bool {
 	newConn, err := reconnectControl(ctx, d, d.cfg)
 	if err != nil {
 		slog.Warn("tor control reconnect failed",
@@ -843,7 +1014,11 @@ func watchdogReconnect(ctx context.Context, d *daemon, reason string) bool {
 	if old != nil {
 		old.Close()
 	}
-	if err := d.republishAllPeerOnions(newConn); err != nil {
+
+	d.restoreTorNetwork()
+
+	d.watchNetworkLiveness(ctx, newConn)
+	if err := d.republishAllPeerOnions(newConn, recovered); err != nil {
 		slog.Error("per-peer onion republish failed after reconnect",
 			slog.String("reason", reason),
 			slog.Any("err", err),
@@ -927,7 +1102,7 @@ func peerForVerified(d *daemon, ctx context.Context, req xport.Envelope) (*peers
 	if peerID := xport.PeerIDFromContext(ctx); peerID != "" {
 		peer, err := d.registry.Get(peerID)
 		if err != nil {
-			return nil, fmt.Errorf("stamped peer %q not in registry: %w", peerID, err)
+			return nil, fmt.Errorf("stamped peer %q not in registry: %w", logid.Short(peerID), err)
 		}
 		return peer, nil
 	}
@@ -949,7 +1124,7 @@ func buildStatusResponse(d *daemon, ctx context.Context, req xport.Envelope) (xp
 		return xport.Envelope{}, err
 	}
 	if peer.MyOnionAddr == "" {
-		return xport.Envelope{}, fmt.Errorf("status responder: peer %q has no MyOnionAddr", peer.ID)
+		return xport.Envelope{}, fmt.Errorf("status responder: peer %q has no MyOnionAddr", logid.Short(peer.ID))
 	}
 
 	envID, err := newEnvelopeID()
@@ -984,7 +1159,7 @@ func buildSentAck(d *daemon, ctx context.Context, req xport.Envelope) (xport.Env
 		return xport.Envelope{}, err
 	}
 	if peer.MyOnionAddr == "" {
-		return xport.Envelope{}, fmt.Errorf("sent_ack: peer %q has no MyOnionAddr", peer.ID)
+		return xport.Envelope{}, fmt.Errorf("sent_ack: peer %q has no MyOnionAddr", logid.Short(peer.ID))
 	}
 	envID, err := newEnvelopeID()
 	if err != nil {
@@ -1022,7 +1197,7 @@ func verifyAckBody(d *daemon, body []byte, dest string) error {
 	addr := destToOnion(dest)
 	peer, err := d.registry.ByAddress(addr)
 	if err != nil {
-		return fmt.Errorf("sent_ack: peer not found for dest %q: %w", dest, err)
+		return fmt.Errorf("sent_ack: peer not found for dest %q: %w", logid.Short(addr), err)
 	}
 	if err := xport.Verify(env, peer.InboundSecret); err != nil {
 		return err

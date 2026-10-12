@@ -1,0 +1,10 @@
+{
+  "type": "presence_changed",
+  "payload": {
+    "peer_id": "c95f28d17a604b3e81ca6d0f452937ab",
+    "accepting": true,
+    "sending": true,
+    "chatty": "away",
+    "effective": "away"
+  }
+}

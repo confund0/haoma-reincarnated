@@ -1,22 +1,3 @@
-// haoma-vid — accepts one localhost client on --port (sealed VP8 frames
-// from haomad), AEAD-opens each frame with ChaCha20-Poly1305, decodes
-// VP8, writes raw I420 frames to a SECOND localhost listener (the host
-// UI dials it for the remote-tile renderer). A bad key (or tampered
-// frame) silently drops at the AEAD layer — no decode, connection stays
-// open. V-1.5: dropped --output-fd; raw-port listener replaces it,
-// matching cam's V-1.5 shape.
-//
-// stdin layout (mirrors mic/spk/cam):
-//   first 32 bytes  = ChaCha20-Poly1305 key
-//   bytes 33..      = JSON-line control commands (mute/unmute/stats/exit;
-//                     bitrate rejected with a warn — decoder has none)
-//
-// stdout: JSON-line events. The first one is
-//   {"type":"ready","raw_unix":"<name>"}
-// where <name> is the AF_UNIX abstract-namespace listener for raw I420.
-// Data plane = the localhost TCP socket bound on --port (sealed VP8
-// frames in). Raw I420 plane = the AF_UNIX listener named
-// "haoma-vid-<stream_id>-<pid>" (abstract namespace, no fs entry).
 
 #include "../common/framing.h"
 #include "../common/socket.h"
@@ -93,9 +74,6 @@ bool parse_args(int argc, char** argv, Args& a) {
 std::atomic<bool> g_done{false};
 void on_signal(int) { g_done.store(true); }
 
-// Pack one I420 plane row-by-row into a contiguous output buffer,
-// stripping stride padding if the codec allocated wider rows than the
-// actual pixel width.
 void pack_plane(uint8_t* dst, const uint8_t* plane, int stride, int w, int h) {
   for (int r = 0; r < h; ++r) {
     std::memcpy(dst + (size_t)r * (size_t)w,
@@ -104,7 +82,7 @@ void pack_plane(uint8_t* dst, const uint8_t* plane, int stride, int w, int h) {
   }
 }
 
-}  // namespace
+}  
 
 int main(int argc, char** argv) {
   set_log_tag("haoma-vid");
@@ -152,7 +130,6 @@ int main(int argc, char** argv) {
 
   emit_ready(raw_unix_name);
 
-  // Sealed-side client (haomad). Blocks until haomad dials in.
   int cfd = accept_one(lfd);
   if (cfd < 0) {
     ::close(raw_lfd);
@@ -161,14 +138,6 @@ int main(int argc, char** argv) {
   }
   LOG_INFO("sealed client connected");
 
-  // Raw-side client (host UI). Accept in a side thread so the decoder
-  // can begin even if the UI hasn't dialed yet — UI might be hidden
-  // (InCallBar mode); we don't want to block decode on the accept.
-  // Once connected, writes are BLOCKING: brief renderer-side
-  // backpressure (kernel SNDBUF ~212 KB vs frame ~461 KB) is the
-  // lesser evil compared to a short-write wire desync that would
-  // misalign the receiver's per-frame `8 BE pts | I420` loop for the
-  // rest of the call.
   std::atomic<int> raw_cfd{-1};
   std::atomic<bool> raw_write_failed{false};
   std::thread raw_accept_th([&]() {
@@ -193,7 +162,7 @@ int main(int argc, char** argv) {
   std::thread reader([&]() {
     std::vector<uint8_t> cipher(MAX_PAYLOAD_LEN);
     std::vector<uint8_t> plain(MAX_PAYLOAD_LEN);
-    std::vector<uint8_t> packed;  // contiguous I420 for the raw socket
+    std::vector<uint8_t> packed;  
     uint8_t tag[FRAME_TAG_LEN];
     while (!g_done.load()) {
       uint64_t counter = 0;
@@ -269,13 +238,6 @@ int main(int argc, char** argv) {
         pack_plane(packed.data() + (size_t)w * (size_t)h + (size_t)(w / 2) * (size_t)(h / 2),
                    img->planes[VPX_PLANE_V], img->stride[VPX_PLANE_V], w / 2, h / 2);
 
-        // Raw-port frame: `8 BE pts_ns | I420 bytes`. pts is the
-        // sender-stamped value just verified by AEAD — receiver uses it
-        // to slave video display to spk's audio playback clock. Two
-        // sequential write_all calls on a blocking socket: peer-close
-        // is the only realistic mid-frame failure on local AF_UNIX, and
-        // when that happens we tear the tap down so a partial-write
-        // desync can't poison the rest of the call.
         uint8_t pts_be[8];
         haoma::streams::w_be64(pts_be, pts_ns);
         if (write_all(rfd, pts_be, sizeof(pts_be)) != (int64_t)sizeof(pts_be) ||

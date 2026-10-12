@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+
+	"haoma/internal/logid"
 )
 
 const MaxEnvelopeBytes = 1 << 20
@@ -81,6 +83,17 @@ func PeerIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+type hostCtxKey struct{}
+
+func ContextWithHost(ctx context.Context, host string) context.Context {
+	return context.WithValue(ctx, hostCtxKey{}, host)
+}
+
+func HostFromContext(ctx context.Context) string {
+	h, _ := ctx.Value(hostCtxKey{}).(string)
+	return h
+}
+
 func NewServer(slotIdx int, r Receiver, v Verifier, sr StatusResponder, sars ...SentAckResponder) http.Handler {
 	var sar SentAckResponder
 	if len(sars) > 0 {
@@ -128,18 +141,19 @@ func handleMessage(slotIdx int, r Receiver, v Verifier, sr StatusResponder, sar 
 		slog.Debug("xport: inbound envelope",
 			slog.Int("slot", slotIdx),
 			slog.String("envelope_id", env.ID),
-			slog.String("from", env.From),
+			slog.String("from", logid.Short(env.From)),
 			slog.String("kind", string(env.EffectiveKind())),
 		)
 
 		ctx := ContextWithSlot(req.Context(), slotIdx)
+		ctx = ContextWithHost(ctx, req.Host)
 		ctx = ContextWithPeerIDStamp(ctx)
 		if v != nil {
 			if err := v.Verify(ctx, env); err != nil {
 				slog.Warn("xport: inbound verify failed",
 					slog.Int("slot", slotIdx),
 					slog.String("envelope_id", env.ID),
-					slog.String("from", env.From),
+					slog.String("from", logid.Short(env.From)),
 					slog.Any("err", err),
 				)
 				http.Error(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
@@ -150,30 +164,47 @@ func handleMessage(slotIdx int, r Receiver, v Verifier, sr StatusResponder, sar 
 		if env.EffectiveKind() == KindSentAck {
 			slog.Warn("xport: inbound sent_ack from peer is a protocol violation; dropping",
 				slog.String("envelope_id", env.ID),
-				slog.String("from", env.From),
+				slog.String("from", logid.Short(env.From)),
 			)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		if env.EffectiveKind() == KindStatus && sr != nil {
+		if env.EffectiveKind() == KindDestroyVerifyAck || env.EffectiveKind() == KindDestroyReceipt {
+			slog.Warn("xport: inbound control answer from peer is a protocol violation; dropping",
+				slog.String("kind", env.EffectiveKind()),
+				slog.String("envelope_id", env.ID),
+				slog.String("from", logid.Short(env.From)),
+			)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if sr != nil && (env.EffectiveKind() == KindStatus ||
+			env.EffectiveKind() == KindDestroyVerify ||
+			env.EffectiveKind() == KindDestroy) {
 			resp, err := sr.Respond(ctx, env)
 			if err != nil {
-				slog.Warn("xport: status responder error",
+				slog.Warn("xport: control responder error",
 					slog.String("envelope_id", env.ID),
+					slog.String("kind", env.EffectiveKind()),
 					slog.Any("err", err),
 				)
-				http.Error(w, "status responder: "+err.Error(), http.StatusInternalServerError)
+				http.Error(w, "control responder: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 
 			if resp.ID == "" {
-				slog.Debug("xport: status handled, no response body", slog.String("envelope_id", env.ID))
+				slog.Debug("xport: control handled, no response body",
+					slog.String("envelope_id", env.ID),
+					slog.String("kind", env.EffectiveKind()),
+				)
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			slog.Debug("xport: status response sent",
+			slog.Debug("xport: control response sent",
 				slog.String("envelope_id", env.ID),
+				slog.String("kind", env.EffectiveKind()),
 				slog.String("resp_id", resp.ID),
 			)
 			w.Header().Set("Content-Type", "application/json")
@@ -188,7 +219,7 @@ func handleMessage(slotIdx int, r Receiver, v Verifier, sr StatusResponder, sar 
 		if err := r.Receive(ctx, env); err != nil {
 			slog.Warn("xport: receiver error",
 				slog.String("envelope_id", env.ID),
-				slog.String("from", env.From),
+				slog.String("from", logid.Short(env.From)),
 				slog.Any("err", err),
 			)
 			http.Error(w, "receive: "+err.Error(), http.StatusInternalServerError)
@@ -196,7 +227,7 @@ func handleMessage(slotIdx int, r Receiver, v Verifier, sr StatusResponder, sar 
 		}
 		slog.Debug("xport: envelope received",
 			slog.String("envelope_id", env.ID),
-			slog.String("from", env.From),
+			slog.String("from", logid.Short(env.From)),
 			slog.String("kind", string(env.EffectiveKind())),
 		)
 

@@ -46,6 +46,11 @@ internal fun MessengerStore.emitClientFocus(chatId: String, scrollPosition: Int)
 fun MessengerStore.syncLockState(softLocked: Boolean) {
     if (lastSoftLocked == softLocked) return
     lastSoftLocked = softLocked
+    
+    
+    if (softLocked) dropDeviceSyncWait("locked")
+    
+    if (softLocked) forgetTypedJoinSecrets()
     emitLockState(softLocked)
     
     

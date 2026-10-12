@@ -18,8 +18,11 @@ import (
 )
 
 type onionInviteEntry struct {
-	HandleID  string
-	Words     []string
+	HandleID string
+	Words    []string
+
+	Secret string
+
 	ExpiresAt int64
 	Pending   pair.PendingInvite
 	CreatedAt time.Time
@@ -63,7 +66,13 @@ func (p *lockedOnionPublisher) AddOnion(privateKey string, ports []control.Onion
 	if p.d.ctrlConn == nil {
 		return nil, errors.New("pair: tor control not connected")
 	}
-	return p.d.ctrlConn.AddOnion(privateKey, ports, flags...)
+	o, err := p.d.ctrlConn.AddOnion(privateKey, ports, flags...)
+	if err != nil {
+		return nil, err
+	}
+
+	p.d.published.record(p.d.ctrlConn, o.ServiceID)
+	return o, nil
 }
 
 func (p *lockedOnionPublisher) DelOnion(serviceID string) error {
@@ -72,7 +81,9 @@ func (p *lockedOnionPublisher) DelOnion(serviceID string) error {
 	if p.d.ctrlConn == nil {
 		return errors.New("pair: tor control not connected")
 	}
-	return p.d.ctrlConn.DelOnion(serviceID)
+	err := p.d.ctrlConn.DelOnion(serviceID)
+	p.d.published.forget(p.d.ctrlConn, serviceID, err)
+	return err
 }
 
 func (d *daemon) ensureOnionDriver() (*pair.OnionDriver, error) {
@@ -80,7 +91,10 @@ func (d *daemon) ensureOnionDriver() (*pair.OnionDriver, error) {
 		return nil, errors.New("pair: tor HTTP client not ready")
 	}
 	d.onionDriverOnce.Do(func() {
-		d.onionDriver = pair.NewOnionDriver(&lockedOnionPublisher{d: d}, d.torHTTP)
+
+		dialHTTP := *d.torHTTP
+		dialHTTP.Timeout = 0
+		d.onionDriver = pair.NewOnionDriver(&lockedOnionPublisher{d: d}, &dialHTTP)
 	})
 	return d.onionDriver, nil
 }
@@ -88,11 +102,14 @@ func (d *daemon) ensureOnionDriver() (*pair.OnionDriver, error) {
 type pairOnionInviteRequest struct {
 	Payload        []byte `json:"payload"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+
+	LongLived bool `json:"long_lived,omitempty"`
 }
 
 type pairOnionInviteResponse struct {
 	HandleID  string   `json:"handle_id"`
 	Words     []string `json:"words"`
+	Secret    string   `json:"secret,omitempty"`
 	ExpiresAt int64    `json:"expires_at"`
 }
 
@@ -118,7 +135,7 @@ func (d *daemon) handlePairOnionInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cReq := pair.CreateRequest{Payload: req.Payload}
+	cReq := pair.CreateRequest{Payload: req.Payload, LongLived: req.LongLived}
 	if req.TimeoutSeconds > 0 {
 		cReq.Timeout = time.Duration(req.TimeoutSeconds) * time.Second
 	}
@@ -137,22 +154,36 @@ func (d *daemon) handlePairOnionInvite(w http.ResponseWriter, r *http.Request) {
 	entry := &onionInviteEntry{
 		HandleID:  handle,
 		Words:     pi.OOB().Words,
+		Secret:    pi.OOB().Secret,
 		ExpiresAt: pi.ExpiresAt(),
 		Pending:   pi,
 		CreatedAt: time.Now(),
 	}
+
+	if entry.Secret != "" {
+		if err := d.persistRendezvous(handle, entry.Secret, req.Payload, entry.ExpiresAt); err != nil {
+			pi.Cancel()
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("pair: store rendezvous: %w", err))
+			return
+		}
+
+		go d.dropRendezvousWhenDone(d.bgCtx, handle, pi)
+	}
+
 	d.onionInvites.put(entry)
 
 	slog.Info("pair: onion invite created",
 		slog.String("handle_id", handle),
 		slog.Int64("expires_at", entry.ExpiresAt),
+		slog.Bool("long_lived", entry.Secret != ""),
 	)
 
-	go probeOnionInvite(d.bgCtx, d, handle, entry.Words, pi)
+	go probeOnionInvite(d.bgCtx, d, handle, entry.Words, entry.Secret, pi)
 
 	writeJSON(w, http.StatusCreated, pairOnionInviteResponse{
 		HandleID:  handle,
 		Words:     entry.Words,
+		Secret:    entry.Secret,
 		ExpiresAt: entry.ExpiresAt,
 	})
 }
@@ -218,12 +249,24 @@ func (d *daemon) handlePairOnionCancel(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		entry.Pending.Cancel()
 		d.onionInvites.drop(handle)
+	} else if d.rendezvous != nil {
+		if err := d.rendezvous.Delete(handle); err != nil {
+			slog.Warn("pair: the stored row of a cancelled rendezvous was not dropped; it may be republished",
+				slog.String("handle_id", handle),
+				slog.Any("err", err),
+			)
+		} else {
+			slog.Debug("pair: cancelled a rendezvous that was not on the network; its stored row was dropped",
+				slog.String("handle_id", handle),
+			)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 type pairOnionAcceptRequest struct {
 	Words   []string `json:"words"`
+	Secret  string   `json:"secret,omitempty"`
 	Payload []byte   `json:"payload"`
 }
 
@@ -243,8 +286,13 @@ func (d *daemon) handlePairOnionAccept(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if len(req.Words) == 0 {
-		writeErr(w, http.StatusBadRequest, errors.New("words required"))
+
+	switch {
+	case len(req.Words) == 0 && req.Secret == "":
+		writeErr(w, http.StatusBadRequest, errors.New("words or secret required"))
+		return
+	case len(req.Words) > 0 && req.Secret != "":
+		writeErr(w, http.StatusBadRequest, errors.New("words and secret are alternatives, not both"))
 		return
 	}
 	if len(req.Payload) == 0 {
@@ -257,26 +305,33 @@ func (d *daemon) handlePairOnionAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := driver.AcceptInvite(r.Context(), pair.AcceptRequest{
-		Blob:    pair.InviteBlob{Words: req.Words},
+		Blob:    pair.InviteBlob{Words: req.Words, Secret: req.Secret},
 		Payload: req.Payload,
 	})
 	if err != nil {
-		switch {
-		case errors.Is(err, pair.ErrMACMismatch):
-			writeErr(w, http.StatusUnauthorized, err)
-		default:
-			if _, isWordErr := err.(pair.ErrInvalidEFFShortWord); isWordErr {
-				writeErr(w, http.StatusBadRequest, err)
-				return
-			}
-			writeErr(w, http.StatusBadGateway, err)
-		}
+
+		slog.Warn("pair: onion accept failed", slog.Any("err", err))
+		writeErr(w, acceptFailureStatus(err), err)
 		return
 	}
 	slog.Info("pair: onion accept ok",
 		slog.Int("inviter_bytes", len(res.InviterPayload)),
 	)
 	writeJSON(w, http.StatusOK, pairOnionAcceptResponse{InviterPayload: res.InviterPayload})
+}
+
+func acceptFailureStatus(err error) int {
+	var wordErr pair.ErrInvalidEFFShortWord
+	switch {
+	case errors.Is(err, pair.ErrMACMismatch):
+		return http.StatusUnauthorized
+	case errors.As(err, &wordErr), errors.Is(err, pair.ErrOnionWordCount):
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, pair.ErrRendezvousSpent):
+		return http.StatusGone
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 func newPairHandleID() (string, error) {

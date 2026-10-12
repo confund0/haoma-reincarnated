@@ -58,33 +58,148 @@ const (
 	DefaultNotifyShowBody   = false
 
 	DefaultURLForceChooser = true
+
+	DefaultShowLoginForm          = true
+	DefaultSayPassphraseIsDefault = true
 )
 
 const (
+	PresetNobody   = "nobody"
 	PresetDomestic = "domestic"
-	PresetPrivacy  = "privacy"
-	PresetActivist = "activist"
+	PresetPower    = "power"
+	PresetForce    = "force"
+
+	ThreatPickerQuestion = "Who is after you?"
+)
+
+const (
+	retentionFourWeeks uint64 = 28 * 24 * 3600
+	retentionOneWeek   uint64 = 7 * 24 * 3600
+	retentionOneDay    uint64 = 24 * 3600
+	retentionOneHour   uint64 = 3600
 )
 
 type ThreatPresetBundle struct {
+	ShowLoginForm          bool
+	SayPassphraseIsDefault bool
+	BypassSlotEnabled      bool
+
 	IdleAction         string
 	IdleTimeoutSeconds int
 	PinValiditySec     int
 	PanicAction        string
+
+	DefaultRetentionSec uint64
+
+	NotifyShellEnabled     bool
+	NotifyShowSender       bool
+	NotifyShowBody         bool
+	NotifyDisguiseEnabled  bool
+	NotifyNoisy            bool
+	NotifyPersistUntilOpen bool
+	NotifyDeepLink         bool
+	NotificationsOnLock    bool
+
+	ShareTargetEnabled        bool
+	ShowFailedDestroyAttempts bool
 }
 
 var ThreatPresetBundles = map[string]ThreatPresetBundle{
+	PresetNobody: {
+		ShowLoginForm:          false,
+		SayPassphraseIsDefault: false,
+		BypassSlotEnabled:      true,
+
+		IdleAction:         "soft-lock",
+		IdleTimeoutSeconds: 900,
+		PinValiditySec:     0,
+		PanicAction:        "safe-lock",
+
+		DefaultRetentionSec: retentionFourWeeks,
+
+		NotifyShellEnabled:     true,
+		NotifyShowSender:       true,
+		NotifyShowBody:         false,
+		NotifyDisguiseEnabled:  false,
+		NotifyNoisy:            true,
+		NotifyPersistUntilOpen: true,
+		NotifyDeepLink:         true,
+		NotificationsOnLock:    true,
+
+		ShareTargetEnabled:        true,
+		ShowFailedDestroyAttempts: true,
+	},
 	PresetDomestic: {
+		ShowLoginForm:          true,
+		SayPassphraseIsDefault: true,
+		BypassSlotEnabled:      true,
+
 		IdleAction:         "soft-lock",
 		IdleTimeoutSeconds: 300,
 		PinValiditySec:     86400,
 		PanicAction:        "safe-lock",
+
+		DefaultRetentionSec: retentionOneWeek,
+
+		NotifyShellEnabled:     true,
+		NotifyShowSender:       false,
+		NotifyShowBody:         false,
+		NotifyDisguiseEnabled:  true,
+		NotifyNoisy:            false,
+		NotifyPersistUntilOpen: true,
+		NotifyDeepLink:         false,
+		NotificationsOnLock:    true,
+
+		ShareTargetEnabled:        false,
+		ShowFailedDestroyAttempts: false,
 	},
-	PresetPrivacy: {
-		IdleAction:         "soft-lock",
+	PresetPower: {
+		ShowLoginForm:          true,
+		SayPassphraseIsDefault: true,
+		BypassSlotEnabled:      false,
+
+		IdleAction:         "safe-lock",
 		IdleTimeoutSeconds: 60,
 		PinValiditySec:     300,
 		PanicAction:        "hard-lock",
+
+		DefaultRetentionSec: retentionOneDay,
+
+		NotifyShellEnabled:     true,
+		NotifyShowSender:       false,
+		NotifyShowBody:         false,
+		NotifyDisguiseEnabled:  true,
+		NotifyNoisy:            false,
+		NotifyPersistUntilOpen: false,
+		NotifyDeepLink:         false,
+		NotificationsOnLock:    false,
+
+		ShareTargetEnabled:        false,
+		ShowFailedDestroyAttempts: false,
+	},
+	PresetForce: {
+		ShowLoginForm:          true,
+		SayPassphraseIsDefault: true,
+		BypassSlotEnabled:      false,
+
+		IdleAction:         "hard-lock",
+		IdleTimeoutSeconds: 30,
+		PinValiditySec:     0,
+		PanicAction:        "self-destruct",
+
+		DefaultRetentionSec: retentionOneHour,
+
+		NotifyShellEnabled:     false,
+		NotifyShowSender:       false,
+		NotifyShowBody:         false,
+		NotifyDisguiseEnabled:  true,
+		NotifyNoisy:            false,
+		NotifyPersistUntilOpen: false,
+		NotifyDeepLink:         false,
+		NotificationsOnLock:    false,
+
+		ShareTargetEnabled:        false,
+		ShowFailedDestroyAttempts: false,
 	},
 }
 
@@ -106,6 +221,10 @@ type Payload struct {
 	secrets.Secrets
 
 	ThreatProfile string `json:"threat_profile,omitempty"`
+
+	ShowLoginForm bool `json:"show_login_form"`
+
+	SayPassphraseIsDefault bool `json:"say_passphrase_is_default"`
 
 	PIN string `json:"pin,omitempty"`
 
@@ -134,6 +253,8 @@ type Payload struct {
 	NotifyPersistUntilOpen bool `json:"notify_persist_until_open,omitempty"`
 
 	NotifyDeepLink bool `json:"notify_deep_link,omitempty"`
+
+	ShowFailedDestroyAttempts bool `json:"show_failed_destroy_attempts,omitempty"`
 
 	DefaultSaveDir        string `json:"default_save_dir,omitempty"`
 	DefaultAttachStartDir string `json:"default_attach_start_dir,omitempty"`
@@ -165,9 +286,10 @@ func (p Payload) Validate() error {
 		return fmt.Errorf("vault: invalid panic_action %q", p.PanicAction)
 	}
 	switch p.ThreatProfile {
-	case "", PresetDomestic, PresetPrivacy, PresetActivist:
+	case "", PresetNobody, PresetDomestic, PresetPower, PresetForce:
 	default:
-		return fmt.Errorf("vault: invalid threat_profile %q", p.ThreatProfile)
+
+		return fmt.Errorf("vault: threat_profile %q is retired — answer %q again and apply it", p.ThreatProfile, ThreatPickerQuestion)
 	}
 	if p.PinValiditySec < 0 {
 		return fmt.Errorf("vault: pin_validity_sec must be >= 0, got %d", p.PinValiditySec)
@@ -215,7 +337,7 @@ func Open(path string, passphrase []byte) (Payload, KDFParams, error) {
 		return Payload{}, KDFParams{}, ErrEmptyPassphrase
 	}
 	start := time.Now()
-	slog.Debug("vault: open enter", slog.Int("pass_len", len(passphrase)), slog.String("path", path))
+	slog.Debug("vault: open enter", slog.String("path", path))
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		slog.Debug("vault: open exit", slog.Bool("ok", false), slog.String("stage", "read"), slog.Duration("dur", time.Since(start)))
@@ -278,9 +400,11 @@ func openBytes(raw []byte, passphrase []byte) (Payload, KDFParams, error) {
 
 func defaultSeededPayload() Payload {
 	return Payload{
-		NotificationsOnLock: true,
-		NotifyShellEnabled:  DefaultNotifyShell,
-		URLForceChooser:     DefaultURLForceChooser,
+		NotificationsOnLock:    true,
+		NotifyShellEnabled:     DefaultNotifyShell,
+		URLForceChooser:        DefaultURLForceChooser,
+		ShowLoginForm:          DefaultShowLoginForm,
+		SayPassphraseIsDefault: DefaultSayPassphraseIsDefault,
 	}
 }
 
@@ -289,7 +413,7 @@ func Create(path string, passphrase []byte, payload Payload, params KDFParams) e
 		return ErrEmptyPassphrase
 	}
 	start := time.Now()
-	slog.Debug("vault: create enter", slog.Int("pass_len", len(passphrase)), slog.String("path", path))
+	slog.Debug("vault: create enter", slog.String("path", path))
 	if err := payload.Validate(); err != nil {
 		return fmt.Errorf("vault: payload: %w", err)
 	}
@@ -312,7 +436,7 @@ func Save(path string, passphrase []byte, payload Payload, params KDFParams) err
 		return ErrEmptyPassphrase
 	}
 	start := time.Now()
-	slog.Debug("vault: save enter", slog.Int("pass_len", len(passphrase)), slog.String("path", path))
+	slog.Debug("vault: save enter", slog.String("path", path))
 	if err := payload.Validate(); err != nil {
 		return fmt.Errorf("vault: payload: %w", err)
 	}
@@ -460,6 +584,9 @@ func MintFreshPayload() (Payload, error) {
 		DefaultSaveDir:        saveDir,
 		DefaultAttachStartDir: attachDir,
 		URLForceChooser:       DefaultURLForceChooser,
+
+		ShowLoginForm:          DefaultShowLoginForm,
+		SayPassphraseIsDefault: DefaultSayPassphraseIsDefault,
 	}, nil
 }
 

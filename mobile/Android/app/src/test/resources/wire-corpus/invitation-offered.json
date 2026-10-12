@@ -1,0 +1,9 @@
+{
+  "type": "invitation_offered",
+  "id": "c-20",
+  "payload": {
+    "msg_id": "e51b07c93a2d4f86b0c7d1e4a93f5268",
+    "expires_at": 1755508620,
+    "siblings": 1
+  }
+}

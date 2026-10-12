@@ -91,6 +91,7 @@ fun ContactDetailScreen(
 
         
         Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            detailWarningFor(peer)?.let { UnreachableWarningBlock(it) }
             IdentityFooter(nick = peer.nick)
 
             Section(
@@ -232,6 +233,20 @@ private fun Header(
         )
         io.haoma.calculator.messenger.calls.CallChip(store = store)
     }
+}
+
+
+@Composable
+private fun UnreachableWarningBlock(text: String) {
+    Text(
+        text = text,
+        color = HaomaPalette.C_ATTENTION,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 15.sp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    )
 }
 
 @Composable

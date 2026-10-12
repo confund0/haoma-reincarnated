@@ -2,6 +2,7 @@ package presence
 
 import (
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 )
@@ -18,6 +19,7 @@ const DefaultStaleness = 90 * time.Second
 
 type Snapshot struct {
 	Accepting bool
+	Sending   bool
 	Chatty    string
 	Effective string
 }
@@ -47,17 +49,26 @@ type Cache struct {
 
 	subsMu sync.RWMutex
 	subs   map[chan Change]struct{}
+
+	obsMu sync.RWMutex
+	obs   map[chan string]struct{}
+
+	dirty map[*dirtySub]struct{}
 }
 
 type peerState struct {
-	accepting     bool
-	chatty        string
-	lastEffective string
-	timerA        Timer
-	timerB        Timer
+	accepting bool
+	sending   bool
+	chatty    string
+
+	last   Snapshot
+	timerA Timer
+	timerB Timer
+	timerC Timer
 
 	genA uint64
 	genB uint64
+	genC uint64
 }
 
 func New() *Cache {
@@ -76,9 +87,15 @@ func NewWithOptions(opts Options) *Cache {
 	return &Cache{
 		peers:     map[string]*peerState{},
 		subs:      map[chan Change]struct{}{},
+		obs:       map[chan string]struct{}{},
+		dirty:     map[*dirtySub]struct{}{},
 		staleness: staleness,
 		afterFunc: af,
 	}
+}
+
+func (c *Cache) Staleness() time.Duration {
+	return c.staleness
 }
 
 func realAfterFunc(d time.Duration, f func()) Timer {
@@ -94,17 +111,41 @@ func (c *Cache) ObserveTechnical(peerID string) {
 		c.armTimerA(peerID, p)
 	})
 	if emit.PeerID != "" {
-		slog.Debug("presence cache: effective transition",
+		slog.Debug("presence cache: snapshot changed",
 			slog.String("peer_id", peerID),
 			slog.String("trigger", "technical"),
 			slog.String("effective", emit.Snapshot.Effective),
 		)
 	} else {
-		slog.Debug("presence cache: technical signal (no transition)",
+		slog.Debug("presence cache: technical signal (no change)",
 			slog.String("peer_id", peerID),
 		)
 	}
 	c.publish(emit)
+	c.publishObserved(peerID)
+}
+
+func (c *Cache) ObserveSending(peerID string) {
+	if peerID == "" {
+		return
+	}
+	emit := c.observe(peerID, func(p *peerState) {
+		p.sending = true
+		c.armTimerC(peerID, p)
+	})
+	if emit.PeerID != "" {
+		slog.Debug("presence cache: snapshot changed",
+			slog.String("peer_id", peerID),
+			slog.String("trigger", "sending"),
+			slog.String("effective", emit.Snapshot.Effective),
+		)
+	} else {
+		slog.Debug("presence cache: sending signal (no change)",
+			slog.String("peer_id", peerID),
+		)
+	}
+	c.publish(emit)
+	c.publishObserved(peerID)
 }
 
 func (c *Cache) ObserveHuman(peerID, state string) {
@@ -116,19 +157,20 @@ func (c *Cache) ObserveHuman(peerID, state string) {
 		c.armTimerB(peerID, p)
 	})
 	if emit.PeerID != "" {
-		slog.Debug("presence cache: effective transition",
+		slog.Debug("presence cache: snapshot changed",
 			slog.String("peer_id", peerID),
 			slog.String("trigger", "human"),
 			slog.String("state", state),
 			slog.String("effective", emit.Snapshot.Effective),
 		)
 	} else {
-		slog.Debug("presence cache: human signal (no transition)",
+		slog.Debug("presence cache: human signal (no change)",
 			slog.String("peer_id", peerID),
 			slog.String("state", state),
 		)
 	}
 	c.publish(emit)
+	c.publishObserved(peerID)
 }
 
 func (c *Cache) Snapshot(peerID string) Snapshot {
@@ -171,6 +213,92 @@ func (c *Cache) Subscribe(buffer int) (<-chan Change, func()) {
 	return ch, cancel
 }
 
+func (c *Cache) SubscribeObservations(buffer int) (<-chan string, func()) {
+	if buffer <= 0 {
+		buffer = 16
+	}
+	ch := make(chan string, buffer)
+	c.obsMu.Lock()
+	c.obs[ch] = struct{}{}
+	c.obsMu.Unlock()
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			c.obsMu.Lock()
+			delete(c.obs, ch)
+			c.obsMu.Unlock()
+			close(ch)
+		})
+	}
+	return ch, cancel
+}
+
+func (c *Cache) publishObserved(peerID string) {
+	c.obsMu.RLock()
+	defer c.obsMu.RUnlock()
+	for ch := range c.obs {
+		select {
+		case ch <- peerID:
+		default:
+		}
+	}
+	for s := range c.dirty {
+		s.mark(peerID)
+	}
+}
+
+type dirtySub struct {
+	mu    sync.Mutex
+	peers map[string]struct{}
+
+	wake chan struct{}
+}
+
+func (s *dirtySub) mark(peerID string) {
+	s.mu.Lock()
+	s.peers[peerID] = struct{}{}
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *dirtySub) drain() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.peers))
+	for id := range s.peers {
+		out = append(out, id)
+	}
+	clear(s.peers)
+	sort.Strings(out)
+	return out
+}
+
+func (c *Cache) SubscribeDirty() (wake <-chan struct{}, drain func() []string, cancel func()) {
+	s := &dirtySub{peers: map[string]struct{}{}, wake: make(chan struct{}, 1)}
+	c.obsMu.Lock()
+	c.dirty[s] = struct{}{}
+	c.obsMu.Unlock()
+	var once sync.Once
+	cancel = func() {
+		once.Do(func() {
+			c.obsMu.Lock()
+			delete(c.dirty, s)
+			c.obsMu.Unlock()
+			close(s.wake)
+		})
+	}
+	return s.wake, s.drain, cancel
+}
+
+func (c *Cache) DirtySubscriberCount() int {
+	c.obsMu.RLock()
+	defer c.obsMu.RUnlock()
+	return len(c.dirty)
+}
+
 func (c *Cache) SubscriberCount() int {
 	c.subsMu.RLock()
 	defer c.subsMu.RUnlock()
@@ -182,16 +310,20 @@ func (c *Cache) observe(peerID string, mutate func(*peerState)) Change {
 	defer c.mu.Unlock()
 	p := c.peers[peerID]
 	if p == nil {
-		p = &peerState{lastEffective: EffectiveUnknown}
+		p = &peerState{last: Snapshot{Effective: EffectiveUnknown}}
 		c.peers[peerID] = p
 	}
 	mutate(p)
-	eff := resolveLocked(p)
-	if eff == p.lastEffective {
+	return changeLocked(peerID, p)
+}
+
+func changeLocked(peerID string, p *peerState) Change {
+	snap := snapshotLocked(p)
+	if snap == p.last {
 		return Change{}
 	}
-	p.lastEffective = eff
-	return Change{PeerID: peerID, Snapshot: snapshotLocked(p)}
+	p.last = snap
+	return Change{PeerID: peerID, Snapshot: snap}
 }
 
 func (c *Cache) armTimerA(peerID string, p *peerState) {
@@ -212,54 +344,66 @@ func (c *Cache) armTimerB(peerID string, p *peerState) {
 	p.timerB = c.afterFunc(c.staleness, func() { c.expireB(peerID, gen) })
 }
 
+func (c *Cache) armTimerC(peerID string, p *peerState) {
+	if p.timerC != nil {
+		p.timerC.Stop()
+	}
+	p.genC++
+	gen := p.genC
+	p.timerC = c.afterFunc(c.staleness, func() { c.expireC(peerID, gen) })
+}
+
 func (c *Cache) expireA(peerID string, gen uint64) {
-	c.mu.Lock()
-	p := c.peers[peerID]
-	if p == nil || p.genA != gen {
-		c.mu.Unlock()
-		return
-	}
-	p.accepting = false
-	p.timerA = nil
-	eff := resolveLocked(p)
-	var emit Change
-	if eff != p.lastEffective {
-		p.lastEffective = eff
-		emit = Change{PeerID: peerID, Snapshot: snapshotLocked(p)}
-	}
-	c.mu.Unlock()
-	if emit.PeerID != "" {
-		slog.Debug("presence cache: technical timer expired (transition)",
-			slog.String("peer_id", peerID),
-			slog.String("effective", emit.Snapshot.Effective),
-		)
-	}
-	c.publish(emit)
+	c.expire(peerID, "technical", func(p *peerState) bool {
+		if p.genA != gen {
+			return false
+		}
+		p.accepting = false
+		p.timerA = nil
+		return true
+	})
 }
 
 func (c *Cache) expireB(peerID string, gen uint64) {
+	c.expire(peerID, "human", func(p *peerState) bool {
+		if p.genB != gen {
+			return false
+		}
+		p.chatty = ""
+		p.timerB = nil
+		return true
+	})
+}
+
+func (c *Cache) expireC(peerID string, gen uint64) {
+	c.expire(peerID, "sending", func(p *peerState) bool {
+		if p.genC != gen {
+			return false
+		}
+		p.sending = false
+		p.timerC = nil
+		return true
+	})
+}
+
+func (c *Cache) expire(peerID, slot string, clear func(*peerState) bool) {
 	c.mu.Lock()
 	p := c.peers[peerID]
-	if p == nil || p.genB != gen {
+	if p == nil || !clear(p) {
 		c.mu.Unlock()
 		return
 	}
-	p.chatty = ""
-	p.timerB = nil
-	eff := resolveLocked(p)
-	var emit Change
-	if eff != p.lastEffective {
-		p.lastEffective = eff
-		emit = Change{PeerID: peerID, Snapshot: snapshotLocked(p)}
-	}
+	emit := changeLocked(peerID, p)
 	c.mu.Unlock()
 	if emit.PeerID != "" {
-		slog.Debug("presence cache: human timer expired (transition)",
+		slog.Debug("presence cache: timer expired (snapshot changed)",
 			slog.String("peer_id", peerID),
+			slog.String("slot", slot),
 			slog.String("effective", emit.Snapshot.Effective),
 		)
 	}
 	c.publish(emit)
+	c.publishObserved(peerID)
 }
 
 func (c *Cache) publish(ev Change) {
@@ -279,6 +423,7 @@ func (c *Cache) publish(ev Change) {
 func snapshotLocked(p *peerState) Snapshot {
 	return Snapshot{
 		Accepting: p.accepting,
+		Sending:   p.sending,
 		Chatty:    p.chatty,
 		Effective: resolveLocked(p),
 	}

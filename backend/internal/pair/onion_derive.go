@@ -86,12 +86,17 @@ func OnionDerive(words []string) (*OnionMaterial, error) {
 		return nil, err
 	}
 	if len(canonical) != OnionWordCount {
-		return nil, fmt.Errorf("pair: onion phrase has %d words, want %d", len(canonical), OnionWordCount)
+		return nil, fmt.Errorf("%w: %d, want %d", ErrOnionWordCount, len(canonical), OnionWordCount)
 	}
 
+	return deriveFromSeedInput(onionRendezvousDST, strings.Join(canonical, " "), canonical)
+}
+
+func deriveFromSeedInput(dst, input string, words []string) (*OnionMaterial, error) {
+
 	h := sha256.New()
-	h.Write([]byte(onionRendezvousDST))
-	h.Write([]byte(strings.Join(canonical, " ")))
+	h.Write([]byte(dst))
+	h.Write([]byte(input))
 	var seed [32]byte
 	copy(seed[:], h.Sum(nil))
 
@@ -108,7 +113,7 @@ func OnionDerive(words []string) (*OnionMaterial, error) {
 	copy(hmacKey[:], deriveDST(seed[:], onionHMACDST))
 
 	return &OnionMaterial{
-		Words:             canonical,
+		Words:             words,
 		Seed:              seed,
 		PublicKey:         pub,
 		PrivateKey:        priv,
@@ -172,4 +177,41 @@ func uniformIndex(n uint32) (uint32, error) {
 			return v % n, nil
 		}
 	}
+}
+
+const (
+	OnionSecretMinLen = 50
+	OnionSecretMaxLen = 100
+
+	onionSecretAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+
+	onionSecretDST = "haoma-pair-rendezvous-secret-v1/"
+)
+
+func GenerateOnionSecret() (string, error) {
+	span := uint32(OnionSecretMaxLen - OnionSecretMinLen + 1)
+	extra, err := uniformIndex(span)
+	if err != nil {
+		return "", fmt.Errorf("pair: random secret length: %w", err)
+	}
+	n := OnionSecretMinLen + int(extra)
+	out := make([]byte, n)
+	for i := range out {
+		idx, err := uniformIndex(uint32(len(onionSecretAlphabet)))
+		if err != nil {
+			return "", fmt.Errorf("pair: random secret char: %w", err)
+		}
+		out[i] = onionSecretAlphabet[idx]
+	}
+	return string(out), nil
+}
+
+func OnionDeriveSecret(secret string) (*OnionMaterial, error) {
+	if len(secret) < OnionSecretMinLen {
+		return nil, fmt.Errorf("pair: rendezvous secret is %d chars, want at least %d", len(secret), OnionSecretMinLen)
+	}
+	if len(secret) > OnionSecretMaxLen {
+		return nil, fmt.Errorf("pair: rendezvous secret is %d chars, want at most %d", len(secret), OnionSecretMaxLen)
+	}
+	return deriveFromSeedInput(onionSecretDST, secret, nil)
 }

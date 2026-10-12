@@ -1,0 +1,10 @@
+{
+  "type": "devicelink.probe",
+  "payload": {
+    "handle_id": "8e40c7b12df9463a05e8b1c73fa0d629",
+    "attempt": 2,
+    "ready": false,
+    "error": "unreachable",
+    "at": 1754902820
+  }
+}

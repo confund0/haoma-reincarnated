@@ -27,7 +27,11 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "exit-after-stderr":
 
-		fmt.Fprintln(os.Stderr, "synthetic-stderr-from-mock")
+		msg := "synthetic-stderr-from-mock"
+		if extra := os.Getenv("HAOMA_TEST_STDERR_EXTRA"); extra != "" {
+			msg += "-" + extra
+		}
+		fmt.Fprintln(os.Stderr, msg)
 		os.Exit(0)
 	case "garbage":
 
@@ -183,6 +187,121 @@ func TestSpawn_StderrCaptured(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "synthetic-stderr-from-mock") {
 		t.Errorf("stderr log %q does not contain mock marker; got %q", logPath, data)
+	}
+}
+
+func TestSpawn_StderrRotatesOnRespawn(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "child.stderr")
+	prevPath := logPath + capturePrevSuffix
+	if err := os.WriteFile(logPath, []byte("earlier-run-bytes\n"), 0o600); err != nil {
+		t.Fatalf("seed log: %v", err)
+	}
+
+	spawnAndReap := func(marker string) {
+		t.Helper()
+		t.Setenv("HAOMA_SUPERVISOR_TEST_MODE", "exit-after-stderr")
+		t.Setenv("HAOMA_TEST_STDERR_EXTRA", marker)
+		c, err := Spawn("respawn-check", os.Args[0], []string{"-test.run=^$"}, nil, logPath)
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := c.WaitReady(ctx); err == nil {
+			t.Fatal("WaitReady: want exit-before-ready error, got nil")
+		}
+		select {
+		case <-c.waitCh:
+		case <-time.After(2 * time.Second):
+			t.Fatal("waitCh never closed")
+		}
+	}
+
+	spawnAndReap("first")
+	live, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read live: %v", err)
+	}
+	if strings.Contains(string(live), "earlier-run-bytes") {
+		t.Errorf("live file still holds the pre-spawn generation; want it rotated away: %q", live)
+	}
+	if !strings.Contains(string(live), "synthetic-stderr-from-mock-first") {
+		t.Errorf("live file missing this run's bytes; got %q", live)
+	}
+	prev, err := os.ReadFile(prevPath)
+	if err != nil {
+		t.Fatalf("read prev: %v", err)
+	}
+	if !strings.Contains(string(prev), "earlier-run-bytes") {
+		t.Errorf("prev generation = %q, want the pre-spawn bytes", prev)
+	}
+
+	spawnAndReap("second")
+	live, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read live after second respawn: %v", err)
+	}
+	if !strings.Contains(string(live), "synthetic-stderr-from-mock-second") {
+		t.Errorf("live file missing second run's bytes; got %q", live)
+	}
+	prev, err = os.ReadFile(prevPath)
+	if err != nil {
+		t.Fatalf("read prev after second respawn: %v", err)
+	}
+	if strings.Contains(string(prev), "earlier-run-bytes") {
+		t.Errorf("oldest generation survived a second rotation; got %q", prev)
+	}
+	if !strings.Contains(string(prev), "synthetic-stderr-from-mock-first") {
+		t.Errorf("prev generation after second rotate = %q, want the first run's bytes", prev)
+	}
+}
+
+func TestRotateCaptureFile_NoPriorFile_IsNoOp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "child.stderr")
+	if err := rotateCaptureFile(path); err != nil {
+		t.Fatalf("rotateCaptureFile: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("rotateCaptureFile conjured %s from nothing", path)
+	}
+	if _, err := os.Stat(path + capturePrevSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("rotateCaptureFile conjured a .prev file from nothing")
+	}
+}
+
+func TestRotateCaptureFile_KeepsExactlyOnePreviousGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "child.stderr")
+	prev := path + capturePrevSuffix
+
+	if err := os.WriteFile(path, []byte("gen-0"), 0o600); err != nil {
+		t.Fatalf("seed gen-0: %v", err)
+	}
+	if err := rotateCaptureFile(path); err != nil {
+		t.Fatalf("rotate 1: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("live path still present after rotate; want cleared for reopen")
+	}
+	data, err := os.ReadFile(prev)
+	if err != nil {
+		t.Fatalf("read prev: %v", err)
+	}
+	if string(data) != "gen-0" {
+		t.Errorf("prev = %q, want %q", data, "gen-0")
+	}
+
+	if err := os.WriteFile(path, []byte("gen-1"), 0o600); err != nil {
+		t.Fatalf("seed gen-1: %v", err)
+	}
+	if err := rotateCaptureFile(path); err != nil {
+		t.Fatalf("rotate 2: %v", err)
+	}
+	data, err = os.ReadFile(prev)
+	if err != nil {
+		t.Fatalf("read prev after second rotate: %v", err)
+	}
+	if string(data) != "gen-1" {
+		t.Errorf("prev after second rotate = %q, want %q (gen-0 must be gone)", data, "gen-1")
 	}
 }
 

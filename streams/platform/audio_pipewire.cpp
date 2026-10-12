@@ -1,9 +1,3 @@
-// PipeWire audio backend (Linux). Implements both capture and playback halves
-// of platform/audio_backend.h. Each binary (haoma-mic / haoma-spk) links this
-// file and references only the half it needs.
-//
-// PipeWire client API: thread-loop owns the event pump; pw_stream_new_simple
-// auto-attaches the listener; on_process callback is the hot path.
 
 #include "audio_backend.h"
 #include "../common/log.h"
@@ -37,8 +31,6 @@ const spa_pod* build_format_pod(uint8_t* buf, size_t buf_size) {
   info.channels = CHANNELS;
   return spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
 }
-
-// ── Capture ────────────────────────────────────────────────────────────────
 
 struct PWCapture final : AudioCapture {
   pw_thread_loop* loop   = nullptr;
@@ -141,8 +133,6 @@ void PWCapture::close() {
   if (loop)   { pw_thread_loop_destroy(loop); loop = nullptr; }
 }
 
-// ── Playback ───────────────────────────────────────────────────────────────
-
 struct PWPlayback final : AudioPlayback {
   pw_thread_loop* loop   = nullptr;
   pw_stream*      stream = nullptr;
@@ -153,9 +143,7 @@ struct PWPlayback final : AudioPlayback {
 
   bool open(std::function<size_t(float*, size_t)> cb) override;
   void close() override;
-  bool query_render_timestamp(int64_t* /*fp*/, int64_t* /*mono_ns*/) override {
-    // No A/V sync on desktop (haoma-text has no video tile yet —
-    // wishlisted). Returning false makes spk skip clock_sample.
+  bool query_render_timestamp(int64_t*  , int64_t*  ) override {
     return false;
   }
   ~PWPlayback() override { close(); }
@@ -248,9 +236,9 @@ void PWPlayback::close() {
   if (loop)   { pw_thread_loop_destroy(loop); loop = nullptr; }
 }
 
-}  // namespace
+}  
 
 std::unique_ptr<AudioCapture>  make_capture()  { return std::make_unique<PWCapture>(); }
 std::unique_ptr<AudioPlayback> make_playback() { return std::make_unique<PWPlayback>(); }
 
-}  // namespace haoma::streams
+}  

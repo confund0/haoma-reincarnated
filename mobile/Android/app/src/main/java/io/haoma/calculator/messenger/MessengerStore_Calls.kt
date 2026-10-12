@@ -212,7 +212,7 @@ fun MessengerStore.startCall(chatId: String, modalities: List<String> = listOf(C
             
             
             upsertActiveCall(started.call)
-            appendStatus("calling ${peerLabelFor(started.call.peerId)} (call_id=${shortCallId(started.callId)})")
+            appendStatus("calling ${shortChat(started.call.peerId)} (call_id=${shortCallId(started.callId)})")
         } catch (t: Throwable) {
             appendStatus("call failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
         }
@@ -246,10 +246,19 @@ fun MessengerStore.respondCall(callId: String, action: String, reason: String = 
 }
 
 
+internal const val CallFailNoAnswer = "no_answer"
+
+
+internal fun isCallNoAnswer(outcome: String, failReason: String): Boolean =
+    outcome == "failed" && failReason == CallFailNoAnswer
+
 internal fun MessengerStore.applyCallStateChange(call: CallEntry) {
     val prior = _activeCalls.value[call.callId]
     upsertActiveCall(call)
     val label = peerLabelFor(call.peerId)
+    
+    
+    val who = shortChat(call.peerId)
     Logger.i(
         "call",
         "state-changed dir=${call.direction} status=${call.status} " +
@@ -275,33 +284,42 @@ internal fun MessengerStore.applyCallStateChange(call: CallEntry) {
 
     when (call.direction) {
         CallDirection.In -> when (call.status) {
-            CallStatus.Ringing -> appendStatus("ringing — incoming call from $label")
-            CallStatus.Accepted -> appendStatus("connected — call with $label")
-            CallStatus.Rejected -> appendStatus("call from $label ended (declined)")
+            CallStatus.Ringing -> appendStatus("ringing — incoming call from $who")
+            CallStatus.Accepted -> appendStatus("connected — call with $who")
+            CallStatus.Rejected -> appendStatus("call from $who ended (declined)")
             CallStatus.Ended -> {
-                if (prior?.status == CallStatus.Ringing) {
-                    appendStatus("missed call from $label", level = StatusLevel.WARN)
+                if (call.failReason == CallAnsweredElsewhere) {
+                    
+                    appendStatus("call from $who answered on another device")
+                } else if (prior?.status == CallStatus.Ringing) {
+                    appendStatus("missed call from $who", level = StatusLevel.WARN)
                 } else {
-                    appendStatus("call from $label ended")
+                    appendStatus("call from $who ended")
                 }
             }
             CallStatus.Failed -> appendStatus(
-                "call from $label failed: ${call.failReason}",
+                "call from $who failed: ${call.failReason}",
                 level = StatusLevel.WARN,
             )
         }
         CallDirection.Out -> when (call.status) {
             CallStatus.Offered -> Unit 
-            CallStatus.Accepted -> appendStatus("connected — $label answered")
+            CallStatus.Accepted -> appendStatus("connected — $who answered")
             CallStatus.Rejected -> {
                 val reason = call.failReason.ifEmpty { "declined" }
-                appendStatus("$label declined: $reason")
+                appendStatus("$who declined: $reason")
             }
-            CallStatus.Ended -> appendStatus("call with $label ended")
-            CallStatus.Failed -> appendStatus(
-                "outgoing call to $label failed: ${call.failReason}",
-                level = StatusLevel.WARN,
-            )
+            CallStatus.Ended -> appendStatus("call with $who ended")
+            CallStatus.Failed -> if (call.failReason == CallFailNoAnswer) {
+                
+                
+                appendStatus("no answer from $who")
+            } else {
+                appendStatus(
+                    "outgoing call to $who failed: ${call.failReason}",
+                    level = StatusLevel.WARN,
+                )
+            }
         }
     }
 }

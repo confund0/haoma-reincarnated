@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
 	"go.mau.fi/libsignal/protocol"
 	"go.mau.fi/libsignal/signalerror"
 
@@ -15,7 +16,9 @@ import (
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/events"
+	"haoma-frontend/internal/invitation"
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/msg"
 	"haoma-frontend/internal/pair"
 )
@@ -149,6 +152,25 @@ func eventsLoop(ctx context.Context, d *daemon) {
 
 			go sweepStagedFetches(ctx, d)
 
+			go sweepSiblingFetches(ctx, d)
+
+			checkKeptGapOffers(d)
+
+			go func() {
+				sweepGapFill(ctx, d)
+				pruneJournalForSiblings(d)
+			}()
+
+			go reportDestroyAttempts(ctx, d)
+
+			go sweepDeliveryReconcile(ctx, d)
+
+			go reattachInvitationWaiters(ctx, d)
+
+			go sweepRetiredRoutes(ctx, d)
+
+			go sweepDeadPeerRows(ctx, d)
+
 			d.fileRetrySweepOnce.Do(func() {
 				go func() {
 					n, err := d.backendClient.RetryFailedFiles(ctx)
@@ -166,6 +188,9 @@ func eventsLoop(ctx context.Context, d *daemon) {
 			OnFileFetchProgress: fileFetchProgressHandler(d),
 			OnEvent: func(n backendapi.Notification) {
 				push(d.ipcSrv, ipc.FrameStatusEvent, "", notificationToStatusEvent(n))
+			},
+			OnDestroyDevice: func(ev backendapi.DestroyDeviceInstruction) {
+				stopForDestroy(d, ev.Reason, ev.EraseID)
 			},
 			OnPresence: func(o backendapi.PresenceObservation) {
 				if d.presenceCache == nil || o.PeerID == "" {
@@ -194,34 +219,26 @@ func eventsLoop(ctx context.Context, d *daemon) {
 					LastPassiveAt: o.LastPassiveAt,
 				})
 			},
+			OnUnreachable: peerUnreachableHandler(ctx, d),
 			OnDelivery: func(ds backendapi.DeliveryStatus) {
 				slog.Debug("delivery.state-changed via SSE",
 					slog.String("envelope_id", ds.EnvelopeID),
 					slog.String("state", ds.State),
 				)
 
-				if d.events != nil {
-					if _, err := d.events.UpdateDeliveryState(ds.EnvelopeID, ds.State); err != nil {
-						if errors.Is(err, events.ErrEventNotFound) {
-							slog.Debug("delivery_status: no event row to update (pre-index envelope)",
-								slog.String("envelope_id", ds.EnvelopeID),
-							)
-						} else {
-							slog.Warn("persist delivery state failed",
-								slog.String("envelope_id", ds.EnvelopeID),
-								slog.String("state", ds.State),
-								slog.Any("err", err),
-							)
-						}
-					}
+				if handled, _ := applyReceiptOutcome(d, ds.EnvelopeID, ds.State); handled {
+					push(d.ipcSrv, ipc.FrameDeliveryStatus, "", ipc.DeliveryStatusPayload{
+						EnvelopeID: ds.EnvelopeID,
+						State:      ds.State,
+						At:         ds.At,
+						Attempts:   ds.Attempts,
+						LastError:  clientDetail("delivery_"+ds.State, ds.LastError),
+					})
+					return
 				}
-				push(d.ipcSrv, ipc.FrameDeliveryStatus, "", ipc.DeliveryStatusPayload{
-					EnvelopeID: ds.EnvelopeID,
-					State:      ds.State,
-					At:         ds.At,
-					Attempts:   ds.Attempts,
-					LastError:  ds.LastError,
-				})
+				if p, ok := deliveryPush(d, ds); ok {
+					push(d.ipcSrv, ipc.FrameDeliveryStatus, "", p)
+				}
 			},
 			OnInbox: func(entry backendapi.InboxEntry) {
 				slog.Debug("inbox.received via SSE",
@@ -242,11 +259,12 @@ func eventsLoop(ctx context.Context, d *daemon) {
 					slog.Int("attempt", p.Attempt),
 					slog.Bool("ready", p.Ready),
 				)
+
 				push(d.ipcSrv, ipc.FramePairOnionProbe, "", ipc.PairOnionProbePush{
 					HandleID: p.HandleID,
 					Attempt:  p.Attempt,
 					Ready:    p.Ready,
-					Error:    p.Error,
+					Error:    reachToken(p.Error),
 					At:       p.At,
 				})
 			},
@@ -257,7 +275,6 @@ func eventsLoop(ctx context.Context, d *daemon) {
 				)
 				push(d.ipcSrv, ipc.FramePeerSelfReachChanged, "", ipc.PeerSelfReachPayload{
 					PeerID: ev.PeerID,
-					Onion:  ev.Onion,
 					Ok:     ev.Ok,
 					At:     ev.At,
 				})
@@ -333,10 +350,13 @@ func pushBackendStatus(ctx context.Context, d *daemon) {
 				Unreachable: info.Health.Unreachable,
 			}
 			payload.OnionCount = len(info.Slots)
+			payload.ClockSkew = clockSkewFromTor(info.Health)
 		}
 	} else {
 		payload.Tor = ipc.TorHealth{Unreachable: true}
 	}
+
+	logClockSkew(d, payload.ClockSkew)
 	d.latestStatus.Store(&payload)
 	push(d.ipcSrv, ipc.FrameBackendStatus, "", payload)
 }
@@ -381,6 +401,16 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		slog.Warn("inbox entry has empty peer_id; skipping timeline persist",
 			slog.String("envelope_id", entry.Envelope.ID),
 		)
+		return
+	}
+
+	if d.isSibling(entry.PeerID) {
+		processSiblingRailEnvelope(ctx, d, entry)
+		return
+	}
+
+	if deviceLinkPending(d, entry.PeerID) {
+		processDeviceLinkInbound(ctx, d, entry)
 		return
 	}
 
@@ -440,9 +470,19 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		return
 	}
 
+	noteSending(d, entry)
+
+	if !hadSession {
+		d.sessionsChanged.fire()
+
+		noteContactChangedForPeer(d, entry.PeerID)
+		pushInheritedContactsChanged(d, nil, "session_started")
+	}
+
+	markChatStarted(d, chatID)
 	if !hadSession && d.peerSeq != nil && d.cipher != nil {
 		state := d.effectivePresenceState()
-		if err := d.shipPresence(ctx, entry.PeerID, state); err != nil {
+		if err := d.shipPresenceToDevice(ctx, entry.PeerID, state); err != nil {
 			slog.Warn("A0: responder presence echo failed",
 				slog.String("peer_id", entry.PeerID),
 				slog.Any("err", err),
@@ -498,6 +538,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 	if d.peerMeta != nil {
 		if rec, err := d.peerMeta.Get(entry.PeerID); err == nil && rec.Fingerprint == "" {
 			seedPeerFingerprint(d, entry.PeerID)
+			notePairingCompleted(d, entry.PeerID, "joiner-first-decrypt")
 		}
 	}
 
@@ -510,9 +551,9 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		}
 
 		if textBody, perr := wrapper.Text(); perr == nil {
-			if textBody.PresenceState != "" {
-				d.presenceCache.ObserveHuman(entry.PeerID, textBody.PresenceState)
-			}
+			noteHumanState(d, entry, textBody.PresenceState)
+
+			applyUnlinkFields(ctx, d, entry.PeerID, "text", textBody.SendsUnlinkNotice, textBody.DeviceCount, 0, wrapper.Ts)
 			if textBody.SenderNick != "" && d.peerMeta != nil {
 				clampedTs := events.ClampSenderTs(wrapper.Ts, time.Now().Unix())
 				changed, err := d.peerMeta.SetNick(entry.PeerID, textBody.SenderNick, clampedTs)
@@ -524,47 +565,55 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 				} else {
 					slog.Debug("peer-meta nick updated (text piggyback)",
 						slog.String("peer_id", entry.PeerID),
-						slog.String("nick", textBody.SenderNick),
 						slog.Int64("clamped_ts", clampedTs),
 						slog.Bool("changed", changed),
 					)
 					if changed {
-						pushPeerMetaUpdated(ctx, d, entry.PeerID)
+						personChangedLocally(ctx, d, entry.PeerID)
 					}
 				}
 			}
 		}
-		if _, persistErr := d.events.AppendInbound(events.InboundParams{
-			ChatID:        chatID,
-			Kind:          events.KindText,
-			SenderTs:      wrapper.Ts,
-			SenderSeq:     wrapper.Seq,
-			EnvelopeID:    entry.Envelope.ID,
-			MsgID:         wrapper.MsgID,
-			ExpireSeconds: wrapper.ExpireSeconds,
-			Status:        events.DecryptOK,
-			Body:          wrapper.Body,
-		}); persistErr != nil {
+
+		_, persistErr := d.events.AppendInbound(events.InboundParams{
+			ChatID:            chatID,
+			Kind:              events.KindText,
+			SenderTs:          wrapper.Ts,
+			SenderSeq:         wrapper.Seq,
+			ArrivedFromPeerID: entry.PeerID,
+			EnvelopeID:        entry.Envelope.ID,
+			MsgID:             wrapper.MsgID,
+			ExpireSeconds:     wrapper.ExpireSeconds,
+			Status:            events.DecryptOK,
+			Body:              wrapper.Body,
+		})
+		switch {
+		case persistErr == nil:
+			noteInboundTextArrival(d, chatID, entry.PeerID, wrapper)
+
+		case errors.Is(persistErr, events.ErrDuplicateMsgID):
+
+			slog.Debug("inbox: message already held — the row stands, the arrival is counted here",
+				slog.String("envelope_id", entry.Envelope.ID),
+				slog.String("msg_id", wrapper.MsgID),
+				slog.String("peer_id", entry.PeerID),
+				slog.String("outcome", "duplicate_row_arrival_counted"),
+			)
+
+			if _, err := d.events.RecordArrivedFrom(wrapper.MsgID, entry.PeerID); err != nil {
+				slog.Warn("inbox: recording the sending device on a held row failed (its read receipt will address the chat's stored device)",
+					slog.String("msg_id", wrapper.MsgID),
+					slog.String("peer_id", entry.PeerID),
+					slog.Any("err", err),
+				)
+			}
+			noteInboundTextArrival(d, chatID, entry.PeerID, wrapper)
+
+		default:
 			slog.Error("persist decrypted event failed",
 				slog.String("envelope_id", entry.Envelope.ID),
 				slog.Any("err", persistErr),
 			)
-		} else {
-
-			maybeSuppressInboundReceipt(d, chatID, wrapper.MsgID)
-
-			bumpChatActivity(context.Background(), d, chatID, time.Now().Unix())
-			if !chatIsFocused(d, chatID) {
-				incrementChatUnread(context.Background(), d, chatID)
-			}
-
-			d.autoMarkOnArrival(context.Background(), chatID)
-
-			notifyBody := ""
-			if textBody, perr := wrapper.Text(); perr == nil {
-				notifyBody = textBody.Text
-			}
-			emitInboundNotification(context.Background(), d, chatID, entry.PeerID, notifyBody)
 		}
 
 	case msg.KindEdit:
@@ -651,7 +700,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		}
 
 		clampedTs := events.ClampSenderTs(wrapper.Ts, time.Now().Unix())
-		if _, err := d.events.AppendReactionBreadcrumb(body.Target, body.Emoji, entry.PeerID, clampedTs, wrapper.ExpireSeconds); err != nil {
+		if _, err := d.events.AppendReactionBreadcrumb(body.Target, body.Emoji, entry.PeerID, wrapper.MsgID, clampedTs, wrapper.ExpireSeconds); err != nil {
 			switch {
 			case errors.Is(err, events.ErrEventNotFound):
 				slog.Info("inbound reaction: target missing (swept or out-of-order)",
@@ -662,6 +711,13 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 				slog.Warn("inbound reaction: target is not reactable; dropping",
 					slog.String("target_msg_id", body.Target),
 					slog.String("peer_id", entry.PeerID),
+				)
+			case errors.Is(err, events.ErrDuplicateMsgID):
+
+				slog.Debug("inbound reaction: already held — no second row",
+					slog.String("target_msg_id", body.Target),
+					slog.String("peer_id", entry.PeerID),
+					slog.String("outcome", "noop_duplicate"),
 				)
 			default:
 				slog.Error("inbound reaction: append failed",
@@ -682,11 +738,13 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			return
 		}
 
-		d.presenceCache.ObserveHuman(entry.PeerID, body.State)
+		noteHumanState(d, entry, body.State)
 		slog.Debug("inbound presence observed",
 			slog.String("peer_id", entry.PeerID),
 			slog.String("state", body.State),
 		)
+
+		applyUnlinkFields(ctx, d, entry.PeerID, "presence", body.SendsUnlinkNotice, body.DeviceCount, body.UnlinkedAt, wrapper.Ts)
 
 	case msg.KindFileOffer:
 		body, err := wrapper.FileOffer()
@@ -710,7 +768,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			)
 			return
 		}
-		ingestFileReceipt(ctx, d, entry.PeerID, body)
+		ingestFileReceipt(ctx, d, entry.PeerID, body, wrapper.MsgID)
 
 	case msg.KindFileKey:
 		body, key, nonce, err := wrapper.FileKey()
@@ -722,7 +780,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			)
 			return
 		}
-		ingestFileKey(ctx, d, entry.PeerID, body.Token, key, nonce)
+		ingestFileKey(ctx, d, entry.PeerID, body.Token, key, nonce, wrapper.MsgID)
 
 	case msg.KindFileDelivered:
 		body, err := wrapper.FileDelivered()
@@ -772,7 +830,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 		}
 
 		applyCallSenderNick(ctx, d, entry.PeerID, body.SenderNick, wrapper.Ts, "call_offer")
-		ingestCallOffer(ctx, d, chatID, entry.PeerID, body.CallID, body.Modalities, body.OutboundKey, body.Tokens)
+		ingestCallOffer(ctx, d, chatID, entry.PeerID, body.CallID, body.Modalities, body.OutboundKey, body.Tokens, wrapper.Ts)
 
 	case msg.KindCallAccept:
 		body, err := wrapper.CallAccept()
@@ -785,7 +843,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			return
 		}
 		applyCallSenderNick(ctx, d, entry.PeerID, body.SenderNick, wrapper.Ts, "call_accept")
-		applyCallAccept(ctx, d, body.CallID, body.OutboundKey, body.Tokens)
+		applyCallAccept(ctx, d, entry.PeerID, body.CallID, body.OutboundKey, body.Tokens)
 
 	case msg.KindCallReject:
 		body, err := wrapper.CallReject()
@@ -797,7 +855,7 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			)
 			return
 		}
-		applyCallTransition(d, body.CallID, calls.StatusRejected, body.Reason, "call_reject")
+		applyCallTransition(ctx, d, entry.PeerID, body.CallID, calls.StatusRejected, body.Reason, "call_reject")
 
 	case msg.KindCallEnd:
 		body, err := wrapper.CallEnd()
@@ -809,7 +867,12 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			)
 			return
 		}
-		applyCallTransition(d, body.CallID, calls.StatusEnded, "", "call_end")
+
+		endReason := ""
+		if body.Reason == msg.CallEndAnsweredElsewhere {
+			endReason = msg.CallEndAnsweredElsewhere
+		}
+		applyCallTransition(ctx, d, entry.PeerID, body.CallID, calls.StatusEnded, endReason, "call_end")
 
 	case msg.KindCallControl:
 
@@ -831,10 +894,11 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			)
 			return
 		}
-		if callState.PeerID != entry.PeerID {
+
+		if callState.MediaPeer() != entry.PeerID {
 			slog.Warn("inbound call_control: peer-id mismatch — dropping (possible spoof attempt)",
 				slog.String("call_id", body.CallID),
-				slog.String("call_peer_id", callState.PeerID),
+				slog.String("call_peer_id", callState.MediaPeer()),
 				slog.String("sender_peer_id", entry.PeerID),
 			)
 			return
@@ -876,13 +940,11 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			return
 		}
 
-		if body.PresenceState != "" {
-			d.presenceCache.ObserveHuman(entry.PeerID, body.PresenceState)
-		}
+		noteHumanState(d, entry, body.PresenceState)
 
 		clampedTs := events.ClampSenderTs(wrapper.Ts, time.Now().Unix())
 		for _, target := range body.Targets {
-			if _, err := d.events.ApplyReadReceipt(target, clampedTs, chatID); err != nil {
+			if _, _, err := d.events.ApplyReadReceipt(target, clampedTs, chatID); err != nil {
 				switch {
 				case errors.Is(err, events.ErrEventNotFound):
 					slog.Info("inbound read: target missing (swept or out-of-order)",
@@ -908,6 +970,19 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			}
 		}
 
+	case msg.KindDeviceLinkIdentity:
+
+		zeroBytes(plain)
+		slog.Warn("inbound identity bundle dropped",
+			slog.String("peer_id", entry.PeerID),
+			slog.String("envelope_id", entry.Envelope.ID),
+			slog.String("reason", reasonNoPendingLink),
+		)
+
+	case msg.KindPairingInvitation:
+		applyInboundInvitation(ctx, d, chatID, entry.PeerID, wrapper)
+		zeroBytes(plain)
+
 	default:
 		if _, persistErr := d.events.AppendInbound(events.InboundParams{
 			ChatID:        chatID,
@@ -920,10 +995,18 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			Status:        events.DecryptFailed,
 			RawBlob:       plain,
 		}); persistErr != nil {
-			slog.Error("persist unknown-kind event failed",
-				slog.String("envelope_id", entry.Envelope.ID),
-				slog.Any("err", persistErr),
-			)
+			if errors.Is(persistErr, events.ErrDuplicateMsgID) {
+				slog.Debug("inbox: unknown-kind message already held — no second row",
+					slog.String("envelope_id", entry.Envelope.ID),
+					slog.String("msg_id", wrapper.MsgID),
+					slog.String("outcome", "noop_duplicate"),
+				)
+			} else {
+				slog.Error("persist unknown-kind event failed",
+					slog.String("envelope_id", entry.Envelope.ID),
+					slog.Any("err", persistErr),
+				)
+			}
 		} else {
 			bumpChatActivity(ctx, d, chatID, time.Now().Unix())
 		}
@@ -932,6 +1015,201 @@ func processInboxEntry(ctx context.Context, d *daemon, entry backendapi.InboxEnt
 			slog.String("peer_id", entry.PeerID),
 		)
 	}
+}
+
+func applyInboundInvitation(ctx context.Context, d *daemon, chatID chat.ChatID, peerID string, wrapper *msg.Wrapper) {
+	logger := slog.With(
+		slog.String("peer_id", peerID),
+		slog.String("chat_id", string(chatID)),
+		slog.String("invitation_id", wrapper.MsgID),
+	)
+	logger.Debug("invitation: inbound observed")
+
+	if d.invitations == nil || d.events == nil {
+		logger.Warn("invitation: drop — frontend wiring incomplete",
+			slog.String("reason", reasonNotReady),
+		)
+		return
+	}
+
+	if _, err := d.invitations.Get(wrapper.MsgID); err == nil {
+		logger.Debug("invitation: already held — no state change (idempotent redelivery)",
+			slog.String("outcome", "noop_duplicate"),
+		)
+		return
+	} else if !errors.Is(err, invitation.ErrNotFound) {
+		logger.Warn("invitation: drop — invitation store read failed",
+			slog.String("reason", "store_read_failed"),
+			slog.Any("err", err),
+		)
+		return
+	}
+
+	body, err := wrapper.PairingInvitation()
+	if err != nil {
+		logger.Debug("invitation: drop — body unusable",
+			slog.String("reason", "bad_invitation"),
+			slog.Any("err", err),
+		)
+		return
+	}
+
+	now := time.Now().Unix()
+	if reason, ok := unusableInvitationDeadline(body.ExpiresAt, now); !ok {
+		logger.Info("invitation: drop — the deadline is not one this device can honour",
+			slog.String("reason", reason),
+			slog.Int64("expires_at", body.ExpiresAt),
+		)
+		return
+	}
+
+	logger = logger.With(slog.String("offering_device", body.OfferingDevice))
+
+	if liveID, err := invitationAlreadyOutranked(d, chatID, body.OfferingDevice, body.MintedAt); err != nil {
+		logger.Warn("invitation: drop — could not read the conversation's earlier invitations",
+			slog.String("reason", "store_read_failed"),
+			slog.Any("err", err),
+		)
+		return
+	} else if liveID != "" {
+		logger.Info("invitation: drop — a newer invitation from that device is already held",
+			slog.String("reason", "outranked"),
+			slog.String("live_id", liveID),
+			slog.Int64("minted_at", body.MintedAt),
+		)
+		return
+	}
+
+	rec := invitation.Record{
+		MsgID:          wrapper.MsgID,
+		ChatID:         string(chatID),
+		Fingerprint:    fingerprintForChat(d, chatID),
+		OfferingDevice: body.OfferingDevice,
+		Secret:         body.Secret,
+		MintedAt:       body.MintedAt,
+		ExpiresAt:      body.ExpiresAt,
+		State:          events.InvitationLive,
+	}
+	markerBody, err := json.Marshal(events.InvitationBody{
+		ExpiresAt: body.ExpiresAt,
+		State:     events.InvitationLive,
+	})
+	if err == nil {
+
+		_, err = d.events.AppendInbound(events.InboundParams{
+			ChatID:        chatID,
+			Kind:          events.KindInvitation,
+			SenderTs:      wrapper.Ts,
+			SenderSeq:     wrapper.Seq,
+			MsgID:         wrapper.MsgID,
+			ExpireSeconds: wrapper.ExpireSeconds,
+			Status:        events.DecryptOK,
+			Body:          markerBody,
+			Attach: func(txn *badger.Txn) error {
+				return d.invitations.PutTxn(txn, rec)
+			},
+		})
+	}
+	if errors.Is(err, events.ErrDuplicateMsgID) {
+
+		logger.Debug("invitation: already marked in this conversation — no second row",
+			slog.String("outcome", "noop_duplicate"),
+		)
+		return
+	}
+	if err != nil {
+		logger.Error("invitation: drop — the invitation and its row were not written",
+			slog.String("reason", "persist_failed"),
+			slog.Any("err", err),
+		)
+		return
+	}
+	logger.Debug("invitation: held and marked — local state changed",
+		slog.String("outcome", "applied"),
+		slog.Any("invitation", rec),
+	)
+
+	supersedeOlderInvitations(d, logger, chatID, rec.MsgID, rec.OfferingDevice, rec.MintedAt)
+
+	bumpChatActivity(ctx, d, chatID, time.Now().Unix())
+	slog.Info("invitation: received in an existing conversation",
+		slog.String("chat_id", string(chatID)),
+		slog.String("invitation_id", rec.MsgID),
+		slog.Int64("expires_at", rec.ExpiresAt),
+	)
+}
+
+func invitationAlreadyOutranked(d *daemon, chatID chat.ChatID, offeringDevice string, mintedAt int64) (string, error) {
+	held, err := d.invitations.ListByChat(chatID)
+	if err != nil {
+		return "", err
+	}
+	for _, rec := range held {
+		if rec.OfferingDevice != offeringDevice {
+			continue
+		}
+		if rec.State == events.InvitationLive && rec.MintedAt > mintedAt {
+			return rec.MsgID, nil
+		}
+	}
+	return "", nil
+}
+
+func supersedeOlderInvitations(d *daemon, logger *slog.Logger, chatID chat.ChatID, keepMsgID, keepOfferingDevice string, keepMintedAt int64) {
+	held, err := d.invitations.ListByChat(chatID)
+	if err != nil {
+		logger.Warn("invitation: could not read the conversation's earlier invitations",
+			slog.Any("err", err),
+		)
+		return
+	}
+	for _, old := range held {
+		if old.OfferingDevice != keepOfferingDevice {
+			continue
+		}
+		if old.MsgID == keepMsgID || old.State != events.InvitationLive || old.MintedAt >= keepMintedAt {
+			continue
+		}
+		markerBody, mErr := json.Marshal(events.InvitationBody{
+			ExpiresAt: old.ExpiresAt,
+			State:     events.InvitationSuperseded,
+		})
+		if mErr == nil {
+			_, mErr = d.events.UpdateInvitationBody(old.MsgID, markerBody, func(txn *badger.Txn) error {
+				return d.invitations.SetStateTxn(txn, old.MsgID, events.InvitationSuperseded)
+			})
+		}
+		if mErr != nil && !errors.Is(mErr, events.ErrEventNotFound) {
+			logger.Warn("invitation: an earlier invitation was not retired",
+				slog.String("superseded_id", old.MsgID),
+				slog.Any("err", mErr),
+			)
+			continue
+		}
+		if errors.Is(mErr, events.ErrEventNotFound) {
+
+			logger.Debug("invitation: an earlier invitation has no row left to retire",
+				slog.String("superseded_id", old.MsgID),
+			)
+			continue
+		}
+		logger.Debug("invitation: an earlier invitation was retired by this one",
+			slog.String("superseded_id", old.MsgID),
+			slog.String("outcome", "superseded"),
+		)
+	}
+}
+
+const invitationMaxLifetime = 8 * 24 * time.Hour
+
+func unusableInvitationDeadline(expiresAt, now int64) (string, bool) {
+	switch {
+	case expiresAt <= now:
+		return "deadline_passed", false
+	case expiresAt > now+int64(invitationMaxLifetime.Seconds()):
+		return "deadline_absurd", false
+	}
+	return "", true
 }
 
 func maybeConvergeRetention(d *daemon, chatID chat.ChatID, senderPeerID string, incomingTTL uint32, senderTs int64) (bool, uint32) {
@@ -969,7 +1247,7 @@ func maybeConvergeRetention(d *daemon, chatID chat.ChatID, senderPeerID string, 
 	}
 	slog.Info("retention converged",
 		slog.String("chat_id", string(chatID)),
-		slog.String("from_peer", senderPeerID),
+		slog.String("from_peer", logid.Short(senderPeerID)),
 		slog.Int("old_ttl", int(oldTTL)),
 		slog.Int("new_ttl", int(incomingTTL)),
 	)
@@ -1049,12 +1327,11 @@ func applyCallSenderNick(ctx context.Context, d *daemon, peerID, senderNick stri
 	slog.Debug("peer-meta nick updated (call piggyback)",
 		slog.String("peer_id", peerID),
 		slog.String("source", source),
-		slog.String("nick", senderNick),
 		slog.Int64("clamped_ts", clampedTs),
 		slog.Bool("changed", changed),
 	)
 	if changed {
-		pushPeerMetaUpdated(ctx, d, peerID)
+		personChangedLocally(ctx, d, peerID)
 	}
 }
 
@@ -1131,7 +1408,7 @@ func processDHTReturns(ctx context.Context, d *daemon) {
 			)
 		}
 		if d.chats != nil {
-			if _, _, err := d.createDirectWithDefaults(inv.PeerID); err != nil {
+			if _, _, err := d.createPairedChat(inv.PeerID, true); err != nil {
 				slog.Warn("create direct chat after return-invite import failed",
 					slog.String("peer_id", inv.PeerID),
 					slog.Any("err", err),
@@ -1147,7 +1424,6 @@ func processDHTReturns(ctx context.Context, d *daemon) {
 		slog.Info("pair: return invite imported",
 			slog.String("guid", p.GUID),
 			slog.String("peer_id", inv.PeerID),
-			slog.String("nick", inv.Frontend.Nick),
 		)
 
 		push(d.ipcSrv, ipc.FrameAcceptedDHT, "", ipc.AcceptedDHTResponse{
@@ -1155,11 +1431,7 @@ func processDHTReturns(ctx context.Context, d *daemon) {
 			Nick:                inv.Frontend.Nick,
 			IdentityFingerprint: fingerprint,
 		})
-		push(d.ipcSrv, ipc.FramePeerPaired, "", ipc.PeerPairedPush{
-			PeerID: inv.PeerID,
-			Source: "dht-return",
-		})
-		pushPeerMetaUpdated(ctx, d, inv.PeerID)
+		pushPeerPaired(ctx, d, inv.PeerID, "dht-return")
 
 		if err := d.backendClient.DHTCancel(ctx, p.GUID); err != nil {
 			slog.Warn("pair: revoke failed after successful return-import",
@@ -1168,6 +1440,24 @@ func processDHTReturns(ctx context.Context, d *daemon) {
 			)
 		}
 	}
+}
+
+func noteInboundTextArrival(d *daemon, chatID chat.ChatID, peerID string, wrapper *msg.Wrapper) {
+
+	maybeSuppressInboundReceipt(d, chatID, wrapper.MsgID)
+
+	bumpChatActivity(context.Background(), d, chatID, time.Now().Unix())
+	if !chatIsFocused(d, chatID) {
+		incrementChatUnread(context.Background(), d, chatID)
+	}
+
+	d.autoMarkOnArrival(context.Background(), chatID)
+
+	notifyBody := ""
+	if textBody, perr := wrapper.Text(); perr == nil {
+		notifyBody = textBody.Text
+	}
+	emitInboundNotification(context.Background(), d, chatID, peerID, notifyBody)
 }
 
 func maybeSuppressInboundReceipt(d *daemon, chatID chat.ChatID, msgID string) {
@@ -1197,6 +1487,42 @@ func maybeSuppressInboundReceipt(d *daemon, chatID chat.ChatID, msgID string) {
 		slog.String("chat_id", string(chatID)),
 		slog.String("msg_id", msgID),
 	)
+}
+
+func peerUnreachableHandler(ctx context.Context, d *daemon) func(backendapi.UnreachableObservation) {
+	return func(o backendapi.UnreachableObservation) {
+		if o.PeerID == "" || d == nil || d.ipcSrv == nil || d.backendClient == nil {
+			return
+		}
+		slog.Debug("peer.unreachable-changed via SSE",
+			slog.String("peer_id", o.PeerID),
+			slog.Bool("unreachable", o.Unreachable),
+		)
+		if skipRowWhileLinking(d, o.PeerID) {
+			return
+		}
+		p, err := d.backendClient.Peer(ctx, o.PeerID)
+		if err != nil || p.ID == "" {
+			slog.Warn("peer.updated not pushed for the unreachable mark — haomad did not answer for the row",
+				slog.String("peer_id", o.PeerID),
+				slog.Any("err", err),
+			)
+			return
+		}
+		entry, err := peerEntryFor(d, p)
+		if err != nil {
+			slog.Warn("peer.updated not pushed for the unreachable mark — the row could not be built",
+				slog.String("peer_id", o.PeerID),
+				slog.Any("err", err),
+			)
+			return
+		}
+		push(d.ipcSrv, ipc.FramePeerUpdated, "", ipc.PeerUpdatedPayload{Peer: entry})
+		slog.Debug("peer.updated pushed",
+			slog.String("peer_id", o.PeerID),
+			slog.Bool("unreachable", entry.Unreachable),
+		)
+	}
 }
 
 func push(ipcSrv *ipc.Server, t ipc.FrameType, id string, payload any) {

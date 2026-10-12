@@ -1,0 +1,9 @@
+{
+  "type": "devicelink_accepted",
+  "id": "c-10",
+  "payload": {
+    "peer_id": "5b2e94a07c1d43f8ae60b3d519f78c24",
+    "adopted_fingerprint": "05e93b17c0da42f85b6e1904c7d3a28f16054bde9273ca81f6e0d4b5928c7a30f4",
+    "contacts_cleared": true
+  }
+}

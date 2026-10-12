@@ -6,13 +6,15 @@
 #     copyright / SPDX header (case-insensitive substring match).
 #   - Annotation-shaped comments (none in Kotlin land — we just keep
 #     license headers).
+#   - A //haoma:* line comment (this repo's own directive form, see
+#     CLAUDE.md), kept whole through the newline. "// haoma: x" (a
+#     space after the slashes) is not a directive and is stripped.
 #
 # Everything else — KDoc /** */, line // comments, block /* */ — is
 # dropped. String literals (including ${...} templates and raw """)
 # are left intact via a char-by-char state machine.
 #
-# Used by tools/release.sh against the public-cut tree, NOT against
-# the private repo. Idempotent.
+# Used by tools/release.sh. Idempotent.
 
 import os
 import sys
@@ -36,6 +38,7 @@ def strip(src: str) -> str:
       4 = inside \"\"\"...\"\"\"
       5 = inside // comment (skip until \n)
       6 = inside /* */ comment (skip until */)
+      7 = inside `...` (backtick name; may hold ' " and // as text)
 
     Special handling for the FIRST top-of-file comment block: if it
     looks like a license header, copy it verbatim and only switch into
@@ -93,6 +96,15 @@ def strip(src: str) -> str:
 
         if state == 0:  # code
             if c == "/" and nxt == "/":
+                # //haoma:* is kept whole, through the newline. A
+                # space after the slashes ("// haoma: x") does not
+                # count; that line is stripped like any comment.
+                if src[i:i + 8] == "//haoma:":
+                    nl = src.find("\n", i)
+                    end = nl if nl != -1 else n
+                    out.append(src[i:end])
+                    i = end
+                    continue
                 state = 5
                 i += 2
                 continue
@@ -115,6 +127,18 @@ def strip(src: str) -> str:
                 out.append(c)
                 i += 1
                 continue
+            if c == "`":
+                state = 7
+                out.append(c)
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+            continue
+
+        if state == 7:  # inside `...`; no escapes, ends at the next `
+            if c == "`":
+                state = 0
             out.append(c)
             i += 1
             continue

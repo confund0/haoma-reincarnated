@@ -1,0 +1,9 @@
+{
+  "type": "destroy_pin_verified",
+  "id": "c-17",
+  "payload": {
+    "answered": false,
+    "verified": false,
+    "reason": "no_salt_for_sibling"
+  }
+}

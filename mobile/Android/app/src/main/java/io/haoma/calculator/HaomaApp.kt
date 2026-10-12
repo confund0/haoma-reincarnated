@@ -134,6 +134,10 @@ class HaomaApp : Application(), ImageLoaderFactory {
     }
 
     
+    private val _restorePending = MutableStateFlow<String?>(null)
+    val restorePending: StateFlow<String?> = _restorePending.asStateFlow()
+
+    
     fun launchStagedRestore(
         archiveUri: android.net.Uri,
         log: (String) -> Unit,
@@ -169,8 +173,22 @@ class HaomaApp : Application(), ImageLoaderFactory {
                     setStagedRestore(io.haoma.calculator.core.StagedRestoreState(stagingPath = stagingPath))
                 }.onFailure { t ->
                     log("stage failed: ${t.message}")
-                    val msg = "Restore failed: ${t.message ?: "unknown error"}"
-                    android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show()
+                    if (t is io.haoma.calculator.core.VaultHelper.RestorePendingException) {
+                        _restorePending.value = io.haoma.calculator.core.VaultHelper.RESTORE_DID_NOT_FINISH
+                    }
+                    val msg = when (t) {
+                        
+                        is io.haoma.calculator.core.VaultHelper.NotEmptyException ->
+                            io.haoma.calculator.core.VaultHelper.RESTORE_NOT_EMPTY
+                        is io.haoma.calculator.core.VaultHelper.RestorePendingException ->
+                            io.haoma.calculator.core.VaultHelper.RESTORE_DID_NOT_FINISH
+                        else -> "Restore failed: ${t.message ?: "unknown error"}"
+                    }
+                    
+                    
+                    if (t !is io.haoma.calculator.core.VaultHelper.NotEmptyException) {
+                        android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show()
+                    }
                     onError(msg)
                 }
                 onComplete()
@@ -179,19 +197,58 @@ class HaomaApp : Application(), ImageLoaderFactory {
     }
 
     
-    private fun seedStagedRestoreFromDisk() {
-        appScope.launch {
-            val staged = withContext(Dispatchers.IO) {
-                runCatching { io.haoma.calculator.core.VaultHelper.findStagedRestoreDirs(applicationContext) }
-                    .getOrElse {
-                        Logger.w("app", "staged-restore seed scan failed: ${it.message}")
-                        emptyList()
-                    }
+    private fun cleanRestoreLeftovers() {
+        leftoversCleanup = appScope.launch {
+            if (refreshRestorePending()) {
+                Logger.w("app", "a restore commit did not finish; this device cannot be opened")
+                return@launch
             }
-            if (staged.isEmpty()) return@launch
-            Logger.i("app", "staged-restore seeded from disk (${staged.size} dir(s); newest=${staged.first()})")
+            withContext(Dispatchers.IO) {
+                runCatching { io.haoma.calculator.core.VaultHelper.cleanRestoreLeftovers(applicationContext) }
+                    .onFailure { Logger.w("app", "the leftovers of an earlier restore could not all be deleted: ${it.message}") }
+            }
+        }
+    }
+
+    
+    @Volatile
+    private var leftoversCleanup: kotlinx.coroutines.Job? = null
+
+    
+    private suspend fun refreshRestorePending(): Boolean {
+        val pending = withContext(Dispatchers.IO) {
+            runCatching { io.haoma.calculator.core.VaultHelper.pendingRestoreMessage(applicationContext) }
+                .getOrElse {
+                    Logger.w("app", "restore marker check failed: ${it.message}")
+                    io.haoma.calculator.core.VaultHelper.RESTORE_DID_NOT_FINISH
+                }
+        }
+        withContext(Dispatchers.Main) { _restorePending.value = pending }
+        return pending != null
+    }
+
+    
+    fun checkRestoreAllowed(onAllowed: () -> Unit, onRefused: (String) -> Unit) {
+        appScope.launch {
+            leftoversCleanup?.join()
+            val entry = withContext(Dispatchers.IO) {
+                runCatching { io.haoma.calculator.core.VaultHelper.checkRestoreAllowed(applicationContext) }
+            }
             withContext(Dispatchers.Main) {
-                setStagedRestore(io.haoma.calculator.core.StagedRestoreState(stagingPath = staged.first()))
+                entry.onSuccess { e ->
+                    when (e) {
+                        io.haoma.calculator.core.VaultHelper.RestoreEntry.Allowed -> onAllowed()
+                        io.haoma.calculator.core.VaultHelper.RestoreEntry.NotEmpty ->
+                            onRefused(io.haoma.calculator.core.VaultHelper.RESTORE_NOT_EMPTY)
+                        io.haoma.calculator.core.VaultHelper.RestoreEntry.Pending -> {
+                            _restorePending.value = io.haoma.calculator.core.VaultHelper.RESTORE_DID_NOT_FINISH
+                            onRefused(io.haoma.calculator.core.VaultHelper.RESTORE_DID_NOT_FINISH)
+                        }
+                    }
+                }.onFailure { t ->
+                    Logger.w("app", "restore entry check failed: ${t.message}")
+                    onRefused("The restore could not check this device: ${t.message ?: "unknown error"}")
+                }
             }
         }
     }
@@ -232,6 +289,21 @@ class HaomaApp : Application(), ImageLoaderFactory {
     var vaultSession: VaultSession? = null
         private set
 
+    
+    private fun applyRevealKeys(keys: io.haoma.calculator.messenger.UnlockKeySettings, how: String) {
+        revealConfigFlow.value = RevealConfig(
+            triggerKey = keys.patternKey,
+            pinTriggerKey = keys.pinKey,
+            bypassKey = keys.bypassKey,
+        )
+        Logger.i(
+            "app",
+            "reveal keys $how pattern=${UnlockKeysStore.slot(keys.patternKey)} " +
+                "pin=${UnlockKeysStore.slot(keys.pinKey)} " +
+                "bypass=${UnlockKeysStore.slot(keys.bypassKey)}",
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         Logger.init(this, BuildConfig.DEBUG)
@@ -244,23 +316,15 @@ class HaomaApp : Application(), ImageLoaderFactory {
         Logger.i("app", "HaomaApp.onCreate debug=${BuildConfig.DEBUG}")
 
         appState = AppStateRepository()
-        seedStagedRestoreFromDisk()
+        cleanRestoreLeftovers()
         disguiseStore = DisguiseStore(applicationContext)
         unlockKeysStore = UnlockKeysStore(applicationContext)
         
         
-        unlockKeysStore.load().let { keys ->
-            revealConfigFlow.value = RevealConfig(
-                triggerKey = keys.patternKey,
-                pinTriggerKey = keys.pinKey,
-                bypassKey = keys.bypassKey,
-            )
-            Logger.i(
-                "app",
-                "reveal keys seeded pattern=${keys.patternKey} pin=${keys.pinKey} " +
-                    "bypass=${keys.bypassKey.ifEmpty { "(disabled)" }}",
-            )
-        }
+        unlockKeysStore.migrateLegacy()
+        
+        
+        applyRevealKeys(unlockKeysStore.load(), "seeded")
         unlockManager = UnlockManager(
             app = applicationContext,
             state = appState,
@@ -278,6 +342,9 @@ class HaomaApp : Application(), ImageLoaderFactory {
                     
                     
                     messengerStore.reconcileShareTarget(session)
+                    
+                    
+                    messengerStore.loadSaysPassphraseIsDefault(session)
                 }
             },
             passphraseDefaultSink = { isDefault ->
@@ -285,6 +352,15 @@ class HaomaApp : Application(), ImageLoaderFactory {
                     messengerStore.setPassphraseIsDefault(isDefault)
                 }
             },
+            
+            
+            restoredSink = {
+                applyRevealKeys(unlockKeysStore.load(), "restored")
+                appScope.launch { refreshRestorePending() }
+            },
+            
+            
+            restorePendingSink = { appScope.launch { refreshRestorePending() } },
         )
         idleLockDispatcher = IdleLockDispatcher(
             state = appState,
@@ -353,20 +429,7 @@ class HaomaApp : Application(), ImageLoaderFactory {
                 Logger.i("app", "idle policy refreshed action=${policy.action} t=${policy.timeoutSeconds}s")
             },
             unlockKeysStore = unlockKeysStore,
-            revealKeysUpdater = { keys ->
-                
-                
-                revealConfigFlow.value = RevealConfig(
-                    triggerKey = keys.patternKey,
-                    pinTriggerKey = keys.pinKey,
-                    bypassKey = keys.bypassKey,
-                )
-                Logger.i(
-                    "app",
-                    "reveal keys refreshed pattern=${keys.patternKey} " +
-                        "pin=${keys.pinKey} bypass=${keys.bypassKey.ifEmpty { "(disabled)" }}",
-                )
-            },
+            revealKeysUpdater = { keys -> applyRevealKeys(keys, "refreshed") },
         )
         
         

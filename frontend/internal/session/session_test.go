@@ -15,6 +15,7 @@ import (
 	libsession "go.mau.fi/libsignal/session"
 	"go.mau.fi/libsignal/util/optional"
 
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/session"
 	"haoma-frontend/internal/signal"
 	"haoma-frontend/internal/store"
@@ -241,6 +242,10 @@ func TestEncrypt_NoSession(t *testing.T) {
 	}
 	if !errors.Is(err, session.ErrNoSession) {
 		t.Errorf("err = %v, want wraps ErrNoSession", err)
+	}
+
+	if strings.Contains(err.Error(), bobID) || !strings.Contains(err.Error(), logid.Short(bobID)) {
+		t.Errorf("err = %q, want the short peer id %q and not the full one", err, logid.Short(bobID))
 	}
 }
 

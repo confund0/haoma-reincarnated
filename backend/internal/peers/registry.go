@@ -8,6 +8,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 
+	"haoma/internal/logid"
 	"haoma/internal/store"
 )
 
@@ -75,7 +76,7 @@ func (r *Registry) Get(id string) (*Peer, error) {
 	}
 	var p Peer
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, fmt.Errorf("contacts: decode peer %q: %w", id, err)
+		return nil, fmt.Errorf("contacts: decode peer %q: %w", logid.Short(id), err)
 	}
 	return &p, nil
 }
@@ -152,13 +153,46 @@ func (r *Registry) RecordViolation(id string, sourceAddr string) error {
 }
 
 func (r *Registry) TouchPresence(id string, t time.Time, source string) error {
-	return r.mutate(id, func(p *Peer) {
-		ts := t.Unix()
-		p.LastPassiveAt = ts
-		if source == "haoma" {
+	ts := t.Unix()
+	return r.mutateRetry(id, func(p *Peer) {
+		if ts > p.LastPassiveAt {
+			p.LastPassiveAt = ts
+		}
+		if source == "haoma" && ts > p.LastActiveAt {
 			p.LastActiveAt = ts
 		}
 	})
+}
+
+func (r *Registry) NoteDelivered(id string, t time.Time) error {
+	ts := t.Unix()
+	return r.mutateRetry(id, func(p *Peer) {
+		if ts > p.LastDeliveredAt {
+			p.LastDeliveredAt = ts
+		}
+	})
+}
+
+func (r *Registry) NoteUndelivered(id string, queuedAt time.Time) error {
+	ts := queuedAt.Unix()
+	return r.mutateRetry(id, func(p *Peer) {
+		if ts > p.UndeliveredQueuedAt {
+			p.UndeliveredQueuedAt = ts
+		}
+	})
+}
+
+const mutateRetryLimit = 5
+
+func (r *Registry) mutateRetry(id string, fn func(*Peer)) error {
+	var err error
+	for range mutateRetryLimit {
+		err = r.mutate(id, fn)
+		if !errors.Is(err, badger.ErrConflict) {
+			return err
+		}
+	}
+	return err
 }
 
 func (r *Registry) mutate(id string, fn func(*Peer)) error {
@@ -303,7 +337,7 @@ func (r *Registry) CollapsePeerAddress(peerID, retain string) error {
 			return err
 		}
 		if !p.hasAddress(retain) {
-			return fmt.Errorf("contacts: collapse retain %q not in KnownAddresses", retain)
+			return fmt.Errorf("contacts: collapse retain %q not in KnownAddresses", logid.Short(retain))
 		}
 		toDrop := make([]string, 0, len(p.KnownAddresses))
 		for _, a := range p.KnownAddresses {
@@ -394,7 +428,7 @@ func (r *Registry) SweepRetiredAddrs(nowUnix int64) (int, error) {
 			return nil
 		})
 		if err != nil {
-			return swept, fmt.Errorf("contacts: sweep peer %s: %w", peerID, err)
+			return swept, fmt.Errorf("contacts: sweep peer %s: %w", logid.Short(peerID), err)
 		}
 	}
 	return swept, nil
@@ -438,7 +472,7 @@ func (r *Registry) SweepRetiredOwnOnions(nowUnix int64) ([]string, error) {
 			return txn.Set(key, raw)
 		})
 		if err != nil {
-			return toDelete, fmt.Errorf("contacts: sweep prev-onion for peer %s: %w", peerID, err)
+			return toDelete, fmt.Errorf("contacts: sweep prev-onion for peer %s: %w", logid.Short(peerID), err)
 		}
 	}
 	return toDelete, nil

@@ -14,6 +14,22 @@ type RuntimeInfo struct {
 	PID       int       `json:"pid"`
 	APIAddr   string    `json:"api_addr"`
 	StartedAt time.Time `json:"started_at"`
+
+	ManageTor  string `json:"manage_tor,omitempty"`
+	TorDataDir string `json:"tor_data_dir,omitempty"`
+}
+
+func runtimeInfoFor(cfg config, apiAddr string, now time.Time) RuntimeInfo {
+	info := RuntimeInfo{
+		PID:       os.Getpid(),
+		APIAddr:   apiAddr,
+		StartedAt: now.UTC(),
+	}
+	if cfg.manageTor != "" {
+		info.ManageTor = cfg.manageTor
+		info.TorDataDir = cfg.torDataDir
+	}
+	return info
 }
 
 func writeRuntimeFile(path string, info RuntimeInfo) error {

@@ -1,0 +1,13 @@
+{
+  "type": "system.welcome",
+  "id": "handshake",
+  "payload": {
+    "daemon_version": "v0.0.31-beta-7-g4c9a13d",
+    "protocol_version": 54,
+    "self_nick": "mynick",
+    "self_nick_is_default": true,
+    "chat_font_scale": 1.15,
+    "default_retention_sec": 604800,
+    "default_send_receipts": true
+  }
+}

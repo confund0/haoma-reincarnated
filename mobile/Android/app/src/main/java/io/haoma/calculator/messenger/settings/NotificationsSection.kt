@@ -61,6 +61,9 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
     var noisy by remember(snapshot) { mutableStateOf(snapshot.noisy) }
     var persistUntilOpen by remember(snapshot) { mutableStateOf(snapshot.persistUntilOpen) }
     var deepLink by remember(snapshot) { mutableStateOf(snapshot.deepLink) }
+    var showFailedDestroyAttempts by remember(snapshot) {
+        mutableStateOf(snapshot.showFailedDestroyAttempts)
+    }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -68,7 +71,17 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
     val effectiveShowSender = !disguiseEnabled && showSender
     val effectiveShowBody = !disguiseEnabled && showBody
 
-    val current by remember(shellEnabled, effectiveShowSender, effectiveShowBody, onLock, disguiseEnabled, noisy, persistUntilOpen, deepLink) {
+    val current by remember(
+        shellEnabled,
+        effectiveShowSender,
+        effectiveShowBody,
+        onLock,
+        disguiseEnabled,
+        noisy,
+        persistUntilOpen,
+        deepLink,
+        showFailedDestroyAttempts,
+    ) {
         derivedStateOf {
             NotificationSettings(
                 shellEnabled = shellEnabled,
@@ -79,6 +92,7 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                 noisy = noisy,
                 persistUntilOpen = persistUntilOpen,
                 deepLink = deepLink,
+                showFailedDestroyAttempts = showFailedDestroyAttempts,
             )
         }
     }
@@ -168,6 +182,22 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                 )
             }
 
+            Section(label = "Destroy") {
+                ToggleRow(
+                    label = "Show failed destroy attempts",
+                    hint = "Says when a wrong destroy PIN reached this device. " +
+                        "Off by default: if somebody else is holding the phone, " +
+                        "the notice tells them you are trying to destroy it. " +
+                        "The attempts are recorded either way, and this belongs " +
+                        "to this device only.",
+                    checked = showFailedDestroyAttempts,
+                    onCheckedChange = {
+                        showFailedDestroyAttempts = it
+                        if (error != null) error = null
+                    },
+                )
+            }
+
             if (!permGranted) {
                 Section(label = "OS permission") {
                     Text(
@@ -209,6 +239,7 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                     noisy = snapshot.noisy
                     persistUntilOpen = snapshot.persistUntilOpen
                     deepLink = snapshot.deepLink
+                    showFailedDestroyAttempts = snapshot.showFailedDestroyAttempts
                     error = null
                 },
             )

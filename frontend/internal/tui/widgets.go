@@ -12,24 +12,25 @@ type bracketCheckbox struct {
 	onChange func(bool)
 	finished func(tcell.Key)
 
-	labelWidth   int
-	labelStyle   tcell.Style
-	fieldStyle   tcell.Style
-	focusedStyle tcell.Style
-	disabled     bool
+	labelWidth int
+	labelStyle tcell.Style
+	fieldStyle tcell.Style
+
+	cursorStyle tcell.Style
+	disabled    bool
 }
 
 var _ tview.FormItem = (*bracketCheckbox)(nil)
 
 func newBracketCheckbox(label string, checked bool, onChange func(bool)) *bracketCheckbox {
 	return &bracketCheckbox{
-		Box:          tview.NewBox(),
-		label:        label,
-		checked:      checked,
-		onChange:     onChange,
-		labelStyle:   tcell.StyleDefault,
-		fieldStyle:   tcell.StyleDefault,
-		focusedStyle: tcell.StyleDefault.Reverse(true),
+		Box:         tview.NewBox(),
+		label:       label,
+		checked:     checked,
+		onChange:    onChange,
+		labelStyle:  tcell.StyleDefault,
+		fieldStyle:  tcell.StyleDefault,
+		cursorStyle: tcell.StyleDefault.Foreground(ColorCheckboxCursor).Bold(true),
 	}
 }
 
@@ -39,7 +40,8 @@ func (c *bracketCheckbox) SetFormAttributes(labelWidth int, labelColor, bgColor,
 	c.labelWidth = labelWidth
 	c.labelStyle = tcell.StyleDefault.Foreground(labelColor).Background(bgColor)
 	c.fieldStyle = tcell.StyleDefault.Foreground(fieldColor).Background(fieldBgColor)
-	c.focusedStyle = tcell.StyleDefault.Foreground(fieldBgColor).Background(fieldColor)
+
+	c.cursorStyle = c.fieldStyle.Foreground(ColorCheckboxCursor).Bold(true)
 	c.SetBackgroundColor(bgColor)
 	return c
 }
@@ -67,9 +69,9 @@ func (c *bracketCheckbox) Draw(screen tcell.Screen) {
 		return
 	}
 
-	fieldStyle := c.fieldStyle
+	bracketStyle := c.fieldStyle
 	if c.HasFocus() {
-		fieldStyle = c.focusedStyle
+		bracketStyle = c.cursorStyle
 	}
 
 	mark := ' '
@@ -78,13 +80,13 @@ func (c *bracketCheckbox) Draw(screen tcell.Screen) {
 	}
 
 	if x+0 < x+width {
-		screen.SetContent(x+0, y, '[', nil, fieldStyle)
+		screen.SetContent(x+0, y, '[', nil, bracketStyle)
 	}
 	if x+1 < x+width {
-		screen.SetContent(x+1, y, mark, nil, fieldStyle)
+		screen.SetContent(x+1, y, mark, nil, c.fieldStyle)
 	}
 	if x+2 < x+width {
-		screen.SetContent(x+2, y, ']', nil, fieldStyle)
+		screen.SetContent(x+2, y, ']', nil, bracketStyle)
 	}
 
 	lx := x + 4

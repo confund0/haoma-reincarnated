@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"haoma/internal/ids"
+	"haoma/internal/logid"
 	"haoma/internal/xport"
 )
 
@@ -41,7 +42,7 @@ func (v *HMACVerifier) Verify(ctx context.Context, env xport.Envelope) error {
 			SourceAddr: env.From,
 			SlotIdx:    slotIdx,
 		})
-		return fmt.Errorf("%w: %s", ErrUnknownSource, env.From)
+		return fmt.Errorf("%w: %s", ErrUnknownSource, logid.Short(env.From))
 	}
 	if err != nil {
 		return err

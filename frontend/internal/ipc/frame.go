@@ -114,9 +114,59 @@ const (
 	FramePairOnionCancel    FrameType = "pair_onion_cancel"
 	FramePairOnionCancelled FrameType = "pair_onion_cancelled"
 
+	FrameDeviceLinkOffer     FrameType = "devicelink_offer"
+	FrameDeviceLinkStarted   FrameType = "devicelink_started"
+	FrameDeviceLinkProbe     FrameType = "devicelink.probe"
+	FrameDeviceLinkAccept    FrameType = "devicelink_accept"
+	FrameDeviceLinkAccepted  FrameType = "devicelink_accepted"
+	FrameDeviceLinkCompleted FrameType = "devicelink.completed"
+	FrameDeviceLinkFailed    FrameType = "devicelink.failed"
+	FrameDeviceLinkCancel    FrameType = "devicelink_cancel"
+	FrameDeviceLinkCancelled FrameType = "devicelink_cancelled"
+	FrameDeviceLinksList     FrameType = "devicelinks_list"
+	FrameDeviceLinksListed   FrameType = "devicelinks_listed"
+
+	FrameGetDestroyPIN    FrameType = "get_destroy_pin"
+	FrameDestroyPINListed FrameType = "destroy_pin_listed"
+	FrameSetDestroyPIN    FrameType = "set_destroy_pin"
+	FrameDestroyPINSet    FrameType = "destroy_pin_set"
+
+	FrameVerifyDestroyPIN   FrameType = "verify_destroy_pin"
+	FrameDestroyPINVerified FrameType = "destroy_pin_verified"
+
+	FrameUnlinkDevice   FrameType = "unlink_device"
+	FrameDeviceUnlinked FrameType = "device_unlinked"
+
+	FrameWipeDevice   FrameType = "wipe_device"
+	FrameDeviceWiping FrameType = "device_wiping"
+
+	FrameStopDestroyWaiting    FrameType = "stop_destroy_waiting"
+	FrameDestroyWaitingStopped FrameType = "destroy_waiting_stopped"
+
+	FrameDeviceSync     FrameType = "devicesync"
+	FrameDeviceSyncSent FrameType = "devicesync_sent"
+
+	FrameDeviceSyncFinished FrameType = "devicesync.finished"
+
+	FrameInvitationOffer   FrameType = "invitation_offer"
+	FrameInvitationOffered FrameType = "invitation_offered"
+
+	FrameInvitationAccept   FrameType = "invitation_accept"
+	FrameInvitationAccepted FrameType = "invitation_accepted"
+
+	FrameInvitationsList   FrameType = "invitations_list"
+	FrameInvitationsListed FrameType = "invitations_listed"
+
+	FrameListInheritedContacts   FrameType = "list_inherited_contacts"
+	FrameInheritedContactsListed FrameType = "inherited_contacts_listed"
+
+	FrameInheritedContactsChanged FrameType = "inherited_contacts.changed"
+
 	FrameSetPresenceOverride FrameType = "set_presence_override"
 	FramePushPresence        FrameType = "push_presence"
 	FramePresenceChanged     FrameType = "presence_changed"
+
+	FrameChatPresenceChanged FrameType = "chat_presence_changed"
 
 	FramePeerLastSeenChanged FrameType = "peer.last-seen-changed"
 
@@ -144,6 +194,10 @@ const (
 
 	FrameClientLockState     FrameType = "client_lock_state"
 	FrameNotificationEmitted FrameType = "system.notification-emitted"
+
+	FrameDestroyAttemptsSeen FrameType = "destroy_attempts_seen"
+
+	FrameDestroyDevice FrameType = "destroy_device"
 
 	FrameFileProgress FrameType = "msg.file-progress"
 
@@ -190,8 +244,8 @@ const (
 	FrameExternalProbeAccepted FrameType = "external_probe_accepted"
 	FrameExternalReachChanged  FrameType = "health.external-reach-changed"
 
-	FrameTorRecover   FrameType = "tor_recover"
-	FrameTorRecovered FrameType = "tor_recovered"
+	FrameNetworkChanged       FrameType = "network_changed"
+	FrameNetworkChangeHandled FrameType = "network_change_handled"
 
 	FrameRotateBegin       FrameType = "rotate_begin"
 	FrameRotateBegun       FrameType = "rotate_begun"
@@ -259,11 +313,75 @@ type WelcomePayload struct {
 	DefaultSendReceipts bool   `json:"default_send_receipts"`
 }
 
-const ProtocolVersion = 46
+const ProtocolVersion = 54
 
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+const (
+	ReasonNotReady    = "not_ready"
+	ReasonBadRequest  = "bad_request"
+	ReasonBackendDown = "backend_unavailable"
+	ReasonBuildFailed = "build_failed"
+	ReasonBadPayload  = "bad_payload"
+	ReasonEncodeFrame = "encode_frame"
+
+	ReasonDestroyNotNarrowed = "destroy_not_narrowed"
+
+	ReasonUnknownContact = "unknown_contact"
+	ReasonAlreadyPaired  = "already_paired"
+	ReasonNoSibling      = "no_sibling"
+	ReasonTagFailed      = "tag_failed"
+	ReasonNotInherited   = "not_inherited"
+	ReasonInviteFailed   = "invite_failed"
+	ReasonRailSendFailed = "rail_send_failed"
+	ReasonPersistFailed  = "persist_failed"
+	ReasonKeyStashFailed = "key_stash_failed"
+
+	ReasonOfferInProgress = "offer_in_progress"
+
+	ReasonSelfCheckFailed = "self_check_failed"
+
+	ReasonContactOffers = "contact_offers"
+
+	ReasonInvitationFromContact = "invitation_from_contact"
+
+	ReasonNothingOpen = "nothing_open"
+
+	ReasonUnknownInvitation     = "unknown_invitation"
+	ReasonInvitationNotLive     = "invitation_not_live"
+	ReasonInvitationLapsed      = "invitation_lapsed"
+	ReasonRendezvousRefused     = "rendezvous_refused"
+	ReasonRendezvousUnreachable = "rendezvous_unreachable"
+	ReasonFingerprintMismatch   = "fingerprint_mismatch"
+	ReasonImportFailed          = "import_failed"
+	ReasonStoreReadFailed       = "store_read_failed"
+)
+
+const ReasonNoAnswer = "no_answer"
+
+var ClientMintedReasons = []string{ReasonNoAnswer}
+
+var InvitationOfferReasons = []string{
+	ReasonNotReady, ReasonBadRequest, ReasonBackendDown, ReasonBuildFailed, ReasonEncodeFrame,
+	ReasonUnknownContact, ReasonAlreadyPaired, ReasonNoSibling, ReasonTagFailed,
+	ReasonNotInherited, ReasonInviteFailed, ReasonRailSendFailed, ReasonPersistFailed,
+	ReasonKeyStashFailed, ReasonOfferInProgress, ReasonSelfCheckFailed,
+	ReasonContactOffers, ReasonInvitationFromContact, ReasonNothingOpen,
+}
+
+var InvitationAcceptReasons = []string{
+	ReasonNotReady, ReasonBadRequest, ReasonBackendDown, ReasonBuildFailed,
+	ReasonBadPayload, ReasonEncodeFrame,
+	ReasonUnknownInvitation, ReasonInvitationNotLive, ReasonInvitationLapsed,
+	ReasonRendezvousRefused, ReasonRendezvousUnreachable, ReasonFingerprintMismatch,
+	ReasonImportFailed, ReasonStoreReadFailed,
+}
+
+var InvitationsListReasons = []string{
+	ReasonStoreReadFailed, ReasonEncodeFrame,
 }
 
 type StatusEventPayload struct {
@@ -419,11 +537,18 @@ type PeerEntry struct {
 	LastPassiveAt int64  `json:"last_passive_at,omitempty"`
 	RetiredAt     int64  `json:"retired_at,omitempty"`
 	Accepting     bool   `json:"accepting,omitempty"`
+	Sending       bool   `json:"sending,omitempty"`
 	Chatty        string `json:"chatty,omitempty"`
 	Effective     string `json:"effective,omitempty"`
 
 	Verified bool `json:"verified,omitempty"`
 	Blocked  bool `json:"blocked,omitempty"`
+
+	Sibling bool `json:"sibling,omitempty"`
+
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	Unreachable bool `json:"unreachable,omitempty"`
 }
 
 type PeersListedResponse struct {
@@ -609,6 +734,213 @@ type PairOnionCancelRequest struct {
 	HandleID string `json:"handle_id"`
 }
 
+type DeviceLinkOfferRequest struct{}
+
+type DeviceLinkStartedResponse struct {
+	HandleID  string   `json:"handle_id"`
+	Words     []string `json:"words"`
+	ExpiresAt int64    `json:"expires_at"`
+}
+
+type DeviceLinkProbePush struct {
+	HandleID string `json:"handle_id"`
+	Attempt  int    `json:"attempt"`
+	Ready    bool   `json:"ready"`
+	Error    string `json:"error,omitempty"`
+	At       int64  `json:"at"`
+}
+
+type DeviceLinkAcceptRequest struct {
+	Words []string `json:"words"`
+}
+
+type DeviceLinkAcceptedResponse struct {
+	PeerID             string `json:"peer_id"`
+	AdoptedFingerprint string `json:"adopted_fingerprint"`
+	ContactsCleared    bool   `json:"contacts_cleared,omitempty"`
+}
+
+type DeviceLinkCompletedPush struct {
+	HandleID string `json:"handle_id"`
+	PeerID   string `json:"peer_id"`
+}
+
+type DeviceLinkFailedPush struct {
+	HandleID string `json:"handle_id"`
+	Reason   string `json:"reason"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+type DeviceLinkCancelRequest struct {
+	HandleID string `json:"handle_id"`
+}
+
+type DeviceLinksListRequest struct{}
+
+type DeviceLinkEntry struct {
+	PeerID   string `json:"peer_id"`
+	LinkedAt int64  `json:"linked_at"`
+}
+
+type DeviceLinksListedResponse struct {
+	Devices []DeviceLinkEntry `json:"devices"`
+}
+
+type GetDestroyPINRequest struct{}
+
+type DestroyPINSiblingEntry struct {
+	PeerID     string `json:"peer_id"`
+	SaltHeld   bool   `json:"salt_held"`
+	ReceivedAt int64  `json:"received_at,omitempty"`
+}
+
+type DestroyPINListedResponse struct {
+	Set      bool                     `json:"set"`
+	SetAt    int64                    `json:"set_at,omitempty"`
+	Siblings []DestroyPINSiblingEntry `json:"siblings"`
+
+	Waiting *DestroyWaiting `json:"waiting,omitempty"`
+}
+
+type DestroyWaiting struct {
+	PeerID    string `json:"peer_id"`
+	Deadline  int64  `json:"deadline"`
+	StartedAt int64  `json:"started_at,omitempty"`
+}
+
+type SetDestroyPINRequest struct {
+	New string `json:"new"`
+}
+
+const (
+	DestroyPINRefusedAlreadySet = "already_set"
+
+	DestroyPINRefusedShape = "bad_pin_shape"
+
+	DestroyPINRefusedWrong = "wrong_destroy_pin"
+
+	DestroyPINRefusedNoSibling = "no_linked_device"
+)
+
+type DestroyPINSetResponse struct {
+	Accepted   bool   `json:"accepted"`
+	Reason     string `json:"reason,omitempty"`
+	SaltPushed int    `json:"salt_pushed"`
+	Siblings   int    `json:"siblings"`
+}
+
+type VerifyDestroyPINRequest struct {
+	PeerID string `json:"peer_id"`
+	PIN    string `json:"pin"`
+}
+
+const (
+	DestroyPINVerifyNoSalt = "no_salt_for_sibling"
+
+	DestroyPINVerifyUnknownSibling = "not_my_device"
+
+	DestroyPINVerifyAnswerBad = "answer_did_not_check_out"
+)
+
+type DestroyPINVerifiedResponse struct {
+	Answered bool   `json:"answered"`
+	Verified bool   `json:"verified"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+type DeviceSyncRequest struct {
+	Full bool `json:"full,omitempty"`
+}
+
+type DeviceSyncSentResponse struct {
+	Siblings       int  `json:"siblings"`
+	Full           bool `json:"full,omitempty"`
+	AlreadyRunning bool `json:"already_running,omitempty"`
+}
+
+type DeviceSyncFinishedPush struct {
+	Full            bool `json:"full,omitempty"`
+	Siblings        int  `json:"siblings"`
+	Answered        int  `json:"answered"`
+	Unreachable     int  `json:"unreachable,omitempty"`
+	RowsApplied     int  `json:"rows_applied"`
+	SnapshotApplied int  `json:"snapshot_applied"`
+	Held            int  `json:"held"`
+	TimedOut        bool `json:"timed_out,omitempty"`
+}
+
+type InvitationOfferRequest struct {
+	Fingerprint string `json:"fingerprint"`
+	Force       bool   `json:"force,omitempty"`
+	OpenOnly    bool   `json:"open_only,omitempty"`
+}
+
+type InvitationOfferedResponse struct {
+	MsgID     string `json:"msg_id"`
+	ExpiresAt int64  `json:"expires_at"`
+	Siblings  int    `json:"siblings"`
+}
+
+type InvitationAcceptRequest struct {
+	MsgID string `json:"msg_id"`
+}
+
+type InvitationAcceptedResponse struct {
+	MsgID               string `json:"msg_id"`
+	PeerID              string `json:"peer_id"`
+	ChatID              string `json:"chat_id"`
+	IdentityFingerprint string `json:"identity_fingerprint"`
+}
+
+type InvitationsListRequest struct{}
+
+const (
+	InvitationOfferedToMe = "in"
+
+	InvitationOfferedByMe = "out"
+)
+
+type InvitationEntry struct {
+	MsgID       string `json:"msg_id"`
+	Label       string `json:"label,omitempty"`
+	Direction   string `json:"direction"`
+	ExpiresAt   int64  `json:"expires_at"`
+	State       string `json:"state"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+type InvitationsListedResponse struct {
+	Invitations []InvitationEntry `json:"invitations"`
+}
+
+type InheritedContactEntry struct {
+	Fingerprint string `json:"fingerprint"`
+	Nick        string `json:"nick,omitempty"`
+	Alias       string `json:"alias,omitempty"`
+	Label       string `json:"label,omitempty"`
+	Devices     int    `json:"devices,omitempty"`
+	Paired      int    `json:"paired,omitempty"`
+	Offers      int    `json:"offers,omitempty"`
+	Waiting     bool   `json:"waiting,omitempty"`
+	Invited     bool   `json:"invited,omitempty"`
+
+	Open int `json:"open,omitempty"`
+}
+
+type InheritedContactsListedResponse struct {
+	Contacts []InheritedContactEntry `json:"contacts"`
+	Linked   bool                    `json:"linked"`
+}
+
+type InheritedContactsChangedPayload struct {
+	Contacts []InheritedContactEntry `json:"contacts"`
+	Linked   bool                    `json:"linked"`
+}
+
+var InheritedContactsListReasons = []string{
+	ReasonStoreReadFailed, ReasonEncodeFrame,
+}
+
 type ChatKind string
 
 const (
@@ -620,6 +952,7 @@ type ChatEntry struct {
 	ChatID              string   `json:"chat_id"`
 	Kind                ChatKind `json:"kind"`
 	PeerID              string   `json:"peer_id,omitempty"`
+	Fingerprint         string   `json:"fingerprint,omitempty"`
 	GroupName           string   `json:"group_name,omitempty"`
 	GroupAlias          string   `json:"group_alias,omitempty"`
 	Label               string   `json:"label,omitempty"`
@@ -634,7 +967,12 @@ type ChatEntry struct {
 	LastReadAt          int64    `json:"last_read_at,omitempty"`
 	LastTimerChangeTs   int64    `json:"last_timer_change_ts,omitempty"`
 
+	WaitingForSession bool  `json:"waiting_for_session,omitempty"`
+	WaitingForContact bool  `json:"waiting_for_contact,omitempty"`
+	ChatStartedAt     int64 `json:"chat_started_at,omitempty"`
+
 	Accepting bool   `json:"accepting,omitempty"`
+	Sending   bool   `json:"sending,omitempty"`
 	Chatty    string `json:"chatty,omitempty"`
 	Effective string `json:"effective,omitempty"`
 }
@@ -721,6 +1059,17 @@ type BackendStatusPayload struct {
 	Tor              TorHealth `json:"tor"`
 
 	OnionCount int `json:"onion_count"`
+
+	ClockSkew ClockSkew `json:"clock_skew"`
+}
+
+type ClockSkew struct {
+	Seconds int `json:"seconds"`
+
+	Known bool `json:"known"`
+
+	OverLimit    bool `json:"over_limit"`
+	LimitSeconds int  `json:"limit_seconds"`
 }
 
 type SetPresenceOverrideRequest struct {
@@ -734,6 +1083,15 @@ type PushPresenceRequest struct {
 type PresenceChangedPayload struct {
 	PeerID    string `json:"peer_id"`
 	Accepting bool   `json:"accepting"`
+	Sending   bool   `json:"sending"`
+	Chatty    string `json:"chatty,omitempty"`
+	Effective string `json:"effective"`
+}
+
+type ChatPresenceChangedPayload struct {
+	ChatID    string `json:"chat_id"`
+	Accepting bool   `json:"accepting"`
+	Sending   bool   `json:"sending"`
 	Chatty    string `json:"chatty,omitempty"`
 	Effective string `json:"effective"`
 }
@@ -850,6 +1208,8 @@ type Settings struct {
 	NotifyPersistUntilOpen bool `json:"notify_persist_until_open,omitempty"`
 	NotifyDeepLink         bool `json:"notify_deep_link,omitempty"`
 
+	ShowFailedDestroyAttempts bool `json:"show_failed_destroy_attempts,omitempty"`
+
 	ThreatProfile    string   `json:"threat_profile,omitempty"`
 	PanicAction      string   `json:"panic_action,omitempty"`
 	SecurityWarnings []string `json:"security_warnings,omitempty"`
@@ -925,6 +1285,34 @@ type NotificationEmittedPayload struct {
 	Body           string `json:"body"`
 	RedactedSender bool   `json:"redacted_sender,omitempty"`
 	RedactedBody   bool   `json:"redacted_body,omitempty"`
+}
+
+type UnlinkDeviceRequest struct {
+	PeerID string `json:"peer_id"`
+
+	PIN string `json:"pin,omitempty"`
+}
+
+type DeviceUnlinkedResponse struct {
+	Unlinked  bool   `json:"unlinked"`
+	Sent      bool   `json:"sent,omitempty"`
+	Receipted bool   `json:"receipted,omitempty"`
+	Deadline  int64  `json:"deadline,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type DeviceWipingResponse struct {
+	Started bool `json:"started"`
+}
+
+type DestroyDevicePush struct {
+	Reason  string `json:"reason"`
+	EraseID string `json:"erase_id,omitempty"`
+}
+
+type DestroyAttemptsSeenPush struct {
+	Count  int   `json:"count"`
+	LastAt int64 `json:"last_at,omitempty"`
 }
 
 const (
@@ -1036,7 +1424,6 @@ type PeerSelfProbeRequest struct {
 
 type PeerSelfReachPayload struct {
 	PeerID string `json:"peer_id"`
-	Onion  string `json:"onion,omitempty"`
 	Ok     bool   `json:"ok"`
 	At     int64  `json:"at"`
 }
@@ -1045,12 +1432,13 @@ type ExternalProbeBurstRequest struct{}
 
 type ExternalProbeAcceptedResponse struct{}
 
-type TorRecoverRequest struct {
-	Mode string `json:"mode"`
-}
+type NetworkChangedRequest struct{}
 
-type TorRecoveredResponse struct {
-	Mode string `json:"mode"`
+type NetworkChangeHandledResponse struct {
+	Dropped      bool `json:"dropped"`
+	Rows         int  `json:"rows"`
+	Destinations int  `json:"destinations"`
+	Fetches      int  `json:"fetches"`
 }
 
 type ExternalReachPayload struct {

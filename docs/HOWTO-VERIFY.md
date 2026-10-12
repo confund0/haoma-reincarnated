@@ -1,8 +1,8 @@
 # Verifying a release artifact
 
 Each Haoma release is signed with a [minisign](https://jedisct1.github.io/minisign/)
-keypair held outside the repo. The public key is in this file (below)
-and pinned in the tester channel. Two checks:
+keypair held outside the repo. The public key is in this file (below).
+Two checks:
 
 1. **Integrity** (the file you downloaded matches what the maintainer
    listed):
@@ -11,7 +11,8 @@ and pinned in the tester channel. Two checks:
    sha256sum -c SHA256SUMS
    ```
 
-   Drop `haoma-vX.Y.Z-beta-android-arm64.apk` and `SHA256SUMS` in the
+   Drop the file you downloaded (`haoma-vX.Y.Z-beta-android-arm64.apk`
+   or `haoma-vX.Y.Z-beta-linux-amd64.tar.gz`) and `SHA256SUMS` in the
    same directory. Output should be `OK` per file. If a file is
    missing, `sha256sum -c` prints `FAILED open or read` for it; that's
    fine if you only downloaded a subset — focus on the lines that say
@@ -21,24 +22,38 @@ and pinned in the tester channel. Two checks:
    maintainer, not someone replaying a tampered SHA256SUMS):
 
    ```
-   minisign -Vm SHA256SUMS -P RWQ...the_real_key_above
+   minisign -Vm SHA256SUMS -P RWRSYy7KY3S9eib8l8aONF2AeyqP1vJLgtoqHdz2FPUARhz1xMMBlG6d
    ```
 
    `Signature and comment signature verified` = good.
 
 If either check fails: do not install. Re-fetch from the canonical
-source and re-verify. If it still fails, ping the tester channel.
+source and re-verify.
 
 ## Public key (minisign)
 
 ```
-untrusted comment: minisign public key AF4BEAE2C16E57CB
-RWTLV27B4upLrxQoPpqVNFf19XhDzKpOdi7KnCEdKluiXdqFH7WfF2Hk
+untrusted comment: minisign public key 7ABD7463CA2E6352
+RWRSYy7KY3S9eib8l8aONF2AeyqP1vJLgtoqHdz2FPUARhz1xMMBlG6d
 ```
 
-The same key signs every beta release until rotated. Rotation events
-will be announced in the tester channel + a `KEY-ROTATION-YYYY-MM-DD.md`
-file added at repo root.
+This key signs every release from v0.1.0-beta on.
+
+## Keys up to v0.0.35-beta
+
+The signing keys changed with v0.1.0-beta. Releases up to
+v0.0.35-beta verify against the earlier keys:
+
+- minisign: `RWTLV27B4upLrxQoPpqVNFf19XhDzKpOdi7KnCEdKluiXdqFH7WfF2Hk`
+- Android certificate SHA-256:
+  `b75fbf7ed4ddf301baa71e21ce5859331697569bf3789d93524849f21ba50be2`
+  (`B7:5F:BF:…:0B:E2` in the colon form)
+
+Android installs an update only when it is signed with the same key
+as the installed app. So v0.1.0-beta cannot be installed over an
+older release. To move over: in the app, make a backup; uninstall the
+app; install v0.1.0-beta; restore the backup. After the restore,
+delete the backup file.
 
 ## Why both?
 
@@ -66,13 +81,19 @@ apksigner verify --print-certs haoma-vX.Y.Z-beta-android-arm64.apk
 digest` must match:
 
 ```
-B7:5F:BF:7E:D4:DD:F3:01:BA:A7:1E:21:CE:58:59:33:16:97:56:9B:F3:78:9D:93:52:48:49:F2:1B:A5:0B:E2
+170942d15e341bc3bd1c622e71647302eb322e62ce65a25574aa022b649361b2
 ```
 
-This fingerprint is the Android trust anchor — it stays the same
-across every Haoma release. Once your device has installed an APK
-signed by this key, Android refuses to upgrade with any APK signed
-by a different key. **Mismatch = do not install.**
+The same value in the colon form that `keytool` prints:
+
+```
+17:09:42:D1:5E:34:1B:C3:BD:1C:62:2E:71:64:73:02:EB:32:2E:62:CE:65:A2:55:74:AA:02:2B:64:93:61:B2
+```
+
+This fingerprint is the Android trust anchor from v0.1.0-beta on. It
+stays the same across every later release. Once your device has
+installed an APK signed by this key, Android refuses to upgrade with
+any APK signed by a different key. **Mismatch = do not install.**
 
 ## Tools
 

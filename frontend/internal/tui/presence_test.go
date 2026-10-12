@@ -3,44 +3,62 @@ package tui
 import (
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+
 	"haoma-frontend/internal/msg"
 )
 
-func TestPresenceColor_KnownLabels(t *testing.T) {
+func TestPresenceNameColor(t *testing.T) {
 	cases := []struct {
-		label string
-		want  string
+		state string
+		want  tcell.Color
+		ok    bool
 	}{
-		{"available", "Green"},
-		{"away", "Orange"},
-		{"busy", "Red"},
-		{"accepting", "Accepting"},
-		{"unknown", "Gray"},
-		{"unrecognised-label", "Gray (fallback)"},
+		{"available", ColorPresenceAvailable, true},
+		{"away", ColorPresenceAway, true},
+		{"busy", ColorPresenceBusy, true},
+		{"", tcell.ColorDefault, false},
+		{"accepting", tcell.ColorDefault, false},
+		{"a-state-this-build-does-not-know", tcell.ColorDefault, false},
 	}
 	for _, c := range cases {
-		got := presenceColor(c.label)
-		switch c.label {
-		case "available":
-			if got != ColorPresenceAvailable {
-				t.Errorf("%s: wrong color", c.label)
-			}
-		case "away":
-			if got != ColorPresenceAway {
-				t.Errorf("%s: wrong color", c.label)
-			}
-		case "busy":
-			if got != ColorPresenceBusy {
-				t.Errorf("%s: wrong color", c.label)
-			}
-		case "accepting":
-			if got != ColorPresenceAccepting {
-				t.Errorf("%s: wrong color", c.label)
-			}
-		default:
-			if got != ColorPresenceUnknown {
-				t.Errorf("%s: wrong color (want %s)", c.label, c.want)
-			}
+		got, ok := presenceNameColor(c.state)
+		if got != c.want || ok != c.ok {
+			t.Errorf("presenceNameColor(%q) = %v, %v; want %v, %v", c.state, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestPresenceNameTag(t *testing.T) {
+	cases := map[string]string{
+		"available": StylePresenceAvailable,
+		"away":      StylePresenceAway,
+		"busy":      StylePresenceBusy,
+		"":          "",
+		"accepting": "",
+		"later":     "",
+	}
+	for state, want := range cases {
+		if got := presenceNameTag(state); got != want {
+			t.Errorf("presenceNameTag(%q) = %q, want %q", state, got, want)
+		}
+	}
+}
+
+func TestPresenceArrowsTag(t *testing.T) {
+	on, off := StylePresenceArrowOn, StylePresenceArrowOff
+	cases := []struct {
+		v    presenceView
+		want string
+	}{
+		{presenceView{}, off + "↑" + off + "↓" + StyleReset},
+		{presenceView{accepting: true}, on + "↑" + off + "↓" + StyleReset},
+		{presenceView{sending: true}, off + "↑" + on + "↓" + StyleReset},
+		{presenceView{accepting: true, sending: true, chatty: "busy"}, on + "↑" + on + "↓" + StyleReset},
+	}
+	for _, c := range cases {
+		if got := presenceArrowsTag(c.v); got != c.want {
+			t.Errorf("presenceArrowsTag(%+v) = %q, want %q", c.v, got, c.want)
 		}
 	}
 }
@@ -50,28 +68,12 @@ func TestPresenceTag(t *testing.T) {
 		"available":           StylePresenceAvailable,
 		"away":                StylePresenceAway,
 		"busy":                StylePresenceBusy,
-		"accepting":           StylePresenceAccepting,
 		"unknown":             StylePresenceUnknown,
 		"anything-else-falls": StylePresenceUnknown,
 	}
 	for label, want := range cases {
 		if got := presenceTag(label); got != want {
 			t.Errorf("presenceTag(%q) = %q, want %q", label, got, want)
-		}
-	}
-}
-
-func TestPresenceGlyph(t *testing.T) {
-	cases := map[string]string{
-		"available": GlyphPresenceOnline,
-		"away":      GlyphPresenceOnline,
-		"busy":      GlyphPresenceOnline,
-		"accepting": GlyphPresenceAccepting,
-		"unknown":   GlyphPresenceUnknown,
-	}
-	for label, want := range cases {
-		if got := presenceGlyph(label); got != want {
-			t.Errorf("presenceGlyph(%q) = %q, want %q", label, got, want)
 		}
 	}
 }

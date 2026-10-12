@@ -95,6 +95,8 @@ func (c *Conn) Signal(name string) error {
 	return nil
 }
 
+var ErrUnknownCircuit = errors.New("control: CLOSECIRCUIT: unknown circuit")
+
 func (c *Conn) CloseCircuit(id string) error {
 	if id == "" {
 		return errors.New("control: empty circuit id")
@@ -107,7 +109,7 @@ func (c *Conn) CloseCircuit(id string) error {
 	case 250:
 		return nil
 	case 552:
-		return nil
+		return ErrUnknownCircuit
 	default:
 		return fmt.Errorf("control: CLOSECIRCUIT: %d %s", reply.Code, strings.Join(reply.Lines, " "))
 	}

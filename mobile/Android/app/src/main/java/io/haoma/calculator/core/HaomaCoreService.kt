@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.R
 import io.haoma.calculator.log.Logger
+import io.haoma.calculator.messenger.reportNetworkChanged
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -59,14 +60,19 @@ class HaomaCoreService : Service() {
     
     private var wakeLock: PowerManager.WakeLock? = null
 
+    
+    private var networkWatcher: NetworkChangeWatcher? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         Logger.i("fgs", "HaomaCoreService.onCreate")
+        running = true
         ensureChannel()
         registerScreenOffReceiver()
         acquireWakeLock()
+        startNetworkWatcher()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -86,6 +92,11 @@ class HaomaCoreService : Service() {
                         try { restartBothDaemons() } finally { daemonOpInFlight.set(false) }
                     }
                 }
+            }
+            ACTION_STOP_FOR_ERASE -> {
+                
+                
+                scope.launch { stopForEraseBody() }
             }
             ACTION_STOP_HAOMA_ONLY -> {
                 
@@ -121,6 +132,8 @@ class HaomaCoreService : Service() {
     override fun onDestroy() {
         Logger.i("fgs", "HaomaCoreService.onDestroy")
         unregisterScreenOffReceiver()
+        networkWatcher?.stop()
+        networkWatcher = null
         releaseWakeLock()
         
         
@@ -142,10 +155,10 @@ class HaomaCoreService : Service() {
         haomad = null
         haomadAddr = null
         scope.cancel()
+        running = false
         
         
-        stoppedSignal?.complete(Unit)
-        stoppedSignal = null
+        releaseStoppedWaiters()
         super.onDestroy()
     }
 
@@ -320,6 +333,33 @@ class HaomaCoreService : Service() {
     }
 
     
+    private fun stopForEraseBody() {
+        Logger.i("fgs", "ACTION_STOP_FOR_ERASE stopping haoma; haomad erases and ends itself")
+        stopHaomaChild()
+        val d = haomad
+        if (d == null) {
+            Logger.w("fgs", "ACTION_STOP_FOR_ERASE no haomad handle; nothing to wait for")
+        } else {
+            val ended = try {
+                d.awaitExit(HAOMAD_ERASE_EXIT_TIMEOUT_MS)
+            } catch (t: InterruptedException) {
+                Logger.w("fgs", "ACTION_STOP_FOR_ERASE the wait for haomad was interrupted")
+                false
+            }
+            if (ended) {
+                Logger.i("fgs", "ACTION_STOP_FOR_ERASE haomad ended itself")
+            } else {
+                Logger.w(
+                    "fgs",
+                    "ACTION_STOP_FOR_ERASE haomad still running after " +
+                        "${HAOMAD_ERASE_EXIT_TIMEOUT_MS}ms; stopping it",
+                )
+            }
+        }
+        stopSelf()
+    }
+
+    
     private fun restartBothDaemons() {
         Logger.i("fgs", "ACTION_RESTART_DAEMONS tearing down haoma + haomad")
         stopHaomaChild()
@@ -353,6 +393,7 @@ class HaomaCoreService : Service() {
             "--tor-data-dir", torDataDir.absolutePath,
             "--log-level", Logger.suiteLogLevel,
             "--log-file", haomadLog.absolutePath,
+            "--log-file-mode", Logger.suiteLogFileMode,
         )
         return Daemon.spawn(
             name = "haomad",
@@ -375,6 +416,7 @@ class HaomaCoreService : Service() {
             "--backend-addr", "https://$haomadAddr",
             "--log-level", Logger.suiteLogLevel,
             "--log-file", haomaLog.absolutePath,
+            "--log-file-mode", Logger.suiteLogFileMode,
         )
         return Daemon.spawn(
             name = "haoma",
@@ -498,6 +540,15 @@ class HaomaCoreService : Service() {
         }
     }
 
+    private fun startNetworkWatcher() {
+        if (networkWatcher != null) return
+        val watcher = NetworkChangeWatcher(applicationContext) {
+            (application as? HaomaApp)?.let { it.messengerStore.reportNetworkChanged() }
+        }
+        watcher.start()
+        networkWatcher = watcher
+    }
+
     private fun unregisterScreenOffReceiver() {
         val receiver = screenOffReceiver ?: return
         try {
@@ -553,6 +604,12 @@ class HaomaCoreService : Service() {
         const val ACTION_STOP_HAOMA_ONLY = "io.haoma.calculator.fgs.STOP_HAOMA_ONLY"
 
         
+        const val ACTION_STOP_FOR_ERASE = "io.haoma.calculator.fgs.STOP_FOR_ERASE"
+
+        
+        const val HAOMAD_ERASE_EXIT_TIMEOUT_MS = 45_000L
+
+        
         fun start(context: Context) {
             val intent = Intent(context, HaomaCoreService::class.java)
             context.startForegroundService(intent)
@@ -605,14 +662,44 @@ class HaomaCoreService : Service() {
 
         
         @Volatile
-        private var stoppedSignal: CompletableDeferred<Unit>? = null
+        var running: Boolean = false
+            private set
+
+        
+        private val stoppedWaitersLock = Any()
+        private val stoppedWaiters = mutableListOf<CompletableDeferred<Unit>>()
+
+        
+        private fun releaseStoppedWaiters() {
+            val waiting = synchronized(stoppedWaitersLock) {
+                val all = stoppedWaiters.toList()
+                stoppedWaiters.clear()
+                all
+            }
+            waiting.forEach { it.complete(Unit) }
+        }
 
         
         fun stopAndAwait(context: Context): Deferred<Unit> {
             val deferred = CompletableDeferred<Unit>()
-            stoppedSignal = deferred
+            synchronized(stoppedWaitersLock) { stoppedWaiters.add(deferred) }
             val intent = Intent(context, HaomaCoreService::class.java)
             context.stopService(intent)
+            return deferred
+        }
+
+        
+        fun stopForErase(context: Context): Deferred<Unit> {
+            val deferred = CompletableDeferred<Unit>()
+            synchronized(stoppedWaitersLock) { stoppedWaiters.add(deferred) }
+            val intent = Intent(context, HaomaCoreService::class.java)
+                .setAction(ACTION_STOP_FOR_ERASE)
+            try {
+                context.startForegroundService(intent)
+            } catch (t: Throwable) {
+                Logger.w("fgs", "stopForErase dispatch failed: ${t.message}; stopping the service")
+                context.stopService(Intent(context, HaomaCoreService::class.java))
+            }
             return deferred
         }
 

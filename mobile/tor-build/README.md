@@ -27,8 +27,7 @@ Project / Briar. We rebuild from upstream sources ourselves.
 `output/<abi>/libtor.so` — the Tor binary, ELF format, named with the
 `lib*.so` prefix so Android's PackageManager extracts it to
 `applicationInfo.nativeLibraryDir` on install (the only on-disk path
-SELinux permits exec from on API 29+ — see `feedback_android_no_logcat`
-project memory).
+SELinux permits exec from on API 29+).
 
 The committed binary lives in
 `mobile/Android/app/src/main/jniLibs/<abi>/libtor.so`. SHA-256 is
@@ -49,9 +48,10 @@ checked-in SHA against the lockfile.
 - `~/sdk/android/ndk/r29/` — NDK r29, revision `29.0.14206865`. The
   build script auto-downloads if absent (verifies SHA-256 against the
   pin before unpacking).
-- alpsec bubble at `/usr/local/lib/alpsec/bubble.sh` (we run inside
-  the Debian chroot for native-glibc autotools + clang).
-- Inside chroot: `gcc make pkg-config build-essential autoconf
+- A glibc Linux host (tested on Debian) for native autotools + clang.
+- Packages: `gcc make pkg-config build-essential autoconf
   automake libtool git curl wget unzip patch perl python3`.
+- Today `make tor-rebuild` stops unless the maintainer's build sandbox
+  is installed. Running it on a plain glibc host is open work.
 
 No Docker. No host-side root.

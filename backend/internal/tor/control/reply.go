@@ -12,6 +12,16 @@ type Reply struct {
 	Lines []string
 }
 
+type StatusError struct {
+	Command string
+	Code    int
+	Lines   []string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("control: %s: %d %s", e.Command, e.Code, strings.Join(e.Lines, " "))
+}
+
 type Event struct {
 	Type  string
 	Lines []string

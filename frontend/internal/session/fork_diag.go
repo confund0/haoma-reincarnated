@@ -8,6 +8,8 @@ import (
 
 	"go.mau.fi/libsignal/protocol"
 
+	"haoma-frontend/internal/devicetag"
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/msg"
 )
 
@@ -70,7 +72,7 @@ func (c *Cipher) logRatchetOp(ctx context.Context, dir, peerID, kind string, tag
 	}
 	attrs := []any{
 		slog.String("dir", dir),
-		slog.String("peer", peerID),
+		slog.String("peer", logid.Short(peerID)),
 		slog.String("kind", kind),
 		slog.String("root_before", before.rootFP),
 		slog.String("root_after", after.rootFP),
@@ -81,7 +83,7 @@ func (c *Cipher) logRatchetOp(ctx context.Context, dir, peerID, kind string, tag
 		slog.Int("n_prev_before", before.nPrev),
 		slog.Int("n_prev_after", after.nPrev),
 		slog.Bool("archived", after.nPrev > before.nPrev),
-		slog.Int("rem_reg", int(after.remReg)),
+		slog.String("rem_reg", devicetag.Tag(after.remReg)),
 	}
 	if tag != 0 {
 		attrs = append(attrs, slog.Int("tag", int(tag)))
@@ -90,6 +92,26 @@ func (c *Cipher) logRatchetOp(ctx context.Context, dir, peerID, kind string, tag
 		attrs = append(attrs, slog.String("op_err", opErr.Error()))
 	}
 	slog.Debug("ratchet.op", attrs...)
+}
+
+func (c *Cipher) logPreKeyMessage(ctx context.Context, peerID string, msg *protocol.PreKeySignalMessage) {
+	if !slog.Default().Enabled(ctx, slog.LevelDebug) {
+		return
+	}
+	var (
+		named bool
+		opkID uint32
+	)
+	if id := msg.PreKeyID(); id != nil && !id.IsEmpty {
+		named, opkID = true, id.Value
+	}
+	slog.Debug("prekey message",
+		slog.String("peer", logid.Short(peerID)),
+		slog.Bool("opk_named", named),
+		slog.Uint64("opk_id", uint64(opkID)),
+		slog.Uint64("spk_id", uint64(msg.SignedPreKeyID())),
+		slog.String("rem_reg", devicetag.Tag(msg.RegistrationID())),
+		slog.String("base_key", fpOf(func() []byte { return msg.BaseKey().Serialize() })))
 }
 
 func peekKind(plaintext []byte) string {

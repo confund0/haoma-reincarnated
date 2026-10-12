@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,7 +21,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -38,8 +36,10 @@ import io.haoma.calculator.messenger.PeerEntry
 
 @Composable
 fun ContactsTab(store: MessengerStore) {
-    val peers by store.peers.collectAsStateWithLifecycle()
+    val allPeers by store.peers.collectAsStateWithLifecycle()
     val presence by store.presence.collectAsStateWithLifecycle()
+
+    val peers = remember(allPeers) { contactsToDraw(allPeers) }
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val freshPeers by store.freshPeers.collectAsStateWithLifecycle()
     val nowSeconds = System.currentTimeMillis() / 1000L
@@ -50,17 +50,42 @@ fun ContactsTab(store: MessengerStore) {
             .toHashSet()
     }
 
+    
+    val pairing by store.inheritedPairing.collectAsStateWithLifecycle()
+    val invitations by store.invitations.collectAsStateWithLifecycle()
+    val connected by store.connection.collectAsStateWithLifecycle()
+    val siblingPresence = allPeers.firstOrNull { it.sibling }?.let { contactPresence(it, presence) }
+    val acceptable = invitations.acceptable(nowSeconds)
+    val showInvitations = acceptable.isNotEmpty() || invitations.listFailure.isNotEmpty() ||
+        invitations.acceptingMsgId.isNotEmpty() || invitations.outcome != null
+
     Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
         TabHeader(title = "Contacts", store = store)
-        if (peers.isEmpty()) {
+        if (peers.isEmpty() && !pairing.showSection && !showInvitations) {
             EmptyContactsSurface()
             return@Column
         }
+        
+        
+        val breakFollows = showInvitations || pairing.showSection
         LazyColumn(modifier = Modifier.fillMaxSize()) {
+            if (peers.isEmpty()) {
+                item(key = "no-paired-contacts") {
+                    Text(
+                        text = "No paired contacts on this device yet.",
+                        color = HaomaPalette.FG_DIM,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    )
+                    if (!breakFollows) {
+                        HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
+                    }
+                }
+            }
             items(peers, key = { it.id }) { peer ->
                 ContactRow(
                     peer = peer,
-                    presenceLabel = presence[peer.id] ?: peer.effective.ifEmpty { "unknown" },
+                    presence = contactPresence(peer, presence),
                     nowSeconds = nowSeconds,
                     inCall = peer.id in inCallPeers,
                     isFresh = peer.id in freshPeers,
@@ -73,7 +98,33 @@ fun ContactsTab(store: MessengerStore) {
                         store.openContactDetail(peer.id)
                     },
                 )
-                HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
+                if (!breakFollows || peer.id != peers.last().id) {
+                    HorizontalDivider(color = HaomaPalette.DIVIDER, thickness = 0.5.dp)
+                }
+            }
+            if (showInvitations) {
+                item(key = "invitations") {
+                    SectionBreak()
+                    InvitationsSection(
+                        store = store,
+                        view = invitations,
+                        acceptable = acceptable,
+                        connected = connected,
+                        endLine = !pairing.showSection,
+                    )
+                }
+            }
+            
+            
+            if (pairing.showSection) {
+                item(key = "linked-device") {
+                    SectionBreak()
+                    LinkedDeviceSection(
+                        store = store,
+                        pairing = pairing,
+                        siblingPresence = siblingPresence,
+                    )
+                }
             }
         }
     }
@@ -102,7 +153,7 @@ private fun TabHeader(title: String, store: MessengerStore) {
 @Composable
 private fun ContactRow(
     peer: PeerEntry,
-    presenceLabel: String,
+    presence: PresenceView,
     nowSeconds: Long,
     inCall: Boolean,
     isFresh: Boolean,
@@ -111,13 +162,14 @@ private fun ContactRow(
 ) {
     val retired = peer.retiredAt != 0L
     val displayLabel = displayLabelFor(peer, retired)
-    val labelColor = when {
-        inCall -> FG_IN_CALL
-        retired -> HaomaPalette.FG_DIM
-        isFresh -> FG_FRESH
-        peer.alias.isEmpty() && peer.nick.isEmpty() -> HaomaPalette.FG_DIM
-        else -> HaomaPalette.FG_PRIMARY
-    }
+    val labelColor = contactLabelColour(
+        inCall = inCall,
+        retired = retired,
+        unreachable = peer.unreachable,
+        isFresh = isFresh,
+        chatty = presence.chatty,
+        unnamed = peer.alias.isEmpty() && peer.nick.isEmpty(),
+    )
     val labelStyle = if (peer.alias.isEmpty() && peer.nick.isEmpty()) FontStyle.Italic else FontStyle.Normal
 
     Row(
@@ -127,7 +179,7 @@ private fun ContactRow(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PresenceDot(label = presenceLabel, retired = retired)
+        PresenceArrows(view = presence, dim = retired)
         Spacer(modifier = Modifier.width(10.dp))
         Column(
             modifier = Modifier.weight(1f),
@@ -169,20 +221,6 @@ private fun ContactRow(
                 .padding(horizontal = 6.dp, vertical = 4.dp),
         )
     }
-}
-
-@Composable
-private fun PresenceDot(label: String, retired: Boolean) {
-    val color = when {
-        retired -> HaomaPalette.FG_DIM
-        else -> presenceColor(label)
-    }
-    Box(
-        modifier = Modifier
-            .size(10.dp)
-            .clip(CircleShape)
-            .background(color),
-    )
 }
 
 @Composable
@@ -249,26 +287,33 @@ private fun displayLabelFor(peer: PeerEntry, retired: Boolean): String {
     return if (retired) "$resolved (retired)" else resolved
 }
 
+
+internal fun contactLabelColour(
+    inCall: Boolean,
+    retired: Boolean,
+    unreachable: Boolean,
+    isFresh: Boolean,
+    chatty: String,
+    unnamed: Boolean,
+): Color {
+    val nameColour = presenceNameColour(chatty)
+    return when {
+        inCall -> FG_IN_CALL
+        retired -> HaomaPalette.FG_DIM
+        unreachable -> HaomaPalette.C_ATTENTION
+        chatty == "busy" -> HaomaPalette.C_PRESENCE_BUSY
+        isFresh -> FG_FRESH
+        nameColour != null -> nameColour
+        unnamed -> HaomaPalette.FG_DIM
+        else -> HaomaPalette.FG_PRIMARY
+    }
+}
+
 internal fun shortPeerId(id: String): String =
     if (id.length > 8) id.substring(0, 8) else id
-
-private fun presenceColor(label: String): Color = when (label) {
-    "available" -> C_AVAILABLE
-    "away" -> C_AWAY
-    "busy" -> C_BUSY
-    "accepting" -> C_ACCEPTING
-    else -> C_UNKNOWN
-}
 
 
 private val FG_IN_CALL = Color(0xFFCC241D)
 
 
 private val FG_FRESH = Color(0xFF5FCC1A)
-
-
-private val C_AVAILABLE = Color(0xFF5FCC1A) 
-private val C_AWAY = Color(0xFFFABD2F) 
-private val C_BUSY = Color(0xFFCC241D) 
-private val C_ACCEPTING = Color(0xFF5F87FF) 
-private val C_UNKNOWN = Color(0xFF504945) 

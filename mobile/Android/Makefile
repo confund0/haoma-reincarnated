@@ -5,6 +5,10 @@ JAVA_HOME    := $(SDK_ROOT)/jdk
 ANDROID_HOME := $(SDK_ROOT)/android
 BUILD_TOOLS  := $(ANDROID_HOME)/build-tools/35.0.0
 APK          := app/build/outputs/apk/debug/app-debug.apk
+# The JVM temp dir, the same path as java.io.tmpdir in gradle.properties.
+# /tmp is read-only inside some sandboxes, and the JVM does not make the
+# dir itself.
+JVM_TMP      := build/jvm-tmp
 
 # tools/release.sh passes VERSION=$TAG so the APK's versionName matches
 # the git tag stamped into the Go binaries' ldflags. Bare dev builds
@@ -16,10 +20,9 @@ else
     GRADLE_PROPS :=
 endif
 
-# Telemetry kill-switches. See docs/MOBILE-PRIVACY.md.
-# Proxy: project scope ignores host HTTP_PROXY/HTTPS_PROXY — we talk to
-# dl.google.com / maven repos directly (host proxy is corp/cache-flavoured
-# and resolves to a name unreachable inside the chroot anyway).
+# Telemetry kill-switches.
+# The build ignores the host's HTTP(S) proxy and reaches dl.google.com and
+# the Maven repositories directly.
 ENV := JAVA_HOME=$(JAVA_HOME) \
        ANDROID_HOME=$(ANDROID_HOME) \
        ANDROID_SDK_ROOT=$(ANDROID_HOME) \
@@ -59,13 +62,16 @@ bootstrap:
 	./bootstrap.sh
 
 build:
+	@mkdir -p $(JVM_TMP)
 	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon $(GRADLE_PROPS) assembleDebug'
 	@ls -la $(APK)
 
 release:
+	@mkdir -p $(JVM_TMP)
 	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon $(GRADLE_PROPS) assembleRelease'
 
 clean:
+	@mkdir -p $(JVM_TMP)
 	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew clean'
 
 install: build
@@ -75,4 +81,5 @@ audit:
 	@$(IN_BUBBLE) bash audit.sh $(APK)
 
 test:
+	@mkdir -p $(JVM_TMP)
 	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon testDebugUnitTest'

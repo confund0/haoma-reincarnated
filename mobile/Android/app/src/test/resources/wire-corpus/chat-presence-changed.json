@@ -1,0 +1,10 @@
+{
+  "type": "chat_presence_changed",
+  "payload": {
+    "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+    "accepting": true,
+    "sending": true,
+    "chatty": "busy",
+    "effective": "busy"
+  }
+}

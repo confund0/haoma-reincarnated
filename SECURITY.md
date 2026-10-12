@@ -2,23 +2,18 @@
 
 ## Reporting
 
-This is a beta. If you find a vulnerability:
-
-- **Do not file a public issue.** Issues are disabled on this repo
-  during beta anyway, but for everyone's sake — including the inner
-  circle running this build — please use the private channel.
-- Reach the maintainer at the address listed on the
-  `confund0` GitHub profile or in the tester channel.
-- For non-trivial findings, embargo the public disclosure until
-  there's a fix in the next release.
+This is a beta for an inner test group. Issues and Discussions are
+disabled on this repo during beta.
 
 ## Scope
 
 - The Go core: `backend/`, `frontend/`.
 - The Android app: `mobile/Android/`.
 - The Tor cross-compile recipe: `mobile/tor-build/`.
+- The call binaries: `streams/`, and their Android build recipe
+  `mobile/streams-build/`.
 
-Out of scope for now:
+Out of scope:
 - Cryptographic protocol design (Signal Protocol via libsignal, Tor
   ephemeral onion services). Both have established threat models +
   separate disclosure channels.
@@ -44,6 +39,3 @@ Two-layer:
   customs glance). Calculator disguise + reveal pattern.
 - **Layer 2** — network-grade adversary trying to learn who you talk
   to. Per-peer Tor onions, no metadata server, no shared address.
-
-Activist-grade panic + retention enforcement is a planned post-beta
-slice; not in this build.

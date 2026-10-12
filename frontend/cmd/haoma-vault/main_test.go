@@ -3,17 +3,25 @@ package main_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dgraph-io/badger/v4"
+
+	"haoma-frontend/internal/backuparchive"
+	"haoma-frontend/internal/lockfile"
 	"haoma-frontend/internal/vault"
 )
 
 func buildBinary(t *testing.T) string {
 	t.Helper()
+	statSources(t, ".")
 	out := filepath.Join(t.TempDir(), "haoma-vault")
 	cmd := exec.Command("go", "build", "-o", out, ".")
 	cmd.Dir = "."
@@ -24,6 +32,28 @@ func buildBinary(t *testing.T) string {
 		t.Fatalf("build: %v\n%s", err, stderr.String())
 	}
 	return out
+}
+
+func statSources(t *testing.T, pkg string) {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.Dir}}{{end}}", pkg)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list %s: %v\n%s", pkg, err, stderr.String())
+	}
+	for _, dir := range strings.Fields(string(out)) {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", dir, err)
+		}
+		for _, f := range files {
+			if _, err := os.Stat(f); err != nil {
+				t.Fatalf("stat %s: %v", f, err)
+			}
+		}
+	}
 }
 
 func mintVault(t *testing.T, bin, cfgDir, passphrase string) []byte {
@@ -270,75 +300,233 @@ func TestModesMutuallyExclusive(t *testing.T) {
 	}
 }
 
-func TestArchiveWriteAndRestoreRoundTrip(t *testing.T) {
-	bin := buildBinary(t)
-	cfgDir := t.TempDir()
-	pass := vault.InsecureDefaultPassphrase
-	mintVault(t, bin, cfgDir, pass)
+func writeFile(t *testing.T, cfgDir, rel, body string) {
+	t.Helper()
+	full := filepath.Join(cfgDir, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", rel, err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+}
 
-	if err := os.MkdirAll(filepath.Join(cfgDir, "backend"), 0o700); err != nil {
-		t.Fatalf("mkdir backend: %v", err)
+func readFile(t *testing.T, cfgDir, rel string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(cfgDir, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
 	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "backend", "MANIFEST"), []byte("manifest"), 0o600); err != nil {
-		t.Fatalf("seed manifest: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "backend", "haomad.log"), []byte("noisy"), 0o600); err != nil {
-		t.Fatalf("seed log: %v", err)
-	}
+	return string(b)
+}
 
-	archive := filepath.Join(t.TempDir(), "out.tar")
+func archiveOf(t *testing.T, bin, cfgDir string) string {
+	t.Helper()
+	archive := filepath.Join(t.TempDir(), "backup.tar.zst")
 	cmd := exec.Command(bin, "--cfg-dir", cfgDir, "--archive-write="+archive)
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("archive-write: %v\n%s", err, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "archive-write ok") {
-		t.Errorf("expected ok stderr; got %q", stderr.String())
+	return archive
+}
+
+func stage(t *testing.T, bin, cfgDir, archive string) string {
+	t.Helper()
+	cmd := exec.Command(bin, "--cfg-dir", cfgDir, "--archive-stage="+archive)
+	stderr := &bytes.Buffer{}
+	cmd.Stderr = stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("archive-stage: %v\n%s", err, stderr.String())
 	}
-	if info, err := os.Stat(archive); err != nil || info.Size() == 0 {
-		t.Fatalf("archive not present or empty: %v", err)
+	p := stagingPathFromStdout(out)
+	if p == "" {
+		t.Fatalf("archive-stage stdout empty; stderr=%s", stderr.String())
+	}
+	return p
+}
+
+func commit(t *testing.T, bin, cfgDir, staging, pass string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(bin, "--cfg-dir", cfgDir, "--archive-commit="+staging)
+	cmd.Stdin = strings.NewReader(pass)
+	stderr := &bytes.Buffer{}
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+		return 0, stderr.String()
+	case errors.As(err, &exitErr):
+		return exitErr.ExitCode(), stderr.String()
+	default:
+		t.Fatalf("archive-commit: %v", err)
+		return -1, ""
+	}
+}
+
+func markEmpty(t *testing.T, cfgDir string) {
+	t.Helper()
+	if err := backuparchive.MarkDeviceEmpty(cfgDir); err != nil {
+		t.Fatalf("MarkDeviceEmpty: %v", err)
+	}
+}
+
+func TestArchiveRestoreKeepsDeviceLocalState(t *testing.T) {
+	bin := buildBinary(t)
+	pass := vault.InsecureDefaultPassphrase
+
+	src := t.TempDir()
+	mintVault(t, bin, src, pass)
+	writeFile(t, src, "backend/MANIFEST", "SRC-MANIFEST")
+	writeFile(t, src, "disguise.enc", "SRC-DISGUISE")
+	writeFile(t, src, "calc-help.txt", "SRC-KEYS")
+	writeFile(t, src, "haomad.log", "noisy")
+	srcVault := readFile(t, src, "vault.enc")
+	archive := archiveOf(t, bin, src)
+
+	dest := t.TempDir()
+	mintVault(t, bin, dest, pass)
+	writeFile(t, dest, "backend/MANIFEST", "LIVE-MANIFEST")
+	writeFile(t, dest, "calc-help.txt", "LIVE-KEYS")
+	writeFile(t, dest, "tor/torrc", "LIVE-TORRC")
+	writeFile(t, dest, "tor/torrc.local", "LIVE-BRIDGES")
+	writeFile(t, dest, "tor/lock", "")
+	writeFile(t, dest, "haoma-text.log", "live log")
+	writeFile(t, dest, "haoma-text.log.prev", "older live log")
+	writeFile(t, dest, "vault.lock", "")
+	markEmpty(t, dest)
+
+	staging := stage(t, bin, dest, archive)
+	if code, stderr := commit(t, bin, dest, staging, pass); code != 0 {
+		t.Fatalf("archive-commit exit=%d\n%s", code, stderr)
+	}
+	if readFile(t, dest, "vault.enc") != srcVault {
+		t.Error("vault.enc is not the archive's")
+	}
+	for rel, want := range map[string]string{
+		"backend/MANIFEST":    "SRC-MANIFEST",
+		"disguise.enc":        "SRC-DISGUISE",
+		"calc-help.txt":       "SRC-KEYS",
+		"tor/torrc":           "LIVE-TORRC",
+		"tor/torrc.local":     "LIVE-BRIDGES",
+		"haoma-text.log":      "live log",
+		"haoma-text.log.prev": "older live log",
+	} {
+		if got := readFile(t, dest, rel); got != want {
+			t.Errorf("%s = %q, want %q", rel, got, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dest, "haomad.log")); err == nil {
+		t.Error("haomad.log came with the archive; logs are not carried")
+	}
+	if _, err := os.Stat(staging); err == nil {
+		t.Error("staging dir is still there after the commit")
+	}
+	if pre, _ := filepath.Glob(filepath.Join(dest, ".pre-restore-*")); len(pre) != 0 {
+		t.Errorf(".pre-restore dirs after a restore: %v", pre)
+	}
+	if _, err := os.Stat(filepath.Join(dest, backuparchive.EmptyMarkerFile)); err == nil {
+		t.Errorf("%s is still there after the restore", backuparchive.EmptyMarkerFile)
+	}
+}
+
+func TestArchiveStageOfBrokenArchiveMovesNothing(t *testing.T) {
+	bin := buildBinary(t)
+	pass := vault.InsecureDefaultPassphrase
+	src := t.TempDir()
+	mintVault(t, bin, src, pass)
+	writeFile(t, src, "backend/MANIFEST", strings.Repeat("M", 64<<10))
+	archive := archiveOf(t, bin, src)
+	raw, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	if err := os.WriteFile(archive, raw[:len(raw)/2], 0o600); err != nil {
+		t.Fatalf("truncate archive: %v", err)
 	}
 
 	dest := t.TempDir()
-	if err := os.Chmod(dest, 0o700); err != nil {
-		t.Fatalf("chmod dest: %v", err)
-	}
-	stderr.Reset()
-	cmd = exec.Command(bin, "--cfg-dir", dest, "--archive-restore="+archive)
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("archive-restore: %v\n%s", err, stderr.String())
-	}
-	if _, err := os.Stat(filepath.Join(dest, "vault.enc")); err != nil {
-		t.Errorf("restored vault.enc missing: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dest, "backend", "MANIFEST")); err != nil {
-		t.Errorf("restored backend manifest missing: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dest, "backend", "haomad.log")); err == nil {
-		t.Errorf("log file should not be in archive")
-	}
+	mintVault(t, bin, dest, pass)
+	writeFile(t, dest, "tor/torrc", "LIVE-TORRC")
+	markEmpty(t, dest)
+	liveVault := readFile(t, dest, "vault.enc")
 
-	stderr.Reset()
-	cmd = exec.Command(bin, "--cfg-dir", dest, "--archive-restore="+archive)
+	cmd := exec.Command(bin, "--cfg-dir", dest, "--archive-stage="+archive)
+	stderr := &bytes.Buffer{}
 	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("archive-restore #2: %v\n%s", err, stderr.String())
+	err = cmd.Run()
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("archive-stage of a truncated archive: %v, want exit 1; stderr=%s", err, stderr.String())
+	}
+	if readFile(t, dest, "vault.enc") != liveVault {
+		t.Error("vault.enc changed after a failed stage")
 	}
 	entries, err := os.ReadDir(dest)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
-	var foundPreRestore bool
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".pre-restore-") {
-			foundPreRestore = true
-			break
+		if strings.HasPrefix(e.Name(), ".staging-") || strings.HasPrefix(e.Name(), ".pre-restore-") {
+			t.Errorf("%s left after a failed stage", e.Name())
 		}
 	}
-	if !foundPreRestore {
-		t.Errorf("expected a .pre-restore-* dir after second restore; entries: %v", entries)
+}
+
+func TestArchiveCommitRefusedWhileStoreOpen(t *testing.T) {
+	bin := buildBinary(t)
+	pass := vault.InsecureDefaultPassphrase
+	src := t.TempDir()
+	mintVault(t, bin, src, pass)
+	archive := archiveOf(t, bin, src)
+
+	dest := t.TempDir()
+	mintVault(t, bin, dest, pass)
+	markEmpty(t, dest)
+	liveVault := readFile(t, dest, "vault.enc")
+	db, err := badger.Open(badger.DefaultOptions(filepath.Join(dest, "backend", "badger")).
+		WithLoggingLevel(badger.ERROR))
+	if err != nil {
+		t.Fatalf("open badger: %v", err)
+	}
+	defer db.Close()
+
+	staging := stage(t, bin, dest, archive)
+	code, stderr := commit(t, bin, dest, staging, pass)
+	if code != 5 {
+		t.Fatalf("archive-commit exit=%d, want 5\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "still running") {
+		t.Errorf("stderr does not say a daemon is still running: %s", stderr)
+	}
+
+	if want := fmt.Sprintf("pid %d", os.Getpid()); !strings.Contains(stderr, want) {
+		t.Errorf("stderr does not name %s: %s", want, stderr)
+	}
+	if readFile(t, dest, "vault.enc") != liveVault {
+		t.Error("vault.enc changed after a refused commit")
+	}
+	if _, err := os.Stat(filepath.Join(staging, "vault.enc")); err != nil {
+		t.Errorf("staged vault.enc gone after a refused commit: %v", err)
+	}
+	if pre, _ := filepath.Glob(filepath.Join(dest, ".pre-restore-*")); len(pre) != 0 {
+		t.Errorf(".pre-restore dirs after a refused commit: %v", pre)
+	}
+}
+
+func TestArchiveRestoreModeIsGone(t *testing.T) {
+	bin := buildBinary(t)
+	dest := t.TempDir()
+	if err := os.Chmod(dest, 0o700); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	cmd := exec.Command(bin, "--cfg-dir", dest, "--archive-restore=/nonexistent")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("--archive-restore is accepted")
 	}
 }
 
@@ -472,8 +660,10 @@ func TestArchiveCommitWrongPassphraseLeavesStateUntouched(t *testing.T) {
 	cmd = exec.Command(bin, "--cfg-dir", dest, "--archive-commit="+stagingPath)
 	cmd.Stdin = strings.NewReader("not-the-passphrase")
 	cmd.Stderr = stderr
-	if err := cmd.Run(); err == nil {
-		t.Fatalf("archive-commit with wrong pass should fail; stderr=%s", stderr.String())
+	err = cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("archive-commit with wrong pass: err=%v, want exit 1; stderr=%s", err, stderr.String())
 	}
 
 	if _, err := os.Stat(filepath.Join(stagingPath, "vault.enc")); err != nil {
@@ -592,5 +782,233 @@ func TestArchiveStageCleansStalePriorStaging(t *testing.T) {
 	fresh := stagingPathFromStdout(stageOut)
 	if _, err := os.Stat(fresh); err != nil {
 		t.Errorf("fresh staging dir missing: %v", err)
+	}
+}
+
+func sealedDataDir(t *testing.T, pass string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	payload, err := vault.MintFreshPayload()
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if err := vault.Create(filepath.Join(dir, "vault.enc"), []byte(pass), payload, vault.DefaultKDFParams); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	return dir
+}
+
+func TestArchiveCommitPassphraseTrailingSpace(t *testing.T) {
+	bin := buildBinary(t)
+	for _, c := range []struct{ sealed, typed string }{
+		{"pass ", "pass "},
+		{"pass ", "pass \n"},
+		{"pass", "pass \n"},
+	} {
+		src := sealedDataDir(t, c.sealed)
+		archive := archiveOf(t, bin, src)
+		dest := sealedDataDir(t, "dest")
+		markEmpty(t, dest)
+		staging := stage(t, bin, dest, archive)
+		if code, stderr := commit(t, bin, dest, staging, c.typed); code != 0 {
+			t.Errorf("sealed %q, typed %q: exit=%d\n%s", c.sealed, c.typed, code, stderr)
+		}
+	}
+}
+
+func writeMarker(t *testing.T, cfgDir string) {
+	t.Helper()
+	writeFile(t, cfgDir, ".restore-commit", `{"staging":".staging-20261001-115900"}`)
+}
+
+func TestPendingMarkerBlocks(t *testing.T) {
+	bin := buildBinary(t)
+	dest := sealedDataDir(t, "pass")
+	markEmpty(t, dest)
+	src := sealedDataDir(t, "pass")
+	archive := archiveOf(t, bin, src)
+	staging := stage(t, bin, dest, archive)
+	if err := os.Remove(filepath.Join(dest, "vault.enc")); err != nil {
+		t.Fatalf("remove vault: %v", err)
+	}
+	writeMarker(t, dest)
+
+	run := func(stdin string, args ...string) (int, string) {
+		cmd := exec.Command(bin, append([]string{"--cfg-dir", dest}, args...)...)
+		cmd.Stdin = strings.NewReader(stdin)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode(), stderr.String()
+		}
+		if err != nil {
+			t.Fatalf("run %v: %v", args, err)
+		}
+		return 0, stderr.String()
+	}
+	for _, c := range []struct {
+		stdin string
+		args  []string
+	}{
+		{"pass", nil},
+		{"pass\n{}", []string{"-w"}},
+		{"", []string{"--archive-stage=" + archive}},
+		{"pass", []string{"--archive-commit=" + staging}},
+		{"", []string{"--archive-discard=" + staging}},
+		{"", []string{"--archive-write=" + filepath.Join(t.TempDir(), "b.tar.zst")}},
+		{"", []string{"--check-empty"}},
+		{"", []string{"--clean-restore-leftovers"}},
+	} {
+		code, stderr := run(c.stdin, c.args...)
+		if code != 7 {
+			t.Errorf("%v: exit=%d, want 7\n%s", c.args, code, stderr)
+		}
+		want := "The restore did not finish. Delete the folder " + dest + " and restore your backup again."
+		if !strings.Contains(stderr, want) {
+			t.Errorf("%v: stderr does not say %q: %s", c.args, want, stderr)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dest, "vault.enc")); err == nil {
+		t.Error("a vault was minted while the marker is there")
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Errorf("the staging dir named by the marker is gone: %v", err)
+	}
+	if code, stderr := run("", "--list-backups"); code != 0 {
+		t.Errorf("--list-backups exit=%d\n%s", code, stderr)
+	}
+	if code, stderr := run("5", "--disguise-verify"); code != 2 {
+		t.Errorf("--disguise-verify exit=%d, want 2 (no sidecar)\n%s", code, stderr)
+	}
+}
+
+func TestArchiveCommitEarlyErrorIsNotApplied(t *testing.T) {
+	bin := buildBinary(t)
+	dir := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	code, stderr := commit(t, bin, dir, filepath.Join(dir, ".staging-x"), "pass")
+	if code != 3 {
+		t.Errorf("exit=%d, want 3\n%s", code, stderr)
+	}
+}
+
+func runVault(t *testing.T, bin, cfgDir, stdin string, args ...string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(bin, append([]string{"--cfg-dir", cfgDir}, args...)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), stderr.String()
+	}
+	if err != nil {
+		t.Fatalf("run %v: %v", args, err)
+	}
+	return 0, stderr.String()
+}
+
+func TestRestoreRefusedOnANotEmptyDevice(t *testing.T) {
+	bin := buildBinary(t)
+	src := sealedDataDir(t, "pass")
+	archive := archiveOf(t, bin, src)
+	dest := sealedDataDir(t, "pass")
+	writeFile(t, dest, "frontend/badger/MANIFEST", "LIVE-STORE")
+	liveVault := readFile(t, dest, "vault.enc")
+
+	checkRefused := func(label string, code int, stderr string) {
+		t.Helper()
+		if code != 8 {
+			t.Errorf("%s: exit=%d, want 8\n%s", label, code, stderr)
+		}
+		if !strings.Contains(stderr, backuparchive.NotEmptyMessage) {
+			t.Errorf("%s: stderr does not say %q: %s", label, backuparchive.NotEmptyMessage, stderr)
+		}
+	}
+	code, stderr := runVault(t, bin, dest, "", "--check-empty")
+	checkRefused("--check-empty", code, stderr)
+	code, stderr = runVault(t, bin, dest, "", "--archive-stage="+archive)
+	checkRefused("--archive-stage", code, stderr)
+	if st, _ := filepath.Glob(filepath.Join(dest, ".staging-*")); len(st) != 0 {
+		t.Errorf("a refused stage left %v", st)
+	}
+
+	markEmpty(t, dest)
+	staging := stage(t, bin, dest, archive)
+	if err := backuparchive.ClearDeviceEmpty(dest); err != nil {
+		t.Fatal(err)
+	}
+	code, stderr = commit(t, bin, dest, staging, "pass")
+	checkRefused("--archive-commit", code, stderr)
+	if readFile(t, dest, "vault.enc") != liveVault || readFile(t, dest, "frontend/badger/MANIFEST") != "LIVE-STORE" {
+		t.Error("a refused commit changed the live state")
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".restore-commit")); err == nil {
+		t.Error("a refused commit left the marker")
+	}
+}
+
+func TestCheckEmptyOnANewInstall(t *testing.T) {
+	bin := buildBinary(t)
+	dest := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Mkdir(dest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dest, "disguise.enc", "D")
+	if code, stderr := runVault(t, bin, dest, "", "--check-empty"); code != 0 {
+		t.Errorf("--check-empty exit=%d, want 0\n%s", code, stderr)
+	}
+}
+
+func TestArchiveStageWaitsForTheVaultLock(t *testing.T) {
+	bin := buildBinary(t)
+	src := sealedDataDir(t, "pass")
+	archive := archiveOf(t, bin, src)
+	dest := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Mkdir(dest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := lockfile.Acquire(filepath.Join(dest, "vault.enc.lock"))
+	if err != nil {
+		t.Fatalf("take the vault lock: %v", err)
+	}
+	cmd := exec.Command(bin, "--cfg-dir", dest, "--archive-stage="+archive)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		_ = lk.Release()
+		t.Fatalf("the stage ran while the vault lock was held: %v\n%s", err, stderr.String())
+	case <-time.After(500 * time.Millisecond):
+	}
+	if st, _ := filepath.Glob(filepath.Join(dest, ".staging-*")); len(st) != 0 {
+		t.Errorf("a staging dir appeared while the vault lock was held: %v", st)
+	}
+	if err := lk.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stage after the release: %v\n%s", err, stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the stage did not finish after the lock was released")
+	}
+	if st, _ := filepath.Glob(filepath.Join(dest, ".staging-*")); len(st) != 1 {
+		t.Errorf("staging dirs after the stage = %v, want one", st)
 	}
 }

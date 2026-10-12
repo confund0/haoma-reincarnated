@@ -49,6 +49,10 @@ func (c *Conn) Events() <-chan Event {
 	return c.events
 }
 
+func (c *Conn) Done() <-chan struct{} {
+	return c.closed
+}
+
 func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
 		c.closeErr = c.tcp.Close()

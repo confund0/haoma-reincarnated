@@ -175,7 +175,7 @@ func (t *transport) handleDatagram(from *net.UDPAddr, payload []byte) {
 	var msg krpcMsg
 	if err := bencode.Unmarshal(payload, &msg); err != nil {
 		t.logger.Debug("dht: decode failed",
-			slog.String("from", from.String()),
+			slog.String("addr", from.String()),
 			slog.String("err", err.Error()),
 			slog.Int("len", len(payload)),
 		)
@@ -193,7 +193,7 @@ func (t *transport) handleDatagram(from *net.UDPAddr, payload []byte) {
 		t.mu.Unlock()
 		if !ok {
 			t.logger.Debug("dht: orphan response",
-				slog.String("from", from.String()),
+				slog.String("addr", from.String()),
 				slog.String("y", msg.Y),
 			)
 			return

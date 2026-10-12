@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"go.mau.fi/libsignal/protocol"
 	"go.mau.fi/libsignal/serialize"
@@ -18,11 +19,26 @@ func Import(ctx context.Context, stores *signal.Stores, backend *backendapi.Clie
 	return importPeer(ctx, stores, backend, inv, myKeys, minted, true)
 }
 
+var beforeRegister atomic.Pointer[func() error]
+
+func SetBeforeRegister(fn func() error) {
+	if fn == nil {
+		beforeRegister.Store(nil)
+		return
+	}
+	beforeRegister.Store(&fn)
+}
+
 func ImportResponder(ctx context.Context, stores *signal.Stores, backend *backendapi.Client, inv *Invite, myKeys *MyKeys, minted backendapi.MintedOnion) error {
 	return importPeer(ctx, stores, backend, inv, myKeys, minted, false)
 }
 
 func importPeer(ctx context.Context, stores *signal.Stores, backend *backendapi.Client, inv *Invite, myKeys *MyKeys, minted backendapi.MintedOnion, initiate bool) error {
+	if fn := beforeRegister.Load(); fn != nil {
+		if err := (*fn)(); err != nil {
+			return fmt.Errorf("pair: the device-empty file could not be removed before pairing: %w", err)
+		}
+	}
 	if err := inv.Validate(); err != nil {
 		return err
 	}

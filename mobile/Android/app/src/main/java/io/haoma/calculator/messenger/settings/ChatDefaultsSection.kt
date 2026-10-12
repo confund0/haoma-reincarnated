@@ -61,7 +61,7 @@ internal fun ChatDefaultsSection(store: MessengerStore, onBack: () -> Unit) {
     if (snapshot == null) {
         Column(modifier = Modifier.fillMaxSize().background(HaomaPalette.BG_BASE)) {
             SectionHeader(title = "Chat defaults", store = store, onBack = onBack)
-            VaultUnavailableBanner(message = "Daemon not connected — reconnect to edit chat defaults.")
+            VaultUnavailableBanner(message = "Haoma is not running yet. These settings open once it is.")
         }
         return
     }
@@ -261,6 +261,7 @@ internal fun SaveResetRow(
     saving: Boolean,
     onSave: () -> Unit,
     onReset: () -> Unit,
+    busyLabel: String = "",
 ) {
     Row(
         modifier = Modifier
@@ -290,14 +291,17 @@ internal fun SaveResetRow(
                 strokeWidth = 2.dp,
                 modifier = Modifier.height(20.dp).width(20.dp),
             )
-            Text(
-                text = "re-sealing vault (1–3s)…",
-                color = HaomaPalette.FG_SECONDARY,
-                fontSize = 12.sp,
-            )
+            if (busyLabel.isNotEmpty()) {
+                Text(
+                    text = busyLabel,
+                    color = HaomaPalette.FG_SECONDARY,
+                    fontSize = 12.sp,
+                )
+            }
         }
     }
 }
+
 
 @Composable
 internal fun VaultUnavailableBanner(message: String) {

@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
@@ -43,7 +42,6 @@ import io.haoma.calculator.messenger.contacts.shortPeerId
 @Composable
 fun ChatsTab(store: MessengerStore) {
     val chats by store.chats.collectAsStateWithLifecycle()
-    val presence by store.presence.collectAsStateWithLifecycle()
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val drafts by store.drafts.collectAsStateWithLifecycle()
     val nowSeconds = System.currentTimeMillis() / 1000L
@@ -67,7 +65,7 @@ fun ChatsTab(store: MessengerStore) {
             items(sorted, key = { it.chatId }) { chat ->
                 ChatRow(
                     chat = chat,
-                    presenceLabel = presence[chat.peerId].orEmpty(),
+                    presence = chatPresence(chat),
                     nowSeconds = nowSeconds,
                     inCall = chat.peerId.isNotEmpty() && chat.peerId in inCallPeers,
                     hasDraft = chat.chatId in drafts,
@@ -103,7 +101,7 @@ private fun TabHeader(title: String, store: MessengerStore) {
 @Composable
 private fun ChatRow(
     chat: ChatEntry,
-    presenceLabel: String,
+    presence: PresenceView,
     nowSeconds: Long,
     inCall: Boolean,
     hasDraft: Boolean,
@@ -115,8 +113,10 @@ private fun ChatRow(
     val displayLabel = renderChatLabel(chat)
     
     
+    val nameColour = if (isDirect) presenceNameColour(presence.chatty) else null
     val labelColor = when {
         inCall -> FG_IN_CALL
+        nameColour != null -> nameColour
         hasUnread -> FG_UNREAD
         else -> HaomaPalette.FG_PRIMARY
     }
@@ -134,7 +134,7 @@ private fun ChatRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (isDirect) {
-            PresenceDot(label = presenceLabel)
+            PresenceArrows(view = presence)
         } else {
             Spacer(modifier = Modifier.size(10.dp))
         }
@@ -202,17 +202,6 @@ private fun ChatRow(
                 .padding(horizontal = 6.dp, vertical = 4.dp),
         )
     }
-}
-
-@Composable
-private fun PresenceDot(label: String) {
-    val color = presenceColor(label.ifEmpty { "unknown" })
-    Box(
-        modifier = Modifier
-            .size(10.dp)
-            .clip(CircleShape)
-            .background(color),
-    )
 }
 
 @Composable
@@ -291,20 +280,5 @@ private fun sortChats(chats: List<ChatEntry>): List<ChatEntry> =
     chats.sortedByDescending { it.lastActivityAt }
 
 
-private fun presenceColor(label: String): Color = when (label) {
-    "available" -> C_AVAILABLE
-    "away" -> C_AWAY
-    "busy" -> C_BUSY
-    "accepting" -> C_ACCEPTING
-    else -> C_UNKNOWN
-}
-
-
 private val FG_UNREAD = Color(0xFFB16286) 
 private val FG_IN_CALL = Color(0xFFCC241D) 
-
-private val C_AVAILABLE = Color(0xFF5FCC1A) 
-private val C_AWAY = Color(0xFFFABD2F) 
-private val C_BUSY = Color(0xFFCC241D)
-private val C_ACCEPTING = Color(0xFF5F87FF)
-private val C_UNKNOWN = Color(0xFF504945)

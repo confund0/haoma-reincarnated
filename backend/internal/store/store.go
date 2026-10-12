@@ -19,6 +19,8 @@ type Store struct {
 	mu  sync.RWMutex
 	db  *badger.DB
 	key []byte
+
+	destroyMu sync.Mutex
 }
 
 func Unlock(dir, passphrase string) (*Store, error) {

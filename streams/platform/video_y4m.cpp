@@ -1,7 +1,3 @@
-// Linux dev backend for VideoCapture — Y4M file source. Reads a Y4M
-// file at the path passed via VideoCaptureConfig::y4m_source, loops
-// frames at FPS cadence, restarts on EOF. Used by V-1.5 unit + Linux
-// end-to-end tests; real V4L2 / desktop camera is V-4 (post-beta).
 
 #include "video_backend.h"
 #include "../common/log.h"
@@ -20,8 +16,6 @@ namespace haoma::streams {
 
 namespace {
 
-// Read one line ending in '\n'. Returns line bytes WITHOUT the '\n'.
-// Empty optional on EOF.
 bool read_line(std::ifstream& is, std::string& out) {
   out.clear();
   for (;;) {
@@ -32,9 +26,6 @@ bool read_line(std::ifstream& is, std::string& out) {
   }
 }
 
-// Parse "YUV4MPEG2 W640 H480 F15:1 ...". Returns (w, h, fps_num, fps_den).
-// Tags can appear in any order; we only inspect W/H/F. Returns false on
-// missing W or H — fps falls back to caller-supplied default.
 bool parse_y4m_header(const std::string& line, int& w, int& h, int& fps_num, int& fps_den) {
   if (line.compare(0, 9, "YUV4MPEG2") != 0) return false;
   w = h = 0;
@@ -122,13 +113,13 @@ class Y4mCapture : public VideoCapture {
 
       while (!done_.load()) {
         std::string fhdr;
-        if (!read_line(is, fhdr)) break;  // EOF — outer loop restarts file
+        if (!read_line(is, fhdr)) break;  
         if (fhdr.compare(0, 5, "FRAME") != 0) {
           LOG_ERR("y4m: expected FRAME marker, got '%s'", fhdr.c_str());
           return;
         }
         is.read(reinterpret_cast<char*>(buf.data()), (std::streamsize)frame_bytes);
-        if ((size_t)is.gcount() != frame_bytes) break;  // truncated trailing frame
+        if ((size_t)is.gcount() != frame_bytes) break;  
 
         next_due += frame_period;
         auto now = std::chrono::steady_clock::now();
@@ -148,10 +139,10 @@ class Y4mCapture : public VideoCapture {
   std::thread th_;
 };
 
-}  // namespace
+}  
 
 std::unique_ptr<VideoCapture> make_video_capture(const VideoCaptureConfig& cfg) {
   return std::make_unique<Y4mCapture>(cfg.y4m_source);
 }
 
-}  // namespace haoma::streams
+}  

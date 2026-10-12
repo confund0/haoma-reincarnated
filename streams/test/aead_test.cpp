@@ -1,5 +1,3 @@
-// AEAD round-trip + tamper / wrong-key / wrong-stream-id / wrong-counter.
-// Standalone binary — exits 0 on pass, 1 on fail.
 
 #include "../common/aead.h"
 #include "../common/framing.h"
@@ -41,41 +39,32 @@ int main() {
 
   constexpr uint64_t kPts = 1'234'567'000ULL;
 
-  // 1. Round-trip with identical config decrypts cleanly.
   EXPECT(a.seal(0, kPts, plain, sizeof(plain), cipher, tag), "seal");
   EXPECT(b_same.open(0, kPts, cipher, sizeof(cipher), tag, out), "open same-config");
   EXPECT(std::memcmp(plain, out, sizeof(plain)) == 0, "plaintext recovered");
 
-  // 2. Wrong key rejects.
   EXPECT(!b_wrong_key.open(0, kPts, cipher, sizeof(cipher), tag, out), "wrong key rejects");
 
-  // 3. Wrong stream-id (AAD differs) rejects.
   EXPECT(!b_wrong_id.open(0, kPts, cipher, sizeof(cipher), tag, out), "wrong stream-id rejects");
 
-  // 4. Wrong counter (nonce differs) rejects.
   EXPECT(!b_same.open(1, kPts, cipher, sizeof(cipher), tag, out), "wrong counter rejects");
 
-  // 4b. Wrong pts_ns (AAD differs) rejects.
   EXPECT(!b_same.open(0, kPts + 1, cipher, sizeof(cipher), tag, out), "wrong pts_ns rejects");
 
-  // 5. Tampered ciphertext rejects.
   uint8_t bent[sizeof(plain)];
   std::memcpy(bent, cipher, sizeof(cipher));
   bent[0] ^= 1;
   EXPECT(!b_same.open(0, kPts, bent, sizeof(bent), tag, out), "tampered cipher rejects");
 
-  // 6. Tampered tag rejects.
   uint8_t bent_tag[AEAD_TAG_BYTES];
   std::memcpy(bent_tag, tag, AEAD_TAG_BYTES);
   bent_tag[0] ^= 1;
   EXPECT(!b_same.open(0, kPts, cipher, sizeof(cipher), bent_tag, out), "tampered tag rejects");
 
-  // 7. encode_frame + read_frame round-trip preserves counter, pts_ns, cipher, tag.
   uint8_t wire[MAX_FRAME_LEN];
   size_t flen = encode_frame(42, kPts, cipher, sizeof(cipher), tag, wire, sizeof(wire));
   EXPECT(flen == FRAME_OVERHEAD + sizeof(cipher), "encode_frame size");
 
-  // Pipe-loopback to exercise read_frame (it takes an fd).
   int pipefd[2];
   if (::pipe(pipefd) != 0) { std::fprintf(stderr, "pipe\n"); return 1; }
   ssize_t w = ::write(pipefd[1], wire, flen);

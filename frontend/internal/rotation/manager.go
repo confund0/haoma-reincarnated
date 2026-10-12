@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/msg"
 )
 
@@ -407,7 +408,7 @@ func (m *Manager) OnAddress(ctx context.Context, peerID, rotID, theirAddr string
 	slog.Debug("rotation: peer address received; overlaying + sending Confirm",
 		slog.String("peer_id", peerID),
 		slog.String("rotation_id", rotID),
-		slog.String("their_new_addr", theirAddr),
+		slog.String("their_new_addr", logid.Short(theirAddr)),
 	)
 	if m.cfg.Registry != nil {
 		if err := m.cfg.Registry.OverlayPeerAddress(ctx, peerID, theirAddr); err != nil {
@@ -521,7 +522,7 @@ func (m *Manager) terminateAsFailed(ctx context.Context, rotID, reason, note str
 	if mintedAddr != "" && m.cfg.Publisher != nil {
 		if err := m.cfg.Publisher.DelOnion(ctx, mintedAddr); err != nil {
 			slog.Warn("rotation: del onion (cleanup) failed",
-				slog.String("addr", mintedAddr),
+				slog.String("addr", logid.Short(mintedAddr)),
 				slog.Any("err", err),
 			)
 		}
@@ -600,7 +601,7 @@ func (m *Manager) applyConfirmedSideEffects(ctx context.Context, peerID, myNewAd
 		} else if oldAddr != "" && oldAddr != myNewAddr && m.cfg.Publisher != nil {
 			if delErr := m.cfg.Publisher.DelOnion(ctx, oldAddr); delErr != nil {
 				slog.Warn("rotation: del old onion failed",
-					slog.String("addr", oldAddr),
+					slog.String("addr", logid.Short(oldAddr)),
 					slog.Any("err", delErr),
 				)
 			}

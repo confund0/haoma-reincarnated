@@ -8,11 +8,25 @@ import java.io.File
 import org.json.JSONObject
 
 
-class UnlockKeysStore(
-    context: Context,
-    fileName: String = DEFAULT_FILE_NAME,
+class UnlockKeysStore internal constructor(
+    private val file: File,
+    private val legacyFile: File?,
 ) {
-    private val file: File = File(context.filesDir, fileName)
+    constructor(context: Context) : this(
+        file = File(VaultHelper.cfgDir(context), DEFAULT_FILE_NAME),
+        legacyFile = File(context.filesDir, DEFAULT_FILE_NAME),
+    )
+
+    
+    fun migrateLegacy() {
+        val legacy = legacyFile ?: return
+        when (moveLegacyFile(legacy, file)) {
+            LegacyMove.Moved -> Logger.i("unlock-keys", "sidecar moved into the data dir")
+            LegacyMove.OldDropped -> Logger.i("unlock-keys", "old sidecar dropped; the data dir already has one")
+            LegacyMove.Failed -> Logger.w("unlock-keys", "moving the sidecar into the data dir failed; it stays in the old place")
+            LegacyMove.Nothing -> Unit
+        }
+    }
 
     
     fun load(): UnlockKeySettings {
@@ -30,7 +44,9 @@ class UnlockKeysStore(
                 bypassKey = obj.optString("c", ""),
             )
         } catch (t: Throwable) {
-            Logger.w("unlock-keys", "load failed (${t.message}) — falling back to defaults")
+            
+            
+            Logger.w("unlock-keys", "load failed (${t.javaClass.simpleName}) — falling back to defaults")
             DEFAULTS
         }
     }
@@ -46,6 +62,7 @@ class UnlockKeysStore(
             obj.toString().toByteArray(Charsets.UTF_8),
             Base64.NO_WRAP,
         )
+        ensureOwnerOnlyDir(file.parentFile)
         val tmp = File(file.parentFile, "${file.name}.tmp")
         tmp.writeText(payload, Charsets.UTF_8)
         if (!tmp.renameTo(file)) {
@@ -53,19 +70,59 @@ class UnlockKeysStore(
             file.writeText(payload, Charsets.UTF_8)
             tmp.delete()
         }
-        Logger.d("unlock-keys", "saved pattern=${settings.patternKey} pin=${settings.pinKey} " +
-            "bypass=${settings.bypassKey.ifEmpty { "(disabled)" }}")
+        
+        
+        Logger.d(
+            "unlock-keys",
+            "saved pattern=${slot(settings.patternKey)} pin=${slot(settings.pinKey)} " +
+                "bypass=${slot(settings.bypassKey)}",
+        )
     }
 
     
-    fun clearBypass() {
-        val current = load()
-        if (current.bypassKey.isEmpty()) return
-        save(current.copy(bypassKey = ""))
-    }
+    internal enum class LegacyMove { Nothing, Moved, OldDropped, Failed }
 
     companion object {
         const val DEFAULT_FILE_NAME = "calc-help.txt"
+
+        
+        internal fun moveLegacyFile(legacy: File, target: File): LegacyMove {
+            if (!legacy.exists()) return LegacyMove.Nothing
+            if (target.exists()) {
+                legacy.delete()
+                return LegacyMove.OldDropped
+            }
+            ensureOwnerOnlyDir(target.parentFile)
+            if (legacy.renameTo(target)) return LegacyMove.Moved
+            
+            
+            val tmp = File(target.parentFile, "${target.name}.tmp")
+            return try {
+                legacy.copyTo(tmp, overwrite = true)
+                if (!tmp.renameTo(target)) error("rename ${tmp.name}")
+                legacy.delete()
+                LegacyMove.Moved
+            } catch (t: Throwable) {
+                tmp.delete()
+                LegacyMove.Failed
+            }
+        }
+
+        
+        internal fun ensureOwnerOnlyDir(dir: File?) {
+            if (dir == null || dir.exists()) return
+            dir.mkdirs()
+            dir.setReadable(false, false)
+            dir.setWritable(false, false)
+            dir.setExecutable(false, false)
+            dir.setReadable(true, true)
+            dir.setWritable(true, true)
+            dir.setExecutable(true, true)
+        }
+
+        
+        internal fun slot(key: String): String = if (key.isEmpty()) "off" else "set"
+
         val DEFAULTS = UnlockKeySettings(patternKey = "5", pinKey = "1", bypassKey = "")
     }
 }

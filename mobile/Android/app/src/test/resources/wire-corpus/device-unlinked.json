@@ -1,0 +1,10 @@
+{
+  "type": "device_unlinked",
+  "id": "c-18",
+  "payload": {
+    "unlinked": true,
+    "sent": true,
+    "receipted": true,
+    "deadline": 1754924490
+  }
+}

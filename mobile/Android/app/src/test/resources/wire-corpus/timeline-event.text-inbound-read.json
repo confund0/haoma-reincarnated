@@ -1,0 +1,31 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4188,
+      "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+      "direction": "in",
+      "kind": "text",
+      "display_ts": 1754902874,
+      "sender_ts": 1754902871,
+      "recv_ts": 1754902875,
+      "sender_seq": 344,
+      "arrived_from_peer_id": "c95f28d17a604b3e81ca6d0f452937ab",
+      "envelope_id": "b3927e51d08a4c6f21be7395d06fa48c",
+      "msg_id": "6ad3910e75c2483bb0f9e6172c8d5401",
+      "decrypt_status": "ok",
+      "body": {
+        "text": "I will wait by the ticket office",
+        "reply_to": {
+          "msg_id": "9c1e4d7a3f80426bb52c8e0f19a73d65",
+          "text": "the ferry leaves at six and I will be on it"
+        }
+      },
+      "expire_seconds": 604800,
+      "read_at": 1754902930,
+      "read_receipt_sent_at": 1754902931,
+      "receipt_claim_origin": true,
+      "receipt_claim_generation": 3
+    }
+  }
+}

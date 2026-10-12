@@ -105,7 +105,7 @@ done
 
 # Copy headers + archives into prebuilt/<abi>/. Headers needed at
 # compile-time by the C++ streamers; archives consumed by the CMake
-# Android toolchain in chunk A.2.
+# Android toolchain.
 rm -rf "$PREBUILT_DIR/$ABI"
 mkdir -p "$PREBUILT_DIR/$ABI/lib" "$PREBUILT_DIR/$ABI/include"
 cp "$INSTALL_PREFIX/lib/libopus.a"    "$PREBUILT_DIR/$ABI/lib/"

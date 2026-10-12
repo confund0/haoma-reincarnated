@@ -132,6 +132,7 @@ class MainActivity : ComponentActivity() {
                 val state by app.appState.state.collectAsStateWithLifecycle()
                 val pendingTip by app.pendingDisguiseTip.collectAsStateWithLifecycle()
                 val stagedRestore by app.stagedRestore.collectAsStateWithLifecycle()
+                val restorePending by app.restorePending.collectAsStateWithLifecycle()
                 Surface(
                     state = state,
                     skin = skin,
@@ -142,6 +143,7 @@ class MainActivity : ComponentActivity() {
                     onTipDismissed = { app.setPendingDisguiseTip(null) },
                     stagedRestore = stagedRestore,
                     onStagedRestoreSet = { app.setStagedRestore(it) },
+                    restorePending = restorePending,
                 )
             }
         }
@@ -344,6 +346,7 @@ private fun Surface(
     onTipDismissed: () -> Unit,
     stagedRestore: io.haoma.calculator.core.StagedRestoreState?,
     onStagedRestoreSet: (io.haoma.calculator.core.StagedRestoreState?) -> Unit,
+    restorePending: String?,
 ) {
     
     
@@ -368,6 +371,7 @@ private fun Surface(
                 log = { Logger.i("passphrase", it) },
                 stagedRestore = stagedRestore,
                 onStagedRestoreSet = onStagedRestoreSet,
+                restorePending = restorePending,
             )
             
             

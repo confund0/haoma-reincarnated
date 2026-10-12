@@ -26,10 +26,10 @@ fun mergeTimelineEvent(cache: TimelineCache, ev: TimelineEvent): TimelineCache {
     val merged = if (existingIdx >= 0) {
         val existing = list[existingIdx]
         val nextDelivery =
-            if (DeliveryState.rank(ev.deliveryState) >= DeliveryState.rank(existing.deliveryState)) {
-                ev.deliveryState
-            } else {
+            if (DeliveryState.outranks(ev.deliveryState, existing.deliveryState)) {
                 existing.deliveryState
+            } else {
+                ev.deliveryState
             }
         val patched = ev.copy(deliveryState = nextDelivery)
         list.toMutableList().apply { this[existingIdx] = patched }
@@ -76,9 +76,7 @@ fun applyDeliveryStatus(cache: TimelineCache, envelopeId: String, state: String)
     val idx = cache.events.indexOfFirst { it.envelopeId == envelopeId }
     if (idx < 0) return cache
     val existing = cache.events[idx]
-    if (existing.deliveryState == DeliveryState.READ && state != DeliveryState.READ) return cache
-    if (DeliveryState.rank(state) < DeliveryState.rank(existing.deliveryState)) return cache
-    if (existing.deliveryState == state) return cache
+    if (!DeliveryState.advances(existing.deliveryState, state)) return cache
     val updated = existing.copy(deliveryState = state)
     val list = cache.events.toMutableList().apply { this[idx] = updated }
     return cache.copy(events = list)

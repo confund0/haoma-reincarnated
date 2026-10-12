@@ -1,17 +1,3 @@
-// haoma-spk — accepts one localhost client, AEAD-opens each frame with
-// ChaCha20-Poly1305, decodes Opus, plays back via the platform audio
-// backend. Calls-1e: stdio JSON-line control plane on top of 1d's
-// AEAD wrap + key-on-stdin. A bad key (or tampered frame) silently
-// drops at the AEAD layer — no playback, queue stays empty,
-// connection stays open.
-//
-// stdin layout (Calls-1d → 1e):
-//   first 32 bytes  = ChaCha20-Poly1305 key
-//   bytes 33..      = JSON-line control commands (mute/unmute/stats/exit;
-//                     bitrate is rejected with a warn — decoder has none)
-//
-// stdout: JSON-line events (ready/stats/warn/error/trace).
-// Data plane = the localhost TCP socket bound on --port.
 
 #include "../common/framing.h"
 #include "../common/socket.h"
@@ -78,8 +64,6 @@ bool parse_args(int argc, char** argv, Args& a) {
   return true;
 }
 
-// Thread-safe sample buffer between reader thread and audio thread.
-// Cap = 500ms @ 48kHz mono — overflow drops oldest (reader outpacing playback).
 class SampleQueue {
   std::deque<std::vector<float>> q_;
   size_t head_off_ = 0;
@@ -88,7 +72,6 @@ class SampleQueue {
   static constexpr size_t kCapSamples = 24000;
 
  public:
-  // Returns true if a drop occurred to make room.
   bool push(std::vector<float>&& chunk) {
     std::lock_guard<std::mutex> lk(m_);
     bool dropped = false;
@@ -131,7 +114,7 @@ class SampleQueue {
 std::atomic<bool> g_done{false};
 void on_signal(int) { g_done.store(true); }
 
-}  // namespace
+}  
 
 int main(int argc, char** argv) {
   set_log_tag("haoma-spk");
@@ -141,9 +124,6 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // sigaction with SA_RESTART cleared: SIGTERM must interrupt the
-  // pre-control-thread accept() — std::signal's SA_RESTART default
-  // would auto-resume it, so cancel-before-connect would hit SIGKILL.
   struct sigaction sa{};
   sa.sa_handler = on_signal;
   ::sigemptyset(&sa.sa_mask);
@@ -172,10 +152,6 @@ int main(int argc, char** argv) {
   if (lfd < 0) { opus_decoder_destroy(dec); return 3; }
   LOG_INFO("listening on 127.0.0.1:%u (stream=%s)", a.port, a.stream_id.c_str());
 
-  // Calls-1f orchestrator gates ProxyFetch on this — "ready" means
-  // "listener bound, dial me." Audio-open happens after accept_one
-  // (which blocks on haomad dialing us); a post-ready open failure
-  // surfaces as {"type":"error"} on the events stream.
   emit_ready();
 
   int cfd = accept_one(lfd);
@@ -200,10 +176,6 @@ int main(int argc, char** argv) {
   bool               first_frame      = true;
   uint64_t           aead_fail_count  = 0;
 
-  // (sample_index_start, sender_pts_ns) ring — reader pushes one entry
-  // per decoded PCM chunk; clock emitter walks it to map AAudio's
-  // currently-rendering frame index back to a sender-side pts. Capped
-  // at ~4s of audio at 48 kHz / 960 samples per push = ~200 entries.
   struct ClockEntry { int64_t sample_idx_start; int64_t sender_pts_ns; };
   std::mutex                    clock_mu;
   std::deque<ClockEntry>        clock_ring;
@@ -221,7 +193,6 @@ int main(int argc, char** argv) {
       if (n == 0) { LOG_INFO("peer EOF"); g_done.store(true); break; }
       if (n <  0) { LOG_ERR("read_frame error"); g_done.store(true); break; }
 
-      // Bytes-on-the-wire count (not just cipher payload — header+tag too).
       stats.bytes_in.fetch_add(FRAME_OVERHEAD + (uint64_t)n);
       jitter.on_frame_arrival(std::chrono::steady_clock::now());
 
@@ -232,19 +203,13 @@ int main(int argc, char** argv) {
         }
         aead_fail_count++;
         stats.frames_dropped.fetch_add(1);
-        continue;  // silent drop, keep stream alive
+        continue;  
       }
 
       if (first_frame) {
         expected_counter = counter;
         first_frame = false;
       } else if (counter < expected_counter) {
-        // Replay or out-of-order delivery from the local socket: a
-        // same-UID attacker who can write to our peer-fd could replay
-        // a previously-AEAD-verified frame to produce audible repeats.
-        // Cryptographically harmless (the AEAD already passed) but the
-        // user shouldn't hear it — drop. Forward jumps fall through to
-        // the skew log below as legit packet loss.
         LOG_DBG("counter replay: got %llu expected >= %llu — dropping",
                 (unsigned long long)counter, (unsigned long long)expected_counter);
         stats.frames_dropped.fetch_add(1);
@@ -258,9 +223,6 @@ int main(int argc, char** argv) {
       stats.frames_in.fetch_add(1);
       if (trace.load()) emit_trace_frame(counter, (uint32_t)(FRAME_OVERHEAD + n), muted.load());
 
-      // Mute = drop after read.  We still consume the bytes so the
-      // socket doesn't backpressure, and counters still tick so the
-      // peer's mute state is invisible to us at the frame layer.
       if (muted.load()) {
         stats.frames_dropped.fetch_add(1);
         continue;
@@ -283,7 +245,7 @@ int main(int argc, char** argv) {
         while (clock_ring.size() > kClockRingCap) clock_ring.pop_front();
       }
       if (queue.push(std::move(pcm))) {
-        stats.frames_dropped.fetch_add(1);  // queue overflow → oldest dropped
+        stats.frames_dropped.fetch_add(1);  
       }
     }
   });
@@ -330,11 +292,6 @@ int main(int argc, char** argv) {
   std::thread stats_th(stats_loop, std::ref(stats), &jitter,
                        std::ref(g_done), std::ref(trace), std::ref(stats_req));
 
-  // Clock-sample emitter (A/V sync anchor). Queries the AAudio
-  // render-timestamp every ~100 ms and maps it back to a sender pts via
-  // the (sample_idx, pts) ring. Skips silently while the ring is empty
-  // or the backend hasn't warmed up (PipeWire returns false; AAudio
-  // returns INVALID_STATE for the first ~50–200 ms).
   AudioPlayback* pb_raw = pb.get();
   std::thread clock_th([&]() {
     while (!g_done.load()) {
@@ -346,14 +303,11 @@ int main(int argc, char** argv) {
       {
         std::lock_guard<std::mutex> lk(clock_mu);
         if (clock_ring.empty()) continue;
-        // Largest entry with sample_idx_start <= fp. Ring is ordered
-        // by sample_idx_start so the last entry with idx <= fp is the
-        // one whose pts is being rendered now.
         const ClockEntry* match = nullptr;
         for (auto it = clock_ring.rbegin(); it != clock_ring.rend(); ++it) {
           if (it->sample_idx_start <= fp) { match = &(*it); break; }
         }
-        if (!match) continue;  // fp is before any entry we tracked
+        if (!match) continue;  
         int64_t offset_samples = fp - match->sample_idx_start;
         int64_t offset_ns = offset_samples * (int64_t)1000000000 / SAMPLE_RATE;
         pts_at_fp = match->sender_pts_ns + offset_ns;

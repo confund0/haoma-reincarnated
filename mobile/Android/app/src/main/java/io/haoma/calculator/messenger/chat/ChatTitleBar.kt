@@ -36,6 +36,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.ChatEntry
+import io.haoma.calculator.messenger.PresenceArrows
+import io.haoma.calculator.messenger.PresenceView
+import io.haoma.calculator.messenger.chatPresence
+import io.haoma.calculator.messenger.presenceNameColour
 
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -43,7 +47,7 @@ import io.haoma.calculator.messenger.ChatEntry
 internal fun ChatTitleBar(
     chat: ChatEntry?,
     chatId: String,
-    presence: String?,
+    presence: PresenceView?,
     inCall: Boolean,
     otherChatInCall: Boolean,
     canCall: Boolean,
@@ -62,11 +66,10 @@ internal fun ChatTitleBar(
     onOpenCallHistory: () -> Unit,
 ) {
     val label = chat?.label.orEmpty().ifEmpty { chatId.take(8) }
-    val effective = presence.orEmpty().ifEmpty { chat?.effective.orEmpty() }
+    val view = presence ?: chat?.let { chatPresence(it) } ?: PresenceView()
     val muted = chat?.notificationsMuted == true
     var menuOpen by remember { mutableStateOf(false) }
     var startCallModeOpen by remember { mutableStateOf(false) }
-    val (presenceGlyph, presenceColor) = presenceGlyphFor(effective)
 
     StartCallModeDialog(
         open = startCallModeOpen,
@@ -98,18 +101,13 @@ internal fun ChatTitleBar(
         Spacer(modifier = Modifier.width(12.dp))
         
         
-        Text(
-            text = presenceGlyph,
-            color = presenceColor,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-        )
+        PresenceArrows(view = view, fontSize = 16.sp)
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = label,
             
             
-            color = if (inCall) ChatPalette.Bad else ChatPalette.Text,
+            color = if (inCall) ChatPalette.Bad else presenceNameColour(view.chatty) ?: ChatPalette.Text,
             fontWeight = FontWeight.SemiBold,
             fontSize = 16.sp,
             modifier = Modifier.weight(1f),
@@ -232,15 +230,6 @@ internal fun ChatTitleBar(
             }
         }
     }
-}
-
-
-private fun presenceGlyphFor(effective: String): Pair<String, Color> = when (effective) {
-    "available" -> "●" to ChatPalette.Ok
-    "away" -> "●" to Color(0xFFFABD2F)              
-    "busy" -> "●" to ChatPalette.Bad
-    "accepting" -> "◐" to Color(0xFF83A598)          
-    else -> "○" to ChatPalette.TextDim
 }
 
 private val MenuSurface = Color(0xFF32302F) 

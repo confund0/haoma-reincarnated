@@ -44,6 +44,25 @@ type sendFileStub struct {
 	sendCalls      int
 	lastSendReq    backendapi.SendRequest
 	sendEnvelopeID string
+
+	sentPeerIDs     []string
+	sentEnvelopeIDs []string
+
+	sentPayloads [][]byte
+
+	sentKinds []string
+
+	stages  []backendapi.StageFileRequest
+	dropIDs []string
+
+	failSendTo string
+
+	garbleSendTo string
+
+	dropStatus int
+
+	outboxState map[string]string
+	receiptAcks int
 }
 
 func startSendFileStub(t *testing.T) *sendFileStub {
@@ -54,7 +73,11 @@ func startSendFileStub(t *testing.T) *sendFileStub {
 		body, _ := io.ReadAll(r.Body)
 		stub.mu.Lock()
 		stub.stageCalls++
-		_ = json.Unmarshal(body, &stub.lastStage)
+
+		var req backendapi.StageFileRequest
+		_ = json.Unmarshal(body, &req)
+		stub.lastStage = req
+		stub.stages = append(stub.stages, req)
 		status := stub.stageStatus
 		if status == 0 {
 			status = http.StatusCreated
@@ -83,22 +106,81 @@ func startSendFileStub(t *testing.T) *sendFileStub {
 		stub.mu.Lock()
 		stub.dropCalls++
 		stub.lastDropMsgID = r.PathValue("msg_id")
+		stub.dropIDs = append(stub.dropIDs, stub.lastDropMsgID)
+		status := stub.dropStatus
 		stub.mu.Unlock()
+		if status != 0 {
+			http.Error(w, "stub drop refused", status)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		stub.mu.Lock()
 		stub.sendCalls++
+		stub.lastSendReq = backendapi.SendRequest{}
 		_ = json.Unmarshal(body, &stub.lastSendReq)
+		if stub.failSendTo != "" && stub.lastSendReq.PeerID == stub.failSendTo {
+			stub.sentPeerIDs = append(stub.sentPeerIDs, stub.lastSendReq.PeerID)
+			stub.sentEnvelopeIDs = append(stub.sentEnvelopeIDs, "")
+			stub.sentPayloads = append(stub.sentPayloads, nil)
+			stub.sentKinds = append(stub.sentKinds, stub.lastSendReq.Kind)
+			stub.mu.Unlock()
+			http.Error(w, "stub refused the send", http.StatusInternalServerError)
+			return
+		}
+		if stub.garbleSendTo != "" && stub.lastSendReq.PeerID == stub.garbleSendTo {
+			stub.sentPeerIDs = append(stub.sentPeerIDs, stub.lastSendReq.PeerID)
+			stub.sentEnvelopeIDs = append(stub.sentEnvelopeIDs, "")
+			stub.sentPayloads = append(stub.sentPayloads, append([]byte(nil), stub.lastSendReq.Payload...))
+			stub.sentKinds = append(stub.sentKinds, stub.lastSendReq.Kind)
+			stub.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("{not json"))
+			return
+		}
 		envelopeID := stub.sendEnvelopeID
 		if envelopeID == "" {
 			envelopeID = "env-stub-send-" + hex.EncodeToString([]byte{byte(stub.sendCalls)})
 		}
+		stub.sentPeerIDs = append(stub.sentPeerIDs, stub.lastSendReq.PeerID)
+		stub.sentEnvelopeIDs = append(stub.sentEnvelopeIDs, envelopeID)
+		stub.sentPayloads = append(stub.sentPayloads, append([]byte(nil), stub.lastSendReq.Payload...))
+		stub.sentKinds = append(stub.sentKinds, stub.lastSendReq.Kind)
 		stub.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(backendapi.SendResponse{EnvelopeID: envelopeID})
+	})
+	mux.HandleFunc("GET /outbox/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		stub.mu.Lock()
+		state, ok := stub.outboxState[id]
+		stub.mu.Unlock()
+		if !ok {
+			state = "enqueued"
+		}
+		if state == "gone" {
+			http.NotFound(w, r)
+			return
+		}
+		if state == "error" {
+			http.Error(w, "outbox unreadable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(backendapi.OutboxRow{EnvelopeID: id, State: state})
+	})
+	mux.HandleFunc("POST /files/receipts", func(w http.ResponseWriter, r *http.Request) {
+		var req backendapi.RedeemFileReceiptRequest
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		stub.mu.Lock()
+		stub.receiptAcks++
+		stub.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(backendapi.RedeemFileReceiptResponse{Token: req.Token})
 	})
 	srv := httptest.NewServer(mux)
 	stub.URL = srv.URL
@@ -458,6 +540,171 @@ func TestRunSendFile_OfferShapeMatchesStaging(t *testing.T) {
 
 	if msg.KindFileOffer == "" {
 		t.Fatal("msg.KindFileOffer constant missing — wire schema regression")
+	}
+}
+
+func attachSecondDevice(t *testing.T, d *daemon, primary, second string) *chat.DirectChat {
+	t.Helper()
+	remote, err := signal.Bootstrap(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processRemoteBundle(t, d, second, remote)
+	dc, err := d.chats.GetByDirectPeer(primary)
+	if err != nil {
+		t.Fatalf("GetByDirectPeer(%s): %v", primary, err)
+	}
+	if err := d.chats.AttachPeerID(dc.ID, second); err != nil {
+		t.Fatalf("AttachPeerID: %v", err)
+	}
+	dc, err = d.chats.GetByDirectPeer(primary)
+	if err != nil {
+		t.Fatalf("re-read chat: %v", err)
+	}
+	if len(dc.FanoutPeerIDs()) != 2 {
+		t.Fatalf("routing set = %v, want both devices", dc.FanoutPeerIDs())
+	}
+	return dc
+}
+
+func TestRunSendFile_FansOutOverEveryDeviceOfTheContact(t *testing.T) {
+	stub := startSendFileStub(t)
+	d := newSendFileTestDaemon(t, stub)
+	const phone = "00000000000000000000000000002001"
+	const laptop = "00000000000000000000000000002002"
+	preEstablishSession(t, d, phone)
+	dc := attachSecondDevice(t, d, phone, laptop)
+
+	path := writeTempFile(t, []byte("one blob, two devices, two tokens\n"))
+	res, code, err := runSendFile(context.Background(), d, dc, phone, path, "", "")
+	if err != nil {
+		t.Fatalf("runSendFile: code=%q err=%v", code, err)
+	}
+
+	stub.mu.Lock()
+	gotStage := stub.lastStage
+	sendCalls := stub.sendCalls
+	sentPeers := append([]string(nil), stub.sentPeerIDs...)
+	sentEnvelopes := append([]string(nil), stub.sentEnvelopeIDs...)
+	stub.mu.Unlock()
+
+	if len(gotStage.RecipientPeerIDs) != 2 ||
+		gotStage.RecipientPeerIDs[0] != phone || gotStage.RecipientPeerIDs[1] != laptop {
+		t.Fatalf("staged recipients = %v, want [%s %s]", gotStage.RecipientPeerIDs, phone, laptop)
+	}
+
+	if sendCalls != 2 {
+		t.Fatalf("send calls = %d, want 2 (one per device)", sendCalls)
+	}
+	if len(sentPeers) != 2 || sentPeers[0] != phone || sentPeers[1] != laptop {
+		t.Fatalf("offers addressed %v, want [%s %s]", sentPeers, phone, laptop)
+	}
+
+	meta, err := d.files.GetMeta(res.MsgID)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if meta.RecipientTokens[phone] == "" || meta.RecipientTokens[laptop] == "" {
+		t.Fatalf("recipient tokens = %v, want an entry per device", meta.RecipientTokens)
+	}
+	if meta.RecipientTokens[phone] == meta.RecipientTokens[laptop] {
+		t.Fatalf("both devices were given token %q — a token is per device", meta.RecipientTokens[phone])
+	}
+
+	for _, tok := range []string{meta.RecipientTokens[phone], meta.RecipientTokens[laptop]} {
+		byToken, tErr := d.files.GetMetaByToken(tok)
+		if tErr != nil {
+			t.Fatalf("GetMetaByToken(%q): %v", tok, tErr)
+		}
+		if byToken.MsgID != res.MsgID {
+			t.Errorf("token %q resolves to msg_id %q, want %q", tok, byToken.MsgID, res.MsgID)
+		}
+	}
+
+	ev, err := d.events.GetByMsgID(res.MsgID)
+	if err != nil {
+		t.Fatalf("GetByMsgID: %v", err)
+	}
+	if len(ev.EnvelopeIDs) != 2 {
+		t.Fatalf("row envelope ids = %v, want both (%v)", ev.EnvelopeIDs, sentEnvelopes)
+	}
+	for i, want := range sentEnvelopes {
+		if ev.EnvelopeIDs[i] != want {
+			t.Errorf("row envelope id[%d] = %q, want %q", i, ev.EnvelopeIDs[i], want)
+		}
+	}
+	if ev.EnvelopeID != sentEnvelopes[0] {
+		t.Errorf("row primary envelope id = %q, want %q", ev.EnvelopeID, sentEnvelopes[0])
+	}
+}
+
+func TestRunSendFile_OneDeviceWithoutASessionStillSends(t *testing.T) {
+	stub := startSendFileStub(t)
+	d := newSendFileTestDaemon(t, stub)
+	const phone = "00000000000000000000000000002101"
+	const laptop = "00000000000000000000000000002102"
+	preEstablishSession(t, d, phone)
+
+	dc, err := d.chats.GetByDirectPeer(phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.chats.AttachPeerID(dc.ID, laptop); err != nil {
+		t.Fatal(err)
+	}
+	dc, err = d.chats.GetByDirectPeer(phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := writeTempFile(t, []byte("half-paired second device\n"))
+	res, code, err := runSendFile(context.Background(), d, dc, phone, path, "", "")
+	if err != nil {
+		t.Fatalf("send failed because one device could not be enqueued for: code=%q err=%v", code, err)
+	}
+
+	stub.mu.Lock()
+	sendCalls := stub.sendCalls
+	sentPeers := append([]string(nil), stub.sentPeerIDs...)
+	drops := stub.dropCalls
+	stub.mu.Unlock()
+
+	if sendCalls != 1 || len(sentPeers) != 1 || sentPeers[0] != phone {
+		t.Fatalf("offers addressed %v, want exactly [%s]", sentPeers, phone)
+	}
+	if drops != 0 {
+		t.Errorf("staged blob dropped %d time(s) on a partial fan-out — the device that accepted still asks for the key", drops)
+	}
+	if _, err := d.files.GetMeta(res.MsgID); err != nil {
+		t.Errorf("outbound metadata gone after a partial fan-out: %v", err)
+	}
+	ev, err := d.events.GetByMsgID(res.MsgID)
+	if err != nil {
+		t.Fatalf("GetByMsgID: %v", err)
+	}
+	if len(ev.EnvelopeIDs) != 1 {
+		t.Errorf("row envelope ids = %v, want the one device that accepted", ev.EnvelopeIDs)
+	}
+}
+
+func TestRunSendFile_NoRoutingTargetsRefuses(t *testing.T) {
+	stub := startSendFileStub(t)
+	d := newSendFileTestDaemon(t, stub)
+	dc := &chat.DirectChat{}
+	dc.ID = chat.ChatID("chat-with-no-route")
+
+	path := writeTempFile(t, []byte("nowhere to go"))
+	_, code, err := runSendFile(context.Background(), d, dc, "", path, "", "")
+	if err == nil {
+		t.Fatal("expected a refusal for a chat with no routing targets")
+	}
+	if code != "unknown_peer" {
+		t.Errorf("code = %q, want unknown_peer", code)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if stub.stageCalls != 0 || stub.sendCalls != 0 {
+		t.Errorf("haomad touched with no route: stage=%d send=%d", stub.stageCalls, stub.sendCalls)
 	}
 }
 

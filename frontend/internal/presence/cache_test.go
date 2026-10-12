@@ -153,7 +153,10 @@ func TestHumanWinsOverTechnical(t *testing.T) {
 	}
 
 	c.ObserveTechnical("alice")
-	expectSilent(t, ch)
+	got := drain(t, ch)
+	if !got.Snapshot.Accepting || got.Snapshot.Effective != presence.EffectiveAvailable {
+		t.Errorf("change = %+v, want accepting with effective available", got.Snapshot)
+	}
 
 	snap := c.Snapshot("alice")
 	if !snap.Accepting {
@@ -271,7 +274,7 @@ func TestBothTimers_ExpireInOrder(t *testing.T) {
 	}
 }
 
-func TestTimerA_Expiry_WhileChattyFresh_NoEvent(t *testing.T) {
+func TestTimerA_Expiry_WhileChattyFresh_UpArrowGoesOff(t *testing.T) {
 	c, clk := newCache()
 	ch, cancel := c.Subscribe(8)
 	defer cancel()
@@ -284,7 +287,10 @@ func TestTimerA_Expiry_WhileChattyFresh_NoEvent(t *testing.T) {
 	_ = drain(t, ch)
 
 	techTimer.fire()
-	expectSilent(t, ch)
+	got := drain(t, ch)
+	if got.Snapshot.Accepting || got.Snapshot.Effective != presence.EffectiveAvailable {
+		t.Errorf("change = %+v, want no accepting with effective available", got.Snapshot)
+	}
 
 	snap := c.Snapshot("alice")
 	if snap.Accepting {

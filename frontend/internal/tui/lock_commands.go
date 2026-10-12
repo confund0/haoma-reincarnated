@@ -110,11 +110,16 @@ func (a *App) cmdSetTorPassword(rest string) {
 	}
 	v := strings.TrimSpace(rest)
 	if v == "" {
-		a.log("[yellow]usage:[white] /set-tor-password <password>  (cleartext value tor expects on AUTHENTICATE)")
+		a.log("[yellow]usage:[white] /set-tor-password <password>  (cleartext value the system tor expects on AUTHENTICATE; used with --system-tor only)")
 		return
 	}
 	if err := a.VaultCtl.SetTorPassword(v); err != nil {
 		a.log("[red]/set-tor-password failed:[white] %v", err)
+		return
+	}
+	if !a.SystemTor {
+
+		a.log(StyleNoticeOK + "vault re-sealed" + StyleReset + " — the tor password is used with --system-tor only; haomad runs its own tor now")
 		return
 	}
 	a.winMu.Lock()

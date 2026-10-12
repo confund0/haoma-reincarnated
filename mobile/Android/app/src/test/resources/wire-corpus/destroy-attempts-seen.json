@@ -1,0 +1,7 @@
+{
+  "type": "destroy_attempts_seen",
+  "payload": {
+    "count": 3,
+    "last_at": 1754903010
+  }
+}

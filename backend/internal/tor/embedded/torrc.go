@@ -12,6 +12,8 @@ type torrcConfig struct {
 	CookieAuthFile  string
 	NoticeLog       string
 	Quiet           bool
+
+	LocalInclude string
 }
 
 func renderTorrc(cfg torrcConfig) string {
@@ -31,6 +33,9 @@ func renderTorrc(cfg torrcConfig) string {
 
 	fmt.Fprintf(&b, "SafeLogging 1\n")
 
+	if cfg.LocalInclude != "" {
+		fmt.Fprintf(&b, "%%include %s\n", cfg.LocalInclude)
+	}
 	return b.String()
 }
 
@@ -38,3 +43,4 @@ func defaultTorrcPath(dataDir string) string   { return filepath.Join(dataDir, "
 func defaultControlFile(dataDir string) string { return filepath.Join(dataDir, "control.port") }
 func defaultCookieFile(dataDir string) string  { return filepath.Join(dataDir, "control.cookie") }
 func defaultNoticeLog(dataDir string) string   { return filepath.Join(dataDir, "tor.log") }
+func defaultLocalTorrc(dataDir string) string  { return filepath.Join(dataDir, "torrc.local") }

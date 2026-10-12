@@ -28,7 +28,7 @@ fun MessengerStore.setAlias(peerId: String, alias: String) {
                 return@launch
             }
             val resp = reply.payload?.let(AliasUpdatedResponse::fromJson) ?: return@launch
-            appendStatus("renamed ${shortChat(resp.peer.id)} → ${resp.peer.label.ifEmpty { "(unnamed)" }}")
+            appendStatus("renamed ${shortChat(resp.peer.id)}")
         } catch (t: Throwable) {
             appendStatus("alias edit failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
         }

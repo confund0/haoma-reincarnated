@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Calculator</string>
-    <!-- Honest name for the opt-in share-target entry (not the disguise). -->
     <string name="share_target_label">Haoma</string>
     <string name="fgs_core_notification_text">Background service running</string>
     <string name="fgs_core_channel_name">Background service</string>

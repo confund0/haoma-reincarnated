@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+var ErrOnionAddressCollision = errors.New("control: onion address collision")
+
+var ErrUnknownOnionService = errors.New("control: unknown onion service")
+
+const (
+	addOnionCollisionCode = 550
+	delOnionUnknownCode   = 552
+)
+
 type OnionPort struct {
 	VirtPort int
 	Target   string
@@ -51,7 +60,11 @@ func (c *Conn) addOnion(keyspec string, ports []OnionPort, flags []string, expec
 		return nil, err
 	}
 	if reply.Code != 250 {
-		return nil, fmt.Errorf("control: ADD_ONION: %d %s", reply.Code, strings.Join(reply.Lines, " "))
+		se := &StatusError{Command: "ADD_ONION", Code: reply.Code, Lines: reply.Lines}
+		if reply.Code == addOnionCollisionCode {
+			return nil, fmt.Errorf("%w: %w", ErrOnionAddressCollision, se)
+		}
+		return nil, se
 	}
 	o := &Onion{}
 	for _, line := range reply.Lines {
@@ -80,7 +93,11 @@ func (c *Conn) DelOnion(serviceID string) error {
 		return err
 	}
 	if reply.Code != 250 {
-		return fmt.Errorf("control: DEL_ONION: %d %s", reply.Code, strings.Join(reply.Lines, " "))
+		se := &StatusError{Command: "DEL_ONION", Code: reply.Code, Lines: reply.Lines}
+		if reply.Code == delOnionUnknownCode {
+			return fmt.Errorf("%w: %w", ErrUnknownOnionService, se)
+		}
+		return se
 	}
 	return nil
 }

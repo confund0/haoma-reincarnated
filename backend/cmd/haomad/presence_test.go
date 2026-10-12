@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"haoma/internal/peers"
 	"haoma/internal/eventbus"
 	"haoma/internal/ids"
+	"haoma/internal/peers"
 	"haoma/internal/xport"
 )
 

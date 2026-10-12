@@ -3,13 +3,16 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/rivo/tview"
 
+	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/emoji"
 	"haoma-frontend/internal/events"
+	"haoma-frontend/internal/ipc"
 )
 
 type chatEntry struct {
@@ -32,6 +35,18 @@ type chatPage struct {
 
 	searchQuery    string
 	searchCurMsgID string
+
+	systemLine string
+
+	pending []pendingText
+}
+
+type pendingText struct {
+	corrID string
+	text   string
+	at     int64
+	msgID  string
+	failed string
 }
 
 func newChatPage(chatID, peerID, nickname string, retiredAt int64) *chatPage {
@@ -50,11 +65,11 @@ func newChatPage(chatID, peerID, nickname string, retiredAt int64) *chatPage {
 		msgIDIndex:   map[string]int{},
 		fileProgress: map[string]uint64{},
 	}
-	cp.applyTitle("unknown")
+	cp.applyTitle(presenceView{})
 	return cp
 }
 
-func (cp *chatPage) applyTitle(presenceLabel string) {
+func (cp *chatPage) applyTitle(v presenceView) {
 	label := cp.nickname
 	if label == "" {
 		label = shortID(cp.peerID)
@@ -65,8 +80,13 @@ func (cp *chatPage) applyTitle(presenceLabel string) {
 		cp.view.SetTitleColor(ColorRetiredNick)
 		return
 	}
-	cp.view.SetTitle(" " + presenceGlyph(presenceLabel) + " " + label + " [" + presenceLabel + "] ")
-	cp.view.SetTitleColor(presenceColor(presenceLabel))
+
+	name := tview.Escape(label)
+	if tag := presenceNameTag(v.chatty); tag != "" {
+		name = tag + name + StyleReset
+	}
+	cp.view.SetTitle(" " + presenceArrowsTag(v) + " " + name + " ")
+	cp.view.SetTitleColor(tview.Styles.TitleColor)
 }
 
 type rawEvent struct {
@@ -82,6 +102,7 @@ type rawEvent struct {
 	DecryptStatus string          `json:"decrypt_status"`
 	FailReason    string          `json:"fail_reason"`
 	DeliveryState string          `json:"delivery_state"`
+	Mirrored      bool            `json:"mirrored_from_sibling"`
 	EditedAt      int64           `json:"edited_at"`
 	DeletedAt     int64           `json:"deleted_at"`
 	Body          json.RawMessage `json:"body"`
@@ -94,7 +115,7 @@ func (cp *chatPage) renderEntry(e chatEntry) string {
 	switch ev.Kind {
 	case "text":
 		if ev.Direction == "out" {
-			arrow = outboundArrow(e.delivery)
+			arrow = outboundArrow(e.delivery, ev.Mirrored)
 		} else {
 			arrow = inboundArrow()
 		}
@@ -102,22 +123,32 @@ func (cp *chatPage) renderEntry(e chatEntry) string {
 
 		var fb fileBodyMin
 		_ = json.Unmarshal(ev.Body, &fb)
-		arrow = fileArrow(ev.Direction, fb.State, e.delivery)
+		arrow = fileArrow(ev.Direction, fb.State, e.delivery, ev.Mirrored)
 	}
 	return cp.renderEventJSON(e.evJSON, arrow)
 }
 
-func outboundArrow(state string) string {
+func outboundArrow(state string, mirrored bool) string {
+	colour, head, tail := "gray", "<", "-"
 	switch state {
 	case "sent", "delivered":
-		return "[green]<-[-]"
+		colour = "green"
 	case "read":
-		return "[green]<<[-]"
+		colour, tail = "green", "<"
 	case "failed":
-		return "[red]✗-[-]"
-	default:
-		return "[gray]<-[-]"
+		colour, head = "red", "✗"
 	}
+
+	tailColour := colour
+
+	if mirrored && colour == "green" {
+		colour = "purple"
+	}
+
+	if tailColour != colour {
+		return "[" + colour + "]" + head + "[" + tailColour + "]" + tail + "[-]"
+	}
+	return "[" + colour + "]" + head + tail + "[-]"
 }
 
 func inboundArrow() string {
@@ -134,18 +165,34 @@ type fileBodyMin struct {
 	Caption       string `json:"caption,omitempty"`
 }
 
-func fileArrow(direction, transferState, deliveryState string) string {
+func fileArrow(direction, transferState, deliveryState string, mirrored bool) string {
 	if direction == "out" {
+
 		switch deliveryState {
 		case "read":
+			if mirrored {
+				return "[green]<[purple]<[-]"
+			}
 			return "[green]<<[-]"
 		case "delivered":
+			if mirrored {
+				return "[green]<[purple]-[-]"
+			}
 			return "[green]<-[-]"
 		case "sent":
+			if mirrored {
+				return "[gray]<[purple]-[-]"
+			}
 			return "[gray]<[green]-[-]"
 		case "failed":
+			if mirrored {
+				return "[red]✗[purple]-[-]"
+			}
 			return "[red]✗-[-]"
 		default:
+			if mirrored {
+				return "[gray]<[purple]-[-]"
+			}
 			return "[gray]<-[-]"
 		}
 	}
@@ -341,11 +388,17 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 			Outcome         string   `json:"outcome"`
 			DurationSeconds int64    `json:"duration_seconds"`
 			Modalities      []string `json:"modalities"`
+			FailReason      string   `json:"fail_reason"`
 		}
 		_ = json.Unmarshal(ev.Body, &body)
+
+		noAnswer := body.Outcome == "failed" && body.FailReason == calls.FailReasonNoAnswer
 		accent := StyleCallSummaryBad
-		if body.Outcome == "completed" {
+		switch {
+		case body.Outcome == "completed" || body.Outcome == "answered_elsewhere":
 			accent = StyleCallSummaryOK
+		case noAnswer:
+			accent = StyleCallSummaryNeutral
 		}
 		modality := "audio"
 		for _, m := range body.Modalities {
@@ -371,8 +424,13 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 			tail = "declined"
 		case "failed":
 			tail = "failed"
+			if noAnswer {
+				tail = "no answer"
+			}
 		case "disrupted":
 			tail = "disrupted"
+		case "answered_elsewhere":
+			tail = "answered on another device"
 		}
 		summary := dirGlyph + " " + modality
 		if tail != "" {
@@ -424,6 +482,23 @@ func (cp *chatPage) renderEventJSON(evJSON json.RawMessage, arrow string) string
 			StyleBreadcrumbBody, stamp,
 			accent, summary,
 			StyleReset)
+	case "invitation":
+
+		var body struct {
+			ExpiresAt int64  `json:"expires_at"`
+			State     string `json:"state"`
+		}
+		_ = json.Unmarshal(ev.Body, &body)
+		look := invitationLookFor(body.State, body.ExpiresAt, time.Now())
+		lead := "invitation you offered"
+		if ev.Direction == "in" {
+			lead = "invitation they offered"
+		}
+
+		return fmt.Sprintf("%s%s %s* %s - %s%s",
+			StyleBreadcrumbBody, stamp,
+			look.tag, lead, look.phrase,
+			StyleReset)
 	default:
 		return fmt.Sprintf("[gray]%s[white] (kind=%s)", stamp, ev.Kind)
 	}
@@ -447,18 +522,113 @@ func formatCallSummaryDuration(secs int64) string {
 }
 
 func (cp *chatPage) rebuild() {
-	cp.view.Clear()
-	for _, e := range cp.entries {
-		fmt.Fprintln(cp.view, cp.renderEntry(e))
-	}
+	cp.redraw()
 	cp.view.ScrollToEnd()
 }
 
 func (cp *chatPage) rebuildNoScroll() {
+	cp.redraw()
+}
+
+func (cp *chatPage) redraw() {
 	cp.view.Clear()
+	if cp.systemLine != "" {
+		fmt.Fprintln(cp.view, StyleBreadcrumbBody+"* "+cp.systemLine+StyleReset)
+	}
 	for _, e := range cp.entries {
 		fmt.Fprintln(cp.view, cp.renderEntry(e))
 	}
+	for _, p := range cp.pending {
+		fmt.Fprintln(cp.view, renderPendingText(p))
+	}
+}
+
+const (
+	systemLineNoSession = "Waiting for a secure session. Your messages go out when it is up."
+	systemLineNoAnswer  = "Waiting for the contact to answer."
+	systemLineStartedAt = "Chat started "
+)
+
+func chatSystemLine(c ipc.ChatEntry) string {
+	switch {
+	case c.WaitingForSession:
+		return systemLineNoSession
+	case c.WaitingForContact:
+		return systemLineNoAnswer
+	case c.ChatStartedAt > 0:
+		return systemLineStartedAt + time.Unix(c.ChatStartedAt, 0).Format("2006-01-02 15:04:05")
+	}
+	return ""
+}
+
+func (cp *chatPage) setSystemLine(line string) {
+	if line == cp.systemLine {
+		return
+	}
+	cp.systemLine = line
+	cp.rebuildNoScroll()
+}
+
+func renderPendingText(p pendingText) string {
+	stamp := StyleRowStamp + time.Unix(p.at, 0).Format("15:04") + StyleRowText
+	if p.failed != "" {
+		return fmt.Sprintf("%s %s %s %s(failed: %s)%s",
+			stamp, outboundArrow("failed", false), p.text, StylePendingFailed, tview.Escape(p.failed), StyleRowText)
+	}
+	return fmt.Sprintf("%s %s %s %s(sending)%s",
+		stamp, outboundArrow("", false), p.text, StylePendingSending, StyleRowText)
+}
+
+func (cp *chatPage) addPending(corrID, text string, at int64) {
+	cp.pending = append(cp.pending, pendingText{corrID: corrID, text: text, at: at})
+	cp.rebuild()
+}
+
+func (cp *chatPage) pendingSent(corrID, msgID string) {
+	i := cp.pendingIndex(corrID)
+	if i < 0 {
+		return
+	}
+	if _, isRow := cp.msgIDIndex[msgID]; isRow || msgID == "" {
+		cp.pending = append(cp.pending[:i], cp.pending[i+1:]...)
+		cp.rebuildNoScroll()
+		return
+	}
+	cp.pending[i].msgID = msgID
+}
+
+func (cp *chatPage) pendingFailed(corrID, reason string) {
+	i := cp.pendingIndex(corrID)
+	if i < 0 {
+		return
+	}
+	if reason == "" {
+		reason = "not sent"
+	}
+	cp.pending[i].failed = reason
+	cp.rebuildNoScroll()
+}
+
+func (cp *chatPage) pendingIndex(corrID string) int {
+	for i, p := range cp.pending {
+		if p.corrID == corrID {
+			return i
+		}
+	}
+	return -1
+}
+
+func (cp *chatPage) dropPendingForRow(msgID string) bool {
+	if msgID == "" {
+		return false
+	}
+	for i, p := range cp.pending {
+		if p.msgID == msgID {
+			cp.pending = append(cp.pending[:i], cp.pending[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func (cp *chatPage) setSearchHighlight(query, curMsgID string) {
@@ -528,6 +698,8 @@ func (cp *chatPage) appendEvent(evJSON json.RawMessage) {
 			insertAt = pos
 		}
 	}
+
+	replaced := cp.dropPendingForRow(ev.MsgID)
 	if insertAt == len(cp.entries) {
 		cp.entries = append(cp.entries, entry)
 		if entry.envID != "" {
@@ -535,6 +707,11 @@ func (cp *chatPage) appendEvent(evJSON json.RawMessage) {
 		}
 		if ev.MsgID != "" {
 			cp.msgIDIndex[ev.MsgID] = len(cp.entries) - 1
+		}
+
+		if len(cp.pending) > 0 || replaced {
+			cp.rebuild()
+			return
 		}
 		fmt.Fprintln(cp.view, cp.renderEntry(entry))
 		cp.view.ScrollToEnd()
@@ -650,9 +827,21 @@ func (cp *chatPage) setDeliveryState(envID, state string) bool {
 	if !ok {
 		return false
 	}
-	if cp.entries[idx].delivery == "read" && state != "read" {
+	cur := cp.entries[idx].delivery
+	if !events.DeliveryAdvances(cur, state) {
+
+		slog.Debug("chat: delivery report refused; the row is not below it",
+			slog.String("envelope_id", envID),
+			slog.String("row_state", cur),
+			slog.String("report_state", state),
+		)
 		return false
 	}
+	slog.Debug("chat: delivery marker moved",
+		slog.String("envelope_id", envID),
+		slog.String("from_state", cur),
+		slog.String("to", state),
+	)
 	cp.entries[idx].delivery = state
 	cp.rebuild()
 	return true

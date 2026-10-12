@@ -123,7 +123,7 @@ func TestConverge_FetchThenKey(t *testing.T) {
 	assertMetaState(t, d, msgID, files.StateAwaitingKey)
 	assertEventState(t, d, msgID, files.StateAwaitingKey)
 
-	ingestFileKey(context.Background(), d, peerID, token, key, nonce)
+	ingestFileKey(context.Background(), d, peerID, token, key, nonce, "")
 
 	assertMetaState(t, d, msgID, files.StateReady)
 	assertEventState(t, d, msgID, files.StateReady)
@@ -153,7 +153,7 @@ func TestConverge_KeyThenFetch(t *testing.T) {
 	plaintext := []byte("ouroboros")
 	key, nonce, ciphertext := makeFreshAEADMaterial(t, plaintext)
 
-	ingestFileKey(context.Background(), d, peerID, token, key, nonce)
+	ingestFileKey(context.Background(), d, peerID, token, key, nonce, "")
 
 	m, err := d.files.GetMeta(msgID)
 	if err != nil {
@@ -195,7 +195,7 @@ func TestConverge_AEADFailure_StampsFailedPermanent(t *testing.T) {
 	if _, err := d.files.WriteStaging(msgID, ciphertext); err != nil {
 		t.Fatal(err)
 	}
-	ingestFileKey(context.Background(), d, peerID, token, wrongKey, nonce)
+	ingestFileKey(context.Background(), d, peerID, token, wrongKey, nonce, "")
 
 	assertMetaState(t, d, msgID, files.StateFailedPermanent)
 	assertEventState(t, d, msgID, files.StateFailedPermanent)
@@ -209,7 +209,7 @@ func TestIngestFileKey_NoMetadata_Drops(t *testing.T) {
 	d := newFilesTestDaemon(t, stub)
 
 	key, nonce, _ := makeFreshAEADMaterial(t, []byte("x"))
-	ingestFileKey(context.Background(), d, "stranger", "tok-stranger", key, nonce)
+	ingestFileKey(context.Background(), d, "stranger", "tok-stranger", key, nonce, "")
 
 	if _, err := d.files.GetMetaByToken("tok-stranger"); err == nil {
 		t.Errorf("metadata appeared from nowhere")
@@ -225,7 +225,7 @@ func TestIngestFileKey_PeerMismatch_Drops(t *testing.T) {
 	_, msgID := seedInboundFileRow(t, d, offerPeer, token)
 
 	key, nonce, _ := makeFreshAEADMaterial(t, []byte("x"))
-	ingestFileKey(context.Background(), d, wrongPeer, token, key, nonce)
+	ingestFileKey(context.Background(), d, wrongPeer, token, key, nonce, "")
 
 	m, err := d.files.GetMeta(msgID)
 	if err != nil {
@@ -241,22 +241,54 @@ func TestIngestFileKey_PeerMismatch_Drops(t *testing.T) {
 
 func TestIngestFileReceipt_RedeemsAndShipsKey(t *testing.T) {
 	stub := startFilesStub(t)
-
-	receipts := struct {
-		called int
-		token  string
-		peer   string
-	}{}
-	mountReceipts(t, stub, func(token, peer string) {
-		receipts.called++
-		receipts.token = token
-		receipts.peer = peer
-	})
-
 	d := newFilesTestDaemon(t, stub)
 	const peerID = "0000000000000000000000000000aaaa"
 	const token = "tok-sender-side"
+	preEstablishSession(t, d, peerID)
 
+	dc, err := d.chats.GetByDirectPeer(peerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgID, _ := msg.NewID()
+	keyBytes, nonce, _ := makeFreshAEADMaterial(t, []byte("x"))
+	if err := d.files.PutMeta(files.Metadata{
+		MsgID:           msgID,
+		ChatID:          dc.ID,
+		Direction:       files.DirOut,
+		Token:           token,
+		RecipientTokens: map[string]string{peerID: token},
+		KeyBytes:        keyBytes,
+		Nonce:           nonce,
+		State:           files.StatePending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ingestFileReceipt(context.Background(), d, peerID, &msg.FileReceiptBody{Token: token}, "")
+
+	stub.mu.Lock()
+	sentPeers := append([]string(nil), stub.sentPeerIDs...)
+	receiptCalls := stub.receiptCalls
+	lastReceipt := stub.lastReceipt
+	stub.mu.Unlock()
+
+	if len(sentPeers) != 1 || sentPeers[0] != peerID {
+		t.Fatalf("key envelope addressed %v, want exactly [%s]", sentPeers, peerID)
+	}
+	if receiptCalls != 1 {
+		t.Fatalf("haomad ack calls = %d, want 1", receiptCalls)
+	}
+	if lastReceipt.Token != token || lastReceipt.RecipientPeerID != peerID {
+		t.Fatalf("ack = %+v, want token %s for %s", lastReceipt, token, peerID)
+	}
+}
+
+func TestIngestFileReceipt_NoSessionDoesNotAck(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	const peerID = "0000000000000000000000000000abab"
+	const token = "tok-no-session"
 	dc, _, err := d.createDirectWithDefaults(peerID)
 	if err != nil {
 		t.Fatal(err)
@@ -276,22 +308,19 @@ func TestIngestFileReceipt_RedeemsAndShipsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ingestFileReceipt(context.Background(), d, peerID, &msg.FileReceiptBody{Token: token})
-	if receipts.called != 0 {
-		t.Errorf("redeem called despite encrypt failure: count=%d", receipts.called)
+	ingestFileReceipt(context.Background(), d, peerID, &msg.FileReceiptBody{Token: token}, "")
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if stub.receiptCalls != 0 {
+		t.Errorf("haomad ack calls = %d, want 0 — the key never shipped", stub.receiptCalls)
 	}
-}
-
-func mountReceipts(t *testing.T, stub *filesStub, fn func(token, peer string)) {
-	t.Helper()
-
-	_ = fn
 }
 
 func TestIngestFileReceipt_NoMetadata_Drops(t *testing.T) {
 	stub := startFilesStub(t)
 	d := newFilesTestDaemon(t, stub)
-	ingestFileReceipt(context.Background(), d, "stranger", &msg.FileReceiptBody{Token: "tok-nonexistent"})
+	ingestFileReceipt(context.Background(), d, "stranger", &msg.FileReceiptBody{Token: "tok-nonexistent"}, "")
 	if _, err := d.files.GetMetaByToken("tok-nonexistent"); err == nil {
 		t.Errorf("metadata appeared for unknown token")
 	}
@@ -318,7 +347,7 @@ func TestIngestFileReceipt_RecipientMismatch_Drops(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ingestFileReceipt(context.Background(), d, imposter, &msg.FileReceiptBody{Token: token})
+	ingestFileReceipt(context.Background(), d, imposter, &msg.FileReceiptBody{Token: token}, "")
 
 	m, _ := d.files.GetMeta(msgID)
 	if m.State != files.StatePending {
@@ -343,9 +372,87 @@ func TestIngestFileKey_OutboundDirection_Drops(t *testing.T) {
 		t.Fatal(err)
 	}
 	key, nonce, _ := makeFreshAEADMaterial(t, []byte("x"))
-	ingestFileKey(context.Background(), d, peerID, token, key, nonce)
+	ingestFileKey(context.Background(), d, peerID, token, key, nonce, "")
 	m, _ := d.files.GetMeta(msgID)
 	if len(m.KeyBytes) != 0 {
 		t.Errorf("key persisted on outbound metadata")
+	}
+}
+
+func TestIngestFileReceipt_SecondDeviceOfTheContactShipsTheKey(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	const phone = "00000000000000000000000000004001"
+	const laptop = "00000000000000000000000000004002"
+	preEstablishSession(t, d, phone)
+	dc := attachSecondDevice(t, d, phone, laptop)
+
+	msgID, err := msg.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, nonce, _ := makeFreshAEADMaterial(t, []byte("two devices, two tokens"))
+	if err := d.files.PutMeta(files.Metadata{
+		MsgID:           msgID,
+		ChatID:          dc.ID,
+		Direction:       files.DirOut,
+		Token:           "tok-phone",
+		RecipientTokens: map[string]string{phone: "tok-phone", laptop: "tok-laptop"},
+		KeyBytes:        keyBytes,
+		Nonce:           nonce,
+		State:           files.StateReady,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ingestFileReceipt(context.Background(), d, laptop, &msg.FileReceiptBody{Token: "tok-laptop"}, "")
+
+	stub.mu.Lock()
+	sentPeers := append([]string(nil), stub.sentPeerIDs...)
+	receiptCalls := stub.receiptCalls
+	lastReceipt := stub.lastReceipt
+	stub.mu.Unlock()
+
+	if len(sentPeers) != 1 || sentPeers[0] != laptop {
+		t.Fatalf("key envelope addressed %v, want exactly [%s] — the device that sent the receipt", sentPeers, laptop)
+	}
+	if receiptCalls != 1 {
+		t.Fatalf("haomad ack calls = %d, want 1", receiptCalls)
+	}
+	if lastReceipt.Token != "tok-laptop" || lastReceipt.RecipientPeerID != laptop {
+		t.Fatalf("ack = %+v, want token tok-laptop for %s", lastReceipt, laptop)
+	}
+}
+
+func TestConverge_FileDeliveredAnswersTheOfferingDevice(t *testing.T) {
+	stub := startFilesStub(t)
+	d := newFilesTestDaemon(t, stub)
+	const phone = "00000000000000000000000000004101"
+	const laptop = "00000000000000000000000000004102"
+	preEstablishSession(t, d, phone)
+	dc := attachSecondDevice(t, d, phone, laptop)
+
+	const token = "tok-delivered-target"
+	msgID := ingestOfferFrom(t, d, dc.ID, laptop, token)
+
+	plaintext := []byte("sealed, then answered")
+	key, nonce, ciphertext := makeFreshAEADMaterial(t, plaintext)
+	if _, err := d.files.WriteStaging(msgID, ciphertext); err != nil {
+		t.Fatalf("WriteStaging: %v", err)
+	}
+
+	stub.mu.Lock()
+	stub.sentPeerIDs = nil
+	stub.mu.Unlock()
+
+	ingestFileKey(context.Background(), d, laptop, token, key, nonce, "")
+
+	assertMetaState(t, d, msgID, files.StateReady)
+
+	stub.mu.Lock()
+	sentPeers := append([]string(nil), stub.sentPeerIDs...)
+	stub.mu.Unlock()
+	if len(sentPeers) != 1 || sentPeers[0] != laptop {
+		t.Fatalf("file-delivered answer addressed %v, want exactly [%s] — the device that sent the offer", sentPeers, laptop)
 	}
 }

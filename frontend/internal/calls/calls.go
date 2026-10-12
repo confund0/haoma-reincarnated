@@ -54,6 +54,65 @@ type State struct {
 	RemoteTokens      map[string]string `json:"remote_tokens,omitempty"`
 
 	LocalTokens map[string]string `json:"local_tokens,omitempty"`
+
+	Targets    []string `json:"targets,omitempty"`
+	AnsweredBy string   `json:"answered_by,omitempty"`
+	Stopped    []string `json:"stopped,omitempty"`
+}
+
+func (s State) CallTargets() []string {
+	if len(s.Targets) > 0 {
+		return s.Targets
+	}
+	if s.PeerID == "" {
+		return nil
+	}
+	return []string{s.PeerID}
+}
+
+func (s State) IsTarget(deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	for _, t := range s.CallTargets() {
+		if t == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s State) MediaPeer() string {
+	if s.AnsweredBy != "" {
+		return s.AnsweredBy
+	}
+	return s.PeerID
+}
+
+func (s State) Ringing() []string {
+	if s.AnsweredBy != "" {
+		return nil
+	}
+	return s.RingingExcept("")
+}
+
+func (s State) RingingExcept(except string) []string {
+	var out []string
+	for _, t := range s.CallTargets() {
+		if t != except && !containsString(s.Stopped, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func containsString(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s State) IsTerminal() bool {
@@ -77,6 +136,7 @@ const (
 	FailReasonProxyRegister = "proxy_register_failed"
 	FailReasonPeerUnreach   = "peer_unreachable"
 	FailReasonInvalidOffer  = "invalid_call_offer"
+	FailReasonPersist       = "persist_failed"
 
 	CallEndReasonAutoHangup = "auto-hangup"
 )
@@ -190,26 +250,10 @@ func (m *Manager) DeleteState(callID string) error {
 }
 
 func (m *Manager) Transition(callID string, next Status, reason string, nowUnix int64) (State, error) {
-	if callID == "" {
-		return State{}, ErrCallNotFound
-	}
-	var out State
-	err := m.st.Update(func(txn *badger.Txn) error {
-		item, err := txn.Get(stateKey(callID))
-		if errors.Is(err, badger.ErrKeyNotFound) {
-			return ErrCallNotFound
-		}
-		if err != nil {
-			return err
-		}
-		var cur State
-		if err := item.Value(func(v []byte) error {
-			return json.Unmarshal(v, &cur)
-		}); err != nil {
-			return fmt.Errorf("calls: decode state for transition: %w", err)
-		}
+
+	return m.updateRow(callID, func(cur *State) (bool, error) {
 		if !legalTransition(cur.Status, next) {
-			return fmt.Errorf("%w: %s → %s", ErrIllegalTransition, cur.Status, next)
+			return false, fmt.Errorf("%w: %s → %s", ErrIllegalTransition, cur.Status, next)
 		}
 		cur.Status = next
 		cur.UpdatedAt = nowUnix
@@ -226,17 +270,111 @@ func (m *Manager) Transition(callID string, next Status, reason string, nowUnix 
 			}
 			cur.RemoteOutboundKey = nil
 		}
-		raw, err := json.Marshal(cur)
-		if err != nil {
-			return fmt.Errorf("calls: marshal state for transition: %w", err)
-		}
-		if err := txn.Set(stateKey(callID), raw); err != nil {
-			return err
-		}
-		out = cur
-		return nil
+		return true, nil
 	})
+}
+
+func (m *Manager) FailUnanswered(callID, reason string, nowUnix int64) (State, error) {
+	return m.updateRow(callID, func(cur *State) (bool, error) {
+		if cur.AnsweredBy != "" {
+			return false, fmt.Errorf("%w: answered by a device", ErrIllegalTransition)
+		}
+		if cur.Status != StatusOffered {
+			return false, fmt.Errorf("%w: %s → %s", ErrIllegalTransition, cur.Status, StatusFailed)
+		}
+		cur.Status = StatusFailed
+		cur.UpdatedAt = nowUnix
+		cur.FailReason = reason
+		cur.EndedAt = nowUnix
+		for i := range cur.RemoteOutboundKey {
+			cur.RemoteOutboundKey[i] = 0
+		}
+		cur.RemoteOutboundKey = nil
+		return true, nil
+	})
+}
+
+const updateRetries = 5
+
+var beforeCommit func(callID string)
+
+func (m *Manager) updateRow(callID string, mutate func(cur *State) (write bool, err error)) (State, error) {
+	if callID == "" {
+		return State{}, ErrCallNotFound
+	}
+	var out State
+	var err error
+	for attempt := 0; attempt < updateRetries; attempt++ {
+		err = m.st.Update(func(txn *badger.Txn) error {
+			item, gerr := txn.Get(stateKey(callID))
+			if errors.Is(gerr, badger.ErrKeyNotFound) {
+				return ErrCallNotFound
+			}
+			if gerr != nil {
+				return gerr
+			}
+			var cur State
+			if verr := item.Value(func(v []byte) error {
+				return json.Unmarshal(v, &cur)
+			}); verr != nil {
+				return fmt.Errorf("calls: decode state: %w", verr)
+			}
+			write, merr := mutate(&cur)
+			if merr != nil {
+				return merr
+			}
+			out = cur
+			if !write {
+				return nil
+			}
+			raw, jerr := json.Marshal(cur)
+			if jerr != nil {
+				return fmt.Errorf("calls: marshal state: %w", jerr)
+			}
+			if serr := txn.Set(stateKey(callID), raw); serr != nil {
+				return serr
+			}
+			if beforeCommit != nil {
+				beforeCommit(callID)
+			}
+			return nil
+		})
+		if !errors.Is(err, badger.ErrConflict) {
+			return out, err
+		}
+	}
 	return out, err
+}
+
+func (m *Manager) ClaimAnswer(callID, deviceID string) (State, bool, error) {
+	won := false
+	st, err := m.updateRow(callID, func(cur *State) (bool, error) {
+		won = false
+		if cur.Direction != DirOut || cur.Status != StatusOffered || cur.AnsweredBy != "" || !cur.IsTarget(deviceID) {
+			return false, nil
+		}
+		cur.AnsweredBy = deviceID
+		won = true
+		return true, nil
+	})
+	if err != nil {
+		return State{}, false, err
+	}
+	return st, won, nil
+}
+
+func (m *Manager) MarkStopped(callID string, deviceIDs ...string) (State, error) {
+	return m.updateRow(callID, func(cur *State) (bool, error) {
+		changed := false
+		for _, id := range deviceIDs {
+			if !cur.IsTarget(id) || containsString(cur.Stopped, id) {
+				continue
+			}
+			cur.Stopped = append(cur.Stopped, id)
+			changed = true
+		}
+		return changed, nil
+	})
 }
 
 func (m *Manager) SetRemoteMaterial(callID string, outboundKey []byte, tokens map[string]string) error {

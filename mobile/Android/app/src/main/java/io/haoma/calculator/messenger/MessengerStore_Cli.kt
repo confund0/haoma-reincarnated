@@ -54,7 +54,7 @@ private fun MessengerStore.dispatchRespond(action: String, verb: String, noneMes
         1 -> respondCall(ringing.first().callId, action)
         else -> {
             appendStatus(
-                "$verb: ${ringing.size} incoming calls — be more specific (GUI lands in M-CALLS-C):",
+                "$verb: ${ringing.size} incoming calls — be more specific:",
                 level = StatusLevel.WARN,
                 source = StatusSource.Cli,
             )

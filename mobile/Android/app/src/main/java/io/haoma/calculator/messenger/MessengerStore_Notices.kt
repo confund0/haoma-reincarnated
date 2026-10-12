@@ -26,8 +26,24 @@ private const val MS_PER_DAY = 24L * 60L * 60L * 1000L
 
 const val NOTICE_PASSPHRASE_IS_DEFAULT = "passphrase_is_default"
 
+
+const val NOTICE_DESTROY_ATTEMPTS = "destroy_attempts_seen"
+
+
+internal fun passphraseNoticeApplies(isDefault: Boolean, saysSo: Boolean): Boolean =
+    isDefault && saysSo
+
+
+internal fun saysPassphraseIsDefault(snapshot: JSONObject): Boolean {
+    if (snapshot.has("say_passphrase_is_default")) {
+        return snapshot.optBoolean("say_passphrase_is_default", true)
+    }
+    return snapshot.optString("threat_profile", "") != TIER_NOBODY
+}
+
 internal fun produceNotices(
     passphraseIsDefault: Boolean,
+    destroyAttempts: DestroyAttemptsSeenPush?,
     snooze: Map<String, NoticeSnoozeEntry>,
 ): List<Notice> {
     val out = ArrayList<Notice>(2)
@@ -42,6 +58,17 @@ internal fun produceNotices(
             snoozeUntil = snooze[NOTICE_PASSPHRASE_IS_DEFAULT]?.until ?: 0L,
         )
     }
+    
+    
+    if (destroyAttempts != null && destroyAttempts.count > 0) {
+        out += Notice(
+            id = NOTICE_DESTROY_ATTEMPTS,
+            severity = NoticeSeverity.WARN,
+            title = "Failed destroy attempts",
+            body = destroyAttemptsBody(destroyAttempts.count, destroyAttempts.lastAt),
+            snoozeUntil = snooze[NOTICE_DESTROY_ATTEMPTS]?.until ?: 0L,
+        )
+    }
     return out
 }
 
@@ -49,6 +76,23 @@ internal fun produceNotices(
 fun MessengerStore.setPassphraseIsDefault(isDefault: Boolean) {
     _noticePassphraseIsDefault.value = isDefault
     Logger.i("notices", "passphraseIsDefault=$isDefault")
+}
+
+
+fun MessengerStore.loadSaysPassphraseIsDefault(session: io.haoma.calculator.core.VaultSession) {
+    val snap = session.snapshot()
+    val saysSo = saysPassphraseIsDefault(snap)
+    _noticeSaysPassphraseIsDefault.value = saysSo
+    Logger.i(
+        "notices",
+        "saysPassphraseIsDefault=$saysSo " +
+            "cell=${if (snap.has("say_passphrase_is_default")) {
+                snap.optBoolean("say_passphrase_is_default").toString()
+            } else {
+                "absent"
+            }} " +
+            "tier=${snap.optString("threat_profile", "")}",
+    )
 }
 
 

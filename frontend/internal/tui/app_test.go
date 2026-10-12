@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+
+	"haoma-frontend/internal/ipc"
 )
 
 func TestHexPreview_Empty(t *testing.T) {
@@ -222,5 +226,36 @@ func TestCommandsForContext(t *testing.T) {
 		if !other[c] {
 			t.Errorf("other scope missing global %q", c)
 		}
+	}
+}
+
+func TestAbandonPending_AnswersInTheOrderTheRequestsWentOut(t *testing.T) {
+	a := &App{pending: map[string]responseHandler{}}
+	var want []string
+	for i := 1; i <= 12; i++ {
+		id := "tui-" + strconv.Itoa(i)
+		want = append(want, id)
+		a.pending[id] = func(f ipc.Frame) {}
+	}
+
+	var got []string
+	for id := range a.pending {
+		id := id
+		a.pending[id] = func(f ipc.Frame) { got = append(got, id) }
+	}
+
+	a.abandonPending()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("answered in order %v,\nwant %v", got, want)
+	}
+}
+
+func TestSortCorrIDs_KeepsIdsWithNoCounter(t *testing.T) {
+	ids := []string{"tui-10", "backend-7", "tui-2", "tui-x", "tui-1"}
+	sortCorrIDs(ids)
+	want := []string{"tui-1", "tui-2", "tui-10", "backend-7", "tui-x"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("sorted %v, want %v", ids, want)
 	}
 }

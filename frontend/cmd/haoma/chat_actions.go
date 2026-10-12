@@ -10,6 +10,7 @@ import (
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/ipc"
 	"haoma-frontend/internal/peerstate"
+	"haoma-frontend/internal/presence"
 )
 
 func (sd *sessionDispatcher) handleListChats(_ context.Context, sess *ipc.Session, f ipc.Frame) {
@@ -27,7 +28,8 @@ func (sd *sessionDispatcher) handleListChats(_ context.Context, sess *ipc.Sessio
 	for _, c := range chats {
 		entry := chatToEntry(c)
 		applyChatLabel(sd.d, &entry)
-		applyChatPresenceSnapshot(sd.d, &entry)
+		dc, _ := c.(*chat.DirectChat)
+		applyChatPresenceSnapshot(sd.d, &entry, dc)
 		entries = append(entries, entry)
 	}
 	resp, err := ipc.NewFrame(ipc.FrameChatsListed, f.ID, ipc.ChatsListedResponse{Chats: entries})
@@ -159,6 +161,9 @@ func (sd *sessionDispatcher) handleEnsureChat(ctx context.Context, sess *ipc.Ses
 		sendError(sess, f.ID, "not_ready", "chat store or backend client not wired")
 		return
 	}
+	if refuseLinkedDevice(sd.d, sess, f, req.PeerID) {
+		return
+	}
 	if _, err := resolveChatForPeer(ctx, sd.d, req.PeerID); err != nil {
 		sendError(sess, f.ID, "internal", fmt.Sprintf("resolve chat: %v", err))
 		return
@@ -173,10 +178,14 @@ func (sd *sessionDispatcher) handleEnsureChat(ctx context.Context, sess *ipc.Ses
 		sendError(sess, f.ID, "backend_unavailable", fmt.Sprintf("fetch peer: %v", err))
 		return
 	}
-	peerEntry := peerEntryFor(sd.d, pp)
+	peerEntry, err := peerEntryFor(sd.d, pp)
+	if err != nil {
+		sendError(sess, f.ID, reasonStoreReadFailed, "the contact row could not be read")
+		return
+	}
 	chatEntry := chatToEntry(dc)
 	applyChatLabel(sd.d, &chatEntry)
-	applyChatPresenceSnapshot(sd.d, &chatEntry)
+	applyChatPresenceSnapshot(sd.d, &chatEntry, dc)
 	resp, err := ipc.NewFrame(ipc.FrameChatEnsured, f.ID, ipc.ChatEnsuredResponse{
 		Peer: peerEntry,
 		Chat: chatEntry,
@@ -190,15 +199,22 @@ func (sd *sessionDispatcher) handleEnsureChat(ctx context.Context, sess *ipc.Ses
 	}
 }
 
-func applyChatPresenceSnapshot(d *daemon, entry *ipc.ChatEntry) {
+func applyChatPresenceSnapshot(d *daemon, entry *ipc.ChatEntry, dc *chat.DirectChat) {
 	if d == nil || d.presenceCache == nil || entry == nil {
 		return
 	}
 	if entry.Kind != ipc.ChatKindDirect || entry.PeerID == "" {
 		return
 	}
-	snap := d.presenceCache.Snapshot(entry.PeerID)
+	snap, ok := d.chatPresence(dc)
+	if !ok {
+		slog.Warn("presence: a direct chat row was built without its chat; its presence is unknown",
+			slog.String("chat_id", entry.ChatID),
+		)
+		snap = presence.Snapshot{Effective: presence.EffectiveUnknown}
+	}
 	entry.Accepting = snap.Accepting
+	entry.Sending = snap.Sending
 	entry.Chatty = snap.Chatty
 	entry.Effective = snap.Effective
 }
@@ -209,16 +225,26 @@ func applyChatLabel(d *daemon, entry *ipc.ChatEntry) {
 	}
 	switch entry.Kind {
 	case ipc.ChatKindDirect:
-		if entry.PeerID == "" {
-			return
-		}
 		var rec peerstate.MetaRecord
 		if d != nil && d.peerMeta != nil {
-			if got, err := d.peerMeta.Get(entry.PeerID); err == nil {
-				rec = got
+			if entry.PeerID != "" {
+				if got, err := d.peerMeta.Get(entry.PeerID); err == nil {
+					rec = got
+				}
+			}
+
+			if rec.Nick == "" && rec.Alias == "" && entry.Fingerprint != "" {
+				if got, err := d.peerMeta.GetPerson(entry.Fingerprint); err == nil {
+					rec = got
+				}
 			}
 		}
-		entry.Label = peerstate.Resolve(rec, entry.PeerID)
+
+		identifier := entry.PeerID
+		if identifier == "" {
+			identifier = entry.Fingerprint
+		}
+		entry.Label = peerstate.Resolve(rec, identifier)
 	case ipc.ChatKindGroup:
 		if entry.GroupAlias != "" {
 			entry.Label = entry.GroupAlias
@@ -235,6 +261,7 @@ func chatToEntry(c chat.Chat) ipc.ChatEntry {
 			ChatID:              string(v.ID),
 			Kind:                ipc.ChatKindDirect,
 			PeerID:              v.PeerID,
+			Fingerprint:         v.Fingerprint,
 			RetentionTTL:        v.RetentionTTL,
 			DisableReadReceipts: v.DisableReadReceipts,
 			NotificationsMuted:  v.NotificationsMuted,
@@ -247,6 +274,9 @@ func chatToEntry(c chat.Chat) ipc.ChatEntry {
 			LastTimerChangeTs:   v.LastTimerChangeTs,
 			GroupName:           v.GroupName,
 			GroupAlias:          v.GroupAlias,
+			WaitingForSession:   v.WaitingForSession,
+			WaitingForContact:   v.WaitingForContact,
+			ChatStartedAt:       v.ChatStartedAt,
 		}
 	case *chat.GroupChat:
 		return ipc.ChatEntry{

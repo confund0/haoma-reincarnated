@@ -1,0 +1,18 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4195,
+      "chat_id": "1d84b0f7c25e49a3b6d70f1c8a34e5b9",
+      "direction": "in",
+      "kind": "text",
+      "display_ts": 1754903200,
+      "sender_ts": 1754903198,
+      "recv_ts": 1754903201,
+      "envelope_id": "af71305c9b2e64d80a5c31f9e7b04268",
+      "decrypt_status": "failed",
+      "fail_reason": "version_mismatch",
+      "raw_blob": "MwohBZ9M4XcrCNAW"
+    }
+  }
+}

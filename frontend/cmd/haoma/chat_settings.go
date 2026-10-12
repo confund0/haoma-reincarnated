@@ -13,6 +13,8 @@ import (
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/logid"
+	"haoma-frontend/internal/mirror"
 	"haoma-frontend/internal/msg"
 )
 
@@ -172,6 +174,8 @@ func (sd *sessionDispatcher) handleSetChatSettings(ctx context.Context, sess *ip
 		}
 	}
 
+	pushChatSettings(ctx, sd.d, chatID)
+
 	slog.Info("chat settings updated",
 		slog.String("chat_id", req.ChatID),
 		slog.Int("retention_ttl_sec", int(req.RetentionTTL)),
@@ -180,7 +184,6 @@ func (sd *sessionDispatcher) handleSetChatSettings(ctx context.Context, sess *ip
 	)
 	slog.Debug("chat settings nick override applied",
 		slog.String("chat_id", req.ChatID),
-		slog.String("nick_override", cleanOverride),
 	)
 
 	payload := ipc.ChatSettingsPayload(req)
@@ -222,7 +225,7 @@ func (sd *sessionDispatcher) handleMarkRead(ctx context.Context, sess *ipc.Sessi
 
 	clearChatUnread(ctx, sd.d, chat.ChatID(req.ChatID))
 	if len(pending) > 0 {
-		sd.d.shipReadReceipt(ctx, chat.ChatID(req.ChatID), pending)
+		sd.d.shipReadReceipt(chat.ChatID(req.ChatID), pending)
 	}
 	resp, err := ipc.NewFrame(ipc.FrameMarkedRead, f.ID, ipc.MarkedReadResponse{
 		ChatID:      req.ChatID,
@@ -271,20 +274,34 @@ func (sd *sessionDispatcher) handleClientFocus(ctx context.Context, _ *ipc.Sessi
 	if !ok {
 		return
 	}
+	routes := dc.FanoutPeerIDs()
+	if len(routes) == 0 {
+
+		slog.Debug("client_focus: presence push skipped, no pairing with this contact yet",
+			slog.String("chat_id", req.ChatID),
+		)
+		return
+	}
 	state := sd.d.effectivePresenceState()
-	go func(peerID, state string) {
-		if err := sd.shipPresenceTo(ctx, peerID, state); err != nil {
-			slog.Debug("client_focus: presence push failed (Tor warm-up may have been cancelled)",
-				slog.String("peer_id", peerID),
+
+	pushCtx, cancel := context.WithTimeout(context.Background(), focusPresencePushTimeout)
+	go func(chatID string, routes []string, state string) {
+		defer cancel()
+		if err := sd.d.shipPresenceToPerson(pushCtx, routes, chatID, state); err != nil {
+			slog.Debug("client_focus: presence push failed (Tor warm-up may still be running)",
+				slog.String("chat_id", chatID),
 				slog.Any("err", err),
 			)
 		}
-	}(dc.PeerID, state)
+	}(string(dc.ID), routes, state)
 	slog.Debug("client_focus: presence push fired",
-		slog.String("peer_id", dc.PeerID),
+		slog.String("chat_id", string(dc.ID)),
+		slog.Int("routing_devices", len(routes)),
 		slog.String("state", state),
 	)
 }
+
+const focusPresencePushTimeout = 2 * time.Minute
 
 func (d *daemon) autoMarkOnArrival(ctx context.Context, chatID chat.ChatID) {
 	if d.events == nil {
@@ -311,11 +328,11 @@ func (d *daemon) autoMarkOnArrival(ctx context.Context, chatID chat.ChatID) {
 		return
 	}
 	if len(pending) > 0 {
-		d.shipReadReceipt(ctx, chatID, pending)
+		d.shipReadReceipt(chatID, pending)
 	}
 }
 
-func (d *daemon) shipReadReceipt(ctx context.Context, chatID chat.ChatID, targets []string) {
+func (d *daemon) shipReadReceipt(chatID chat.ChatID, targets []events.ReceiptTarget) {
 	if len(targets) == 0 {
 		return
 	}
@@ -342,7 +359,7 @@ func (d *daemon) shipReadReceipt(ctx context.Context, chatID chat.ChatID, target
 	}
 
 	if dc.DisableReadReceipts {
-		if err := d.events.MarkReadReceiptSent(targets, events.ReadReceiptSuppressedSentinel); err != nil {
+		if err := d.events.MarkReadReceiptSent(events.ReceiptMsgIDs(targets), events.ReadReceiptSuppressedSentinel); err != nil {
 			slog.Warn("ship read receipt: stamp sentinel on disabled chat failed",
 				slog.String("chat_id", string(chatID)),
 				slog.Any("err", err),
@@ -354,8 +371,94 @@ func (d *daemon) shipReadReceipt(ctx context.Context, chatID chat.ChatID, target
 		)
 		return
 	}
-	peerID := dc.PeerID
+	fallback := receiptFallbackPeer(dc)
+	if fallback == "" {
 
+		slog.Debug("read receipt skipped: no pairing with this contact yet",
+			slog.String("chat_id", string(chatID)),
+			slog.Int("pending", len(targets)),
+		)
+		return
+	}
+
+	presenceState := d.effectivePresenceState()
+	groups := groupReceiptTargets(dc, fallback, targets)
+	slog.Debug("read receipt: targets grouped by the device that sent them",
+		slog.String("chat_id", string(chatID)),
+		slog.Int("pending", len(targets)),
+		slog.Int("groups", len(groups)),
+		slog.Int("routing_devices", len(dc.FanoutPeerIDs())),
+	)
+	sendCtx, cancel := context.WithTimeout(context.Background(), readReceiptShipTimeout)
+	defer cancel()
+
+	for _, g := range groups {
+		d.shipReadReceiptTo(sendCtx, chatID, dc, g.peerID, g.msgIDs, presenceState)
+	}
+}
+
+const readReceiptShipTimeout = 2 * time.Minute
+
+func receiptFallbackPeer(dc *chat.DirectChat) string {
+	if dc.PeerID != "" {
+		return dc.PeerID
+	}
+	if routes := dc.FanoutPeerIDs(); len(routes) > 0 {
+		return routes[0]
+	}
+	return ""
+}
+
+type receiptGroup struct {
+	peerID string
+	msgIDs []string
+}
+
+func groupReceiptTargets(dc *chat.DirectChat, fallback string, targets []events.ReceiptTarget) []receiptGroup {
+	var groups []receiptGroup
+	index := map[string]int{}
+	for _, t := range targets {
+		peerID := resolveReceiptPeer(dc, fallback, t)
+		i, held := index[peerID]
+		if !held {
+			i = len(groups)
+			index[peerID] = i
+			groups = append(groups, receiptGroup{peerID: peerID})
+		}
+		groups[i].msgIDs = append(groups[i].msgIDs, t.MsgID)
+	}
+	return groups
+}
+
+func resolveReceiptPeer(dc *chat.DirectChat, fallback string, t events.ReceiptTarget) string {
+	if t.ArrivedFromPeerID == "" {
+		slog.Debug("read receipt addressed to the chat's stored device",
+			slog.String("msg_id", t.MsgID),
+			slog.String("peer_id", fallback),
+			slog.String("source", "row_records_no_sending_device"),
+		)
+		return fallback
+	}
+	for _, pid := range dc.FanoutPeerIDs() {
+		if pid == t.ArrivedFromPeerID {
+			slog.Debug("read receipt addressed to the device that sent the message",
+				slog.String("msg_id", t.MsgID),
+				slog.String("peer_id", t.ArrivedFromPeerID),
+				slog.String("source", "recorded_at_ingest"),
+			)
+			return t.ArrivedFromPeerID
+		}
+	}
+	slog.Debug("read receipt addressed to the chat's stored device",
+		slog.String("msg_id", t.MsgID),
+		slog.String("peer_id", fallback),
+		slog.String("recorded_peer_id", t.ArrivedFromPeerID),
+		slog.String("source", "recorded_device_is_not_in_this_chats_routing_set"),
+	)
+	return fallback
+}
+
+func (d *daemon) shipReadReceiptTo(ctx context.Context, chatID chat.ChatID, dc *chat.DirectChat, peerID string, targets []string, presenceState string) {
 	seq, err := d.peerSeq.NextSendSeq(peerID)
 	if err != nil {
 		slog.Warn("ship read receipt: next seq failed",
@@ -371,7 +474,6 @@ func (d *daemon) shipReadReceipt(ctx context.Context, chatID chat.ChatID, target
 	}
 	now := time.Now().Unix()
 
-	presenceState := d.effectivePresenceState()
 	wrapper, err := msg.BuildRead(seq, now, receiptMsgID, targets, dc.RetentionTTL, presenceState)
 	if err != nil {
 		slog.Warn("ship read receipt: build wrapper failed", slog.Any("err", err))
@@ -390,11 +492,16 @@ func (d *daemon) shipReadReceipt(ctx context.Context, chatID chat.ChatID, target
 		)
 		return
 	}
-	sendResp, err := d.backendClient.Send(ctx, backendapi.SendRequest{
-		PeerID:         peerID,
-		Payload:        blob,
-		PresenceSource: backendapi.PresenceSourceHaoma,
-	})
+	result, err := mirror.Dispatch(ctx, d.backendClient, mirror.NewRail(d.railKey, d.siblings, d.peerMeta),
+		mirror.SingleTarget(peerID),
+		func(ctx context.Context, deviceID string) (backendapi.SendRequest, []byte, error) {
+			return backendapi.SendRequest{
+				PeerID:         deviceID,
+				Payload:        blob,
+				PresenceSource: backendapi.PresenceSourceHaoma,
+			}, plaintext, nil
+		},
+		mirror.NewOp(wrapper.Kind, string(dc.ID)))
 	if err != nil {
 		slog.Warn("ship read receipt: backend send failed (will retry on next mark_read)",
 			slog.String("peer_id", peerID),
@@ -404,20 +511,44 @@ func (d *daemon) shipReadReceipt(ctx context.Context, chatID chat.ChatID, target
 	}
 	if err := d.events.MarkReadReceiptSent(targets, now); err != nil {
 		slog.Warn("ship read receipt: stamp ReadReceiptSentAt failed (receipt shipped, local bookkeeping stale)",
-			slog.String("envelope_id", sendResp.EnvelopeID),
+			slog.String("envelope_id", result.Primary.EnvelopeID),
 			slog.Any("err", err),
 		)
 	}
+
+	if err := d.events.RecordReceiptEnvelope(result.Primary.EnvelopeID, chatID, targets, now); err != nil {
+		slog.Warn("ship read receipt: record envelope mapping failed (a give-up on this envelope will go unnoticed)",
+			slog.String("envelope_id", result.Primary.EnvelopeID),
+			slog.Any("err", err),
+		)
+	}
+
+	shortAcked := make([]string, 0, len(targets))
+	for _, id := range targets {
+		shortAcked = append(shortAcked, logid.Short(id))
+	}
 	slog.Debug("read receipt shipped",
+		slog.String("chat_id", string(chatID)),
 		slog.String("peer_id", peerID),
-		slog.String("envelope_id", sendResp.EnvelopeID),
+		slog.String("envelope_id", result.Primary.EnvelopeID),
 		slog.String("receipt_msg_id", receiptMsgID),
 		slog.Uint64("sender_seq", seq),
 		slog.Int("targets", len(targets)),
+		slog.String("acked_msg_ids", strings.Join(shortAcked, ",")),
 	)
+
+	for _, id := range targets {
+		slog.Debug("read receipt acknowledges this message",
+			slog.String("msg_id", id),
+			slog.String("chat_id", string(chatID)),
+			slog.String("peer_id", peerID),
+			slog.String("receipt_msg_id", receiptMsgID),
+			slog.String("envelope_id", result.Primary.EnvelopeID),
+		)
+	}
 	push(d.ipcSrv, ipc.FrameReadSent, "", ipc.ReadSentPayload{
 		ChatID:     string(chatID),
-		EnvelopeID: sendResp.EnvelopeID,
+		EnvelopeID: result.Primary.EnvelopeID,
 		MsgID:      receiptMsgID,
 		SenderSeq:  seq,
 		Targets:    targets,

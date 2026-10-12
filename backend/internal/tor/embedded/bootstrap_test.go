@@ -104,6 +104,19 @@ func TestRenderTorrc_ContainsRequired(t *testing.T) {
 	}
 }
 
+func TestRenderTorrc_LocalInclude(t *testing.T) {
+	base := torrcConfig{DataDir: "/tmp/t", ControlPortFile: "/tmp/t/control.port", CookieAuthFile: "/tmp/t/control.cookie"}
+	if out := renderTorrc(base); contains(out, "%include") {
+		t.Errorf("no torrc.local, but the torrc includes one:\n%s", out)
+	}
+	base.LocalInclude = "/tmp/t/torrc.local"
+	out := renderTorrc(base)
+	want := "%include /tmp/t/torrc.local\n"
+	if len(out) < len(want) || out[len(out)-len(want):] != want {
+		t.Errorf("torrc.local is not the last line:\n%s", out)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	if len(needle) == 0 {
 		return true

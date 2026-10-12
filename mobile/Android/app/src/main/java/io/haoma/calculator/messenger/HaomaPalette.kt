@@ -28,4 +28,11 @@ object HaomaPalette {
     val C_WARN = Color(0xFFFABD2F)      
     val C_ATTENTION = Color(0xFFFE8019) 
     val C_DANGER = Color(0xFFFF6B6B)    
+
+    
+    val C_PRESENCE_ARROW_ON = Color(0xFF5F87FF)
+    val C_PRESENCE_ARROW_OFF = Color(0xFF928374) 
+    val C_PRESENCE_AVAILABLE = Color(0xFF5FCC1A) 
+    val C_PRESENCE_AWAY = Color(0xFFFABD2F) 
+    val C_PRESENCE_BUSY = C_DANGER
 }

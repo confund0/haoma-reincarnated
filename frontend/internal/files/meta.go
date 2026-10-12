@@ -41,6 +41,7 @@ type Metadata struct {
 	Direction        Direction         `json:"direction"`
 	Token            string            `json:"token"`
 	RecipientTokens  map[string]string `json:"recipient_tokens,omitempty"`
+	OfferPeerID      string            `json:"offer_peer_id,omitempty"`
 	OriginalName     string            `json:"original_name"`
 	Mime             string            `json:"mime,omitempty"`
 	Size             uint64            `json:"size"`
@@ -50,31 +51,58 @@ type Metadata struct {
 	KeyBytes         []byte            `json:"key_bytes,omitempty"`
 	Nonce            []byte            `json:"nonce,omitempty"`
 	State            State             `json:"state"`
-	CreatedAt        int64             `json:"created_at"`
-	UpdatedAt        int64             `json:"updated_at,omitempty"`
+
+	KeyEnvelopes map[string]string `json:"key_envelopes,omitempty"`
+
+	SiblingStagingIDs []string `json:"sibling_staging_ids,omitempty"`
+
+	FetchedFromSibling bool `json:"fetched_from_sibling,omitempty"`
+
+	StagingID string `json:"staging_id,omitempty"`
+
+	GapFill bool `json:"gap_fill,omitempty"`
+
+	GapAsks int `json:"gap_asks,omitempty"`
+
+	FailReason string `json:"fail_reason,omitempty"`
+
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
 var ErrMetaNotFound = errors.New("files: metadata not found")
 
 func (mgr *Manager) PutMeta(m Metadata) error {
+	write, err := mgr.metaWrites(m)
+	if err != nil {
+		return err
+	}
+	return mgr.st.Update(write)
+}
+
+func (mgr *Manager) metaWrites(m Metadata) (func(*badger.Txn) error, error) {
 	if m.MsgID == "" {
-		return errors.New("files: PutMeta: empty msg id")
+		return nil, errors.New("files: PutMeta: empty msg id")
 	}
 	if m.ChatID == "" {
-		return errors.New("files: PutMeta: empty chat id")
+		return nil, errors.New("files: PutMeta: empty chat id")
 	}
 	raw, err := json.Marshal(m)
 	if err != nil {
-		return fmt.Errorf("files: marshal metadata: %w", err)
+		return nil, fmt.Errorf("files: marshal metadata: %w", err)
 	}
 	primary := metaKey(m.MsgID)
 	idx := indexKey(m.ChatID, m.MsgID)
 	tokenSet := tokensFor(m)
-	return mgr.st.Update(func(txn *badger.Txn) error {
+	return func(txn *badger.Txn) error {
 		if err := txn.Set(primary, raw); err != nil {
 			return err
 		}
 		if err := txn.Set(idx, []byte{}); err != nil {
+			return err
+		}
+
+		if err := deleteWantedTxn(txn, m.MsgID); err != nil {
 			return err
 		}
 		for tok := range tokenSet {
@@ -83,8 +111,41 @@ func (mgr *Manager) PutMeta(m Metadata) error {
 			}
 		}
 		return nil
-	})
+	}, nil
 }
+
+var ErrMetaHeld = errors.New("files: metadata already held for this msg id")
+
+func (mgr *Manager) PutMetaIfAbsent(m Metadata) error {
+	write, err := mgr.metaWrites(m)
+	if err != nil {
+		return err
+	}
+	return mgr.putIfAbsent(m.MsgID, write)
+}
+
+func (mgr *Manager) putIfAbsent(msgID string, write func(*badger.Txn) error) error {
+	var err error
+	for attempt := 0; attempt < updateMetaAttempts; attempt++ {
+		err = mgr.st.Update(func(txn *badger.Txn) error {
+			_, gErr := txn.Get(metaKey(msgID))
+			switch {
+			case gErr == nil:
+				return ErrMetaHeld
+			case !errors.Is(gErr, badger.ErrKeyNotFound):
+				return gErr
+			}
+			putIfAbsentCheckpoint(msgID)
+			return write(txn)
+		})
+		if !errors.Is(err, badger.ErrConflict) {
+			return err
+		}
+	}
+	return err
+}
+
+var putIfAbsentCheckpoint = func(msgID string) {}
 
 func (mgr *Manager) GetMeta(msgID string) (Metadata, error) {
 	if msgID == "" {
@@ -115,44 +176,91 @@ func (mgr *Manager) GetMeta(msgID string) (Metadata, error) {
 }
 
 func (mgr *Manager) DeleteMeta(msgID string) error {
-	if msgID == "" {
-		return nil
-	}
-	return mgr.st.Update(func(txn *badger.Txn) error {
-		primary := metaKey(msgID)
-		var meta Metadata
-		item, err := txn.Get(primary)
-		if errors.Is(err, badger.ErrKeyNotFound) {
-
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if err := item.Value(func(v []byte) error {
-			if jsonErr := json.Unmarshal(v, &meta); jsonErr != nil {
-				return fmt.Errorf("files: decode metadata for delete: %w", jsonErr)
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-		if err := txn.Delete(primary); err != nil {
-			return err
-		}
-		if meta.ChatID != "" {
-			if err := txn.Delete(indexKey(meta.ChatID, msgID)); err != nil {
-				return err
-			}
-		}
-		for tok := range tokensFor(meta) {
-			if err := txn.Delete(tokenKey(tok)); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	_, _, err := mgr.DeleteMetaReturning(msgID)
+	return err
 }
+
+func (mgr *Manager) DeleteMetaReturning(msgID string) (Metadata, bool, error) {
+	if msgID == "" {
+		return Metadata{}, false, nil
+	}
+	var (
+		meta  Metadata
+		found bool
+		err   error
+	)
+	for attempt := 0; attempt < updateMetaAttempts; attempt++ {
+		meta, found = Metadata{}, false
+		err = mgr.st.Update(func(txn *badger.Txn) error {
+			var tErr error
+			meta, found, tErr = deleteMetaTxn(txn, msgID)
+			return tErr
+		})
+		if !errors.Is(err, badger.ErrConflict) {
+			break
+		}
+	}
+	if err != nil {
+		return Metadata{}, false, err
+	}
+	return meta, found, nil
+}
+
+func deleteMetaTxn(txn *badger.Txn, msgID string) (Metadata, bool, error) {
+	primary := metaKey(msgID)
+	var meta Metadata
+
+	if err := deleteWantedTxn(txn, msgID); err != nil {
+		return Metadata{}, false, err
+	}
+	item, err := txn.Get(primary)
+	if errors.Is(err, badger.ErrKeyNotFound) {
+
+		return Metadata{}, false, nil
+	}
+	if err != nil {
+		return Metadata{}, false, err
+	}
+	if err := item.Value(func(v []byte) error {
+		if jsonErr := json.Unmarshal(v, &meta); jsonErr != nil {
+			return fmt.Errorf("files: decode metadata for delete: %w", jsonErr)
+		}
+		return nil
+	}); err != nil {
+		return Metadata{}, false, err
+	}
+	deleteMetaCheckpoint(msgID)
+	if err := txn.Delete(primary); err != nil {
+		return Metadata{}, false, err
+	}
+	if meta.ChatID != "" {
+		if err := txn.Delete(indexKey(meta.ChatID, msgID)); err != nil {
+			return Metadata{}, false, err
+		}
+	}
+	for tok := range tokensFor(meta) {
+		if err := txn.Delete(tokenKey(tok)); err != nil {
+			return Metadata{}, false, err
+		}
+	}
+
+	if meta.StagingID != "" {
+		if err := txn.Delete(siblingOfferByStagingKey(meta.StagingID)); err != nil {
+			return Metadata{}, false, err
+		}
+	}
+
+	if err := deleteSiblingOfferTxn(txn, msgID); err != nil {
+		return Metadata{}, false, err
+	}
+
+	if err := deleteGapOffersTxn(txn, msgID); err != nil {
+		return Metadata{}, false, err
+	}
+	return meta, true, nil
+}
+
+var deleteMetaCheckpoint = func(msgID string) {}
 
 func (mgr *Manager) DeleteMetaByChat(chatID chat.ChatID) (int, error) {
 	if chatID == "" {
@@ -172,6 +280,10 @@ func (mgr *Manager) DeleteMetaByChat(chatID chat.ChatID) (int, error) {
 			return deleted, fmt.Errorf("files: delete meta for %s: %w", msgID, err)
 		}
 		deleted++
+	}
+
+	if err := mgr.deleteWantedByChat(chatID); err != nil {
+		return deleted, fmt.Errorf("files: drop wanted files of chat %s: %w", chatID, err)
 	}
 	return deleted, nil
 }
@@ -211,7 +323,8 @@ func (mgr *Manager) ListInboundInFlight() ([]Metadata, error) {
 			}); err != nil {
 				return err
 			}
-			if m.Direction == DirIn && (m.State == StatePending || m.State == StateDownloading) {
+
+			if m.Direction == DirIn && !m.FetchedFromSibling && (m.State == StatePending || m.State == StateDownloading) {
 				out = append(out, m)
 			}
 		}
@@ -282,3 +395,39 @@ func tokenKey(token string) []byte {
 	out = append(out, token...)
 	return out
 }
+
+func (mgr *Manager) UpdateMeta(msgID string, fn func(m *Metadata) error) error {
+	if msgID == "" {
+		return ErrMetaNotFound
+	}
+	var err error
+	for attempt := 0; attempt < updateMetaAttempts; attempt++ {
+		err = mgr.st.Update(func(txn *badger.Txn) error {
+			item, gErr := txn.Get(metaKey(msgID))
+			if errors.Is(gErr, badger.ErrKeyNotFound) {
+				return ErrMetaNotFound
+			}
+			if gErr != nil {
+				return gErr
+			}
+			var m Metadata
+			if vErr := item.Value(func(v []byte) error { return json.Unmarshal(v, &m) }); vErr != nil {
+				return fmt.Errorf("files: decode metadata for update: %w", vErr)
+			}
+			if fErr := fn(&m); fErr != nil {
+				return fErr
+			}
+			write, wErr := mgr.metaWrites(m)
+			if wErr != nil {
+				return wErr
+			}
+			return write(txn)
+		})
+		if !errors.Is(err, badger.ErrConflict) {
+			return err
+		}
+	}
+	return err
+}
+
+const updateMetaAttempts = 5

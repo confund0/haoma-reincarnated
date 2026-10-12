@@ -1,0 +1,12 @@
+{
+  "type": "devicelinks_listed",
+  "id": "c-11",
+  "payload": {
+    "devices": [
+      {
+        "peer_id": "5b2e94a07c1d43f8ae60b3d519f78c24",
+        "linked_at": 1754902890
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "type": "inherited_contacts_listed",
+  "id": "c-19",
+  "payload": {
+    "contacts": [
+      {
+        "fingerprint": "05c1e84f27b30a95d6e1483fbc70a2d59e63817f04ab52c9d381e7f6a04b3c95e2",
+        "nick": "toma",
+        "alias": "Toma at the boatyard",
+        "label": "Toma at the boatyard"
+      }
+    ],
+    "linked": true
+  }
+}

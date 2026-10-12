@@ -1,0 +1,16 @@
+Wire fixture corpus.
+
+Generated. Never hand-edited.
+
+Every JSON file here is a frame the haoma daemon marshalled from its own
+payload structs, or a table of answers the daemon computed. The mobile
+unit tests parse these files and assert their own parsing and reduction
+against them, instead of writing frames of their own.
+
+The generator is frontend/cmd/haoma/wirecorpus_test.go. It checks these
+files on every ordinary test run and fails when they drift. The
+wire-corpus target in the repository Makefile is the only thing that
+rewrites them.
+
+What the corpus covers and what it deliberately leaves out is written
+down in tools/README.md.

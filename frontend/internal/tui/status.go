@@ -18,11 +18,17 @@ func newStatusView() *tview.TextView {
 	return v
 }
 
+func scrollStatusToEnd(v *tview.TextView) {
+	v.Lock()
+	defer v.Unlock()
+	v.ScrollToEnd()
+}
+
 func appendStatus(v *tview.TextView, format string, args ...any) {
 	stamp := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(v, "[gray]%s[white] %s\n", stamp, msg)
-	v.ScrollToEnd()
+	scrollStatusToEnd(v)
 }
 
 func renderToStatus(v *tview.TextView, f ipc.Frame) {

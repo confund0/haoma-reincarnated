@@ -40,6 +40,7 @@ internal fun MessageActionSheet(
     onSaveVideo: () -> Unit = {},
     onViewMedia: () -> Unit = {},
     onShareAttachment: () -> Unit = {},
+    onRetryDownload: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState()
     val imageRow = target.isReadyImage()
@@ -105,6 +106,9 @@ internal fun MessageActionSheet(
                     
                     
                     ActionItem(glyph = "😀", label = "React", enabled = canReact(target), onClick = onReact)
+                    if (target.isRetryableFile()) {
+                        ActionItem(glyph = "↻", label = "Retry download", enabled = true, onClick = onRetryDownload)
+                    }
                     ActionItem(
                         glyph = "▷",
                         label = "View attachment",

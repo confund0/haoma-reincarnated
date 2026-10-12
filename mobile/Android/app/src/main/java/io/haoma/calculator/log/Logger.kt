@@ -35,6 +35,9 @@ object Logger {
     
     val suiteLogLevel: String get() = if (debugBuild) "debug" else "warn"
 
+    
+    val suiteLogFileMode: String get() = if (debugBuild) "0660" else "0600"
+
     fun init(context: Context, debug: Boolean) {
         synchronized(lock) {
             if (writer != null) return
@@ -46,7 +49,7 @@ object Logger {
             target.mkdirs()
             val cur = File(target, FILE)
             val prv = File(target, PREV)
-            rotateInPlace(cur, prv)
+            rotateIfFull(cur, prv)
             rotated.add("haoma-gui")
             writer = OutputStreamWriter(FileOutputStream(cur, true), Charsets.UTF_8)
             current = cur
@@ -67,10 +70,14 @@ object Logger {
         val f = File(d, "$component.log")
         synchronized(lock) {
             if (rotated.add(component)) {
-                rotateInPlace(f, File(d, "$component.log.prev"))
+                rotateIfFull(f, File(d, "$component.log.prev"))
             }
         }
         return f.absolutePath
+    }
+
+    private fun rotateIfFull(current: File, prev: File) {
+        if (current.length() >= MAX_BYTES) rotateInPlace(current, prev)
     }
 
     private fun rotateInPlace(current: File, prev: File) {

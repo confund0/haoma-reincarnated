@@ -1,0 +1,9 @@
+{
+  "type": "destroy_pin_set",
+  "id": "c-13",
+  "payload": {
+    "accepted": true,
+    "salt_pushed": 1,
+    "siblings": 1
+  }
+}

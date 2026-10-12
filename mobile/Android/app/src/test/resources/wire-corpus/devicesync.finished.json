@@ -1,0 +1,11 @@
+{
+  "type": "devicesync.finished",
+  "payload": {
+    "full": true,
+    "siblings": 1,
+    "answered": 1,
+    "rows_applied": 3,
+    "snapshot_applied": 2,
+    "held": 1
+  }
+}

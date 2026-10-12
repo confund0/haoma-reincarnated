@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -68,6 +70,12 @@ func (m *mockSender) Send(_ context.Context, _ string, _ xport.Envelope) ([]byte
 		return nil, errors.New("mock: peer offline")
 	}
 	return m.body, nil
+}
+
+func (m *mockSender) setFailWith(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failWith = err
 }
 
 func (m *mockSender) callCount() int {
@@ -175,7 +183,7 @@ func TestStore_Advance_ToSent(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	row, _ := st.Enqueue("http://a.onion", env("s1"), base)
 
-	if err := st.Advance(row, StateSent, time.Time{}, 1, 0, "", base.Add(time.Second)); err != nil {
+	if err := st.Advance(row, StateSent, time.Time{}, 1, 0, 0, "", base.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := st.Load("s1")
@@ -204,7 +212,7 @@ func TestStore_Advance_Reschedule(t *testing.T) {
 	row, _ := st.Enqueue("http://a.onion", env("r1"), base)
 
 	nextAt := base.Add(30 * time.Second)
-	if err := st.Advance(row, StateEnqueued, nextAt, 1, 0, "offline", base); err != nil {
+	if err := st.Advance(row, StateEnqueued, nextAt, 1, 0, 0, "offline", base); err != nil {
 		t.Fatal(err)
 	}
 
@@ -226,7 +234,7 @@ func TestStore_ListByState(t *testing.T) {
 	r1, _ := st.Enqueue("http://a.onion", env("e1"), base)
 	r2, _ := st.Enqueue("http://b.onion", env("e2"), base)
 
-	_ = st.Advance(r1, StateSent, time.Time{}, 1, 0, "", base.Add(time.Second))
+	_ = st.Advance(r1, StateSent, time.Time{}, 1, 0, 0, "", base.Add(time.Second))
 
 	_ = r2
 
@@ -252,11 +260,11 @@ func TestStore_ListByState_SinceCursor(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 
 	r1, _ := st.Enqueue("http://a.onion", env("old"), base)
-	_ = st.Advance(r1, StateSent, time.Time{}, 1, 0, "", base.Add(time.Second))
+	_ = st.Advance(r1, StateSent, time.Time{}, 1, 0, 0, "", base.Add(time.Second))
 
 	r2, _ := st.Enqueue("http://b.onion", env("new"), base)
 	laterTime := base.Add(10 * time.Second)
-	_ = st.Advance(r2, StateSent, time.Time{}, 1, 0, "", laterTime)
+	_ = st.Advance(r2, StateSent, time.Time{}, 1, 0, 0, "", laterTime)
 
 	all, _ := st.ListByState(StateSent, base.Add(time.Second).UnixNano(), 100)
 	if len(all) != 2 {
@@ -276,7 +284,7 @@ func TestStore_KickByDests(t *testing.T) {
 	r, _ := st.Enqueue("http://a.onion", env("k1"), base)
 
 	futureAt := base.Add(5 * time.Minute)
-	_ = st.Advance(r, StateEnqueued, futureAt, 1, 0, "offline", base)
+	_ = st.Advance(r, StateEnqueued, futureAt, 1, 0, 0, "offline", base)
 
 	now := base.Add(10 * time.Second)
 	n, err := st.KickByDests([]string{"http://a.onion"}, now)
@@ -307,15 +315,94 @@ func TestStore_KickByDests_AlreadyDue_NoOp(t *testing.T) {
 	}
 }
 
+func TestStore_KickAll(t *testing.T) {
+	st := newTestStore(t)
+	base := time.Unix(1_700_000_000, 0)
+	future := base.Add(5 * time.Minute)
+
+	a1, _ := st.Enqueue("http://a.onion", env("ka1"), base)
+	_ = st.Advance(a1, StateEnqueued, future, 1, 0, 0, "offline", base)
+	a2, _ := st.Enqueue("http://a.onion", env("ka2"), base)
+	_ = st.Advance(a2, StateEnqueued, future, 1, 0, 0, "offline", base)
+	b1, _ := st.Enqueue("http://b.onion", env("kb1"), base)
+	_ = st.Advance(b1, StateEnqueued, future, 2, 0, 0, "offline", base)
+	now := base.Add(10 * time.Second)
+
+	_, _ = st.Enqueue("http://c.onion", env("kc1"), now)
+
+	n, dests, err := st.KickAll(nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("KickAll moved %d rows, want 3", n)
+	}
+	sort.Strings(dests)
+	if want := []string{"http://a.onion", "http://b.onion"}; !reflect.DeepEqual(dests, want) {
+		t.Errorf("KickAll destinations = %v, want %v", dests, want)
+	}
+	for _, id := range []string{a1.EnvelopeID, a2.EnvelopeID, b1.EnvelopeID} {
+		row, err := st.Load(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.NextAttemptAt != now.UnixNano() || !row.Kicked {
+			t.Errorf("row %s: next=%d kicked=%v, want next=%d kicked=true", id, row.NextAttemptAt, row.Kicked, now.UnixNano())
+		}
+	}
+	due, _ := st.ListDue(now)
+	if len(due) != 4 {
+		t.Errorf("after KickAll ListDue = %d, want 4", len(due))
+	}
+
+	n, dests, err = st.KickAll(nil, now)
+	if err != nil || n != 0 || len(dests) != 0 {
+		t.Errorf("second KickAll = %d %v %v, want 0 [] nil", n, dests, err)
+	}
+}
+
+func TestStore_KickAll_RowDueBeforeTheWrite(t *testing.T) {
+	st := newTestStore(t)
+	base := time.Unix(1_700_000_000, 0)
+	now := base.Add(10 * time.Second)
+	r, _ := st.Enqueue("http://a.onion", env("kr1"), base)
+	_ = st.Advance(r, StateEnqueued, base.Add(5*time.Minute), 1, 0, 0, "offline", base)
+
+	kickBetweenReadAndWrite = func() {
+		row, err := st.Load(r.EnvelopeID)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+
+		if err := st.Advance(row, StateEnqueued, base, 1, 0, 0, "offline", base); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { kickBetweenReadAndWrite = nil })
+
+	n, dests, err := st.KickAll(nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || len(dests) != 0 {
+		t.Errorf("KickAll = %d %v, want 0 rows: the row turned due before the write", n, dests)
+	}
+	row, _ := st.Load(r.EnvelopeID)
+	if row.Kicked || row.NextAttemptAt != base.UnixNano() {
+		t.Errorf("row rewritten: kicked=%v next=%d, want kicked=false next=%d", row.Kicked, row.NextAttemptAt, base.UnixNano())
+	}
+}
+
 func TestStore_GC_TerminalRows(t *testing.T) {
 	st := newTestStore(t)
 	base := time.Unix(1_700_000_000, 0)
 
 	r1, _ := st.Enqueue("http://a.onion", env("g1"), base)
-	_ = st.Advance(r1, StateSent, time.Time{}, 1, 0, "", base)
+	_ = st.Advance(r1, StateSent, time.Time{}, 1, 0, 0, "", base)
 
 	r2, _ := st.Enqueue("http://a.onion", env("g2"), base)
-	_ = st.Advance(r2, StateFailed, time.Time{}, 12, 0, "dead-letter", base)
+	_ = st.Advance(r2, StateFailed, time.Time{}, 12, 0, 0, "dead-letter", base)
 
 	_, _ = st.Enqueue("http://a.onion", env("g3"), base)
 
@@ -497,29 +584,44 @@ func TestWorker_OnDialFailure_FiresOnTransport_SkipsOnPeerHTTP(t *testing.T) {
 	ms := &mockSender{failWith: errors.New("offline")}
 	w, _, _ := newTestWorker(t, ms, nil)
 	w.Tick = time.Hour
-	var transportCalls []string
-	w.OnDialFailure = func(dest string) { transportCalls = append(transportCalls, dest) }
+	var (
+		mu             sync.Mutex
+		transportCalls []string
+	)
+	w.OnDialFailure = func(dest string) {
+		mu.Lock()
+		defer mu.Unlock()
+		transportCalls = append(transportCalls, dest)
+	}
 	startWorker(t, w)
 	mustEnqueue(t, w, "http://a.onion", "transient")
 	waitForCalls(t, ms, 1, time.Second)
 
 	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
 	if len(transportCalls) != 1 || transportCalls[0] != "http://a.onion" {
 		t.Errorf("transport callback fired %v, want [http://a.onion]", transportCalls)
 	}
+	mu.Unlock()
 
 	ms2 := &mockSender{failWith: &xport.PeerHTTPError{StatusCode: http.StatusInternalServerError, Body: "boom"}}
 	w2, _, _ := newTestWorker(t, ms2, nil)
 	w2.Tick = time.Hour
 	var peerCalls []string
-	w2.OnDialFailure = func(dest string) { peerCalls = append(peerCalls, dest) }
+	w2.OnDialFailure = func(dest string) {
+		mu.Lock()
+		defer mu.Unlock()
+		peerCalls = append(peerCalls, dest)
+	}
 	startWorker(t, w2)
 	mustEnqueue(t, w2, "http://b.onion", "peer500")
 	waitForCalls(t, ms2, 1, time.Second)
 	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
 	if len(peerCalls) != 0 {
 		t.Errorf("peer-http callback fired %v, want empty (peer was reached)", peerCalls)
 	}
+	mu.Unlock()
 }
 
 func TestWorker_TransientFailure_Reschedule(t *testing.T) {
@@ -610,13 +712,36 @@ func TestWorker_KickByDests(t *testing.T) {
 		t.Errorf("KickByDests = %d, want 1", n)
 	}
 
-	ms.failWith = nil
+	ms.setFailWith(nil)
 	waitForCalls(t, ms, 3, time.Second)
 
 	time.Sleep(30 * time.Millisecond)
 	if ms.callCount() != 3 {
 		t.Errorf("post-kick calls = %d, want 3 (a only, b still in backoff)", ms.callCount())
 	}
+}
+
+func TestWorker_KickAll(t *testing.T) {
+	ms := &mockSender{failWith: errors.New("offline")}
+	w, _, _ := newTestWorker(t, ms, nil)
+	w.Tick = time.Hour
+	now, _ := newMutableClock(time.Unix(1_700_000_000, 0))
+	w.now = now
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "kall1")
+	mustEnqueue(t, w, "http://b.onion", "kall2")
+	waitForCalls(t, ms, 2, time.Second)
+
+	ms.setFailWith(nil)
+	rows, dests, err := w.KickAll(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 || dests != 2 {
+		t.Errorf("KickAll = %d rows, %d destinations, want 2, 2", rows, dests)
+	}
+	waitForCalls(t, ms, 4, time.Second)
 }
 
 func TestWorker_Run_ExitsOnContextCancel(t *testing.T) {
@@ -701,6 +826,57 @@ func TestWorker_Gate_Open_Sends(t *testing.T) {
 
 	mustEnqueue(t, w, "http://a.onion", "open")
 	expectStatus(t, ch, StateSent, time.Second)
+}
+
+func TestWorker_GateOpening_WakesEveryDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		watch time.Duration
+		want  int
+	}{
+		{"watched", 10 * time.Millisecond, 2},
+
+		{"not watched", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ms := &mockSender{body: nil}
+			w, _, _ := newTestWorker(t, ms, nil)
+			w.Tick = time.Hour
+			w.GateWatch = tc.watch
+			var open atomic.Bool
+			w.Gate = open.Load
+			startWorker(t, w)
+
+			mustEnqueue(t, w, "http://a.onion", "a1")
+			mustEnqueue(t, w, "http://b.onion", "b1")
+			time.Sleep(50 * time.Millisecond)
+			if ms.callCount() != 0 {
+				t.Fatalf("sent %d with the gate closed", ms.callCount())
+			}
+			for _, id := range []string{"a1", "b1"} {
+				row, err := w.store.Load(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if row.Attempts != 0 || row.State != StateEnqueued {
+					t.Fatalf("%s: attempts %d state %q before the gate opened", id, row.Attempts, row.State)
+				}
+			}
+
+			open.Store(true)
+			time.Sleep(300 * time.Millisecond)
+			if got := ms.callCount(); got != tc.want {
+				t.Fatalf("sends after the gate opened = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorker_GateWatchDefault(t *testing.T) {
+	w, _, _ := newTestWorker(t, &mockSender{}, nil)
+	if w.GateWatch <= 0 || w.GateWatch > 2*time.Second {
+		t.Fatalf("GateWatch = %s, want a watch of at most 2s", w.GateWatch)
+	}
 }
 
 func TestWorker_Gate_NilAlwaysDrains(t *testing.T) {
@@ -993,5 +1169,470 @@ func TestWorker_Drain_NewRowsSkipped(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if got := ms.callCount(); got != 0 {
 		t.Errorf("sender called %d times after Drain, want 0", got)
+	}
+}
+
+func TestDefaults_AgeBindsBeforeAttempts(t *testing.T) {
+	w := NewWorker(newTestStore(t), &mockSender{}, nil, &Bus{})
+	if w.DeadLetterAge != DefaultGiveUpAge {
+		t.Fatalf("DeadLetterAge = %s, want %s", w.DeadLetterAge, DefaultGiveUpAge)
+	}
+
+	var span time.Duration
+	for n := 1; n < w.MaxAttempts; n++ {
+		span += w.Backoff(n)
+	}
+	if span <= w.DeadLetterAge {
+		t.Errorf("attempt limit spans %s, which binds before the %s age gate — "+
+			"raise DefaultMaxAttempts or the age stops being the real window",
+			span.Round(time.Minute), w.DeadLetterAge)
+	}
+
+	row := &OutboxRow{Attempts: 40, KickedAttempts: 39}
+	if got := row.CountedAttempts(); got != 1 {
+		t.Fatalf("CountedAttempts = %d, want 1 — kicked attempts are being charged to "+
+			"the limit, so the span above no longer bounds anything", got)
+	}
+
+	st := newTestStore(t)
+	base := time.Unix(1_700_000_000, 0)
+	r, err := st.Enqueue("http://a.onion", env("premise"), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Advance(r, StateEnqueued, base.Add(time.Hour), 1, 0, 0, "offline", base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.KickByDests([]string{"http://a.onion"}, base.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	kicked, err := st.Load("premise")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kicked.Kicked {
+		t.Error("a kicked row is not marked, so the attempt that follows is charged to the limit")
+	}
+}
+
+type sentHook struct {
+	mu    sync.Mutex
+	dests []string
+}
+
+func (h *sentHook) fire(dest string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.dests = append(h.dests, dest)
+}
+
+func (h *sentHook) seen() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.dests...)
+}
+
+func waitForHook(t *testing.T, h *sentHook, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if len(h.seen()) >= want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timeout: OnSendSuccess fired %d times, want >= %d", len(h.seen()), want)
+}
+
+func TestWorker_OnSendSuccessFiresOnAVerifiedAck(t *testing.T) {
+	ms := &mockSender{body: []byte(`{"acked_id":"sent1"}`)}
+	verified := 0
+	ackV := AckVerifierFunc(func(_ context.Context, _ []byte, _ string) error {
+		verified++
+		return nil
+	})
+	w, _, _ := newTestWorker(t, ms, ackV)
+	w.Tick = time.Hour
+	h := &sentHook{}
+	w.OnSendSuccess = h.fire
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "sent1")
+	waitForHook(t, h, 1, 2*time.Second)
+
+	if verified == 0 {
+		t.Error("the ack verifier never ran, so this is the back-compat path, not the production one")
+	}
+	if got := h.seen(); got[0] != "http://a.onion" {
+		t.Errorf("OnSendSuccess dest = %q, want http://a.onion", got[0])
+	}
+	row, err := w.store.Load("sent1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != StateSent {
+		t.Errorf("state = %q, want sent — the hook fired for a row that was not sent", row.State)
+	}
+}
+
+func TestWorker_OnSendSuccessSilentOnAnUnauthenticatedAck(t *testing.T) {
+	t.Run("empty body", func(t *testing.T) {
+		ms := &mockSender{}
+		ackV := AckVerifierFunc(func(_ context.Context, _ []byte, _ string) error {
+			t.Error("the verifier ran on an empty body")
+			return nil
+		})
+		w, _, bus := newTestWorker(t, ms, ackV)
+		w.Tick = time.Hour
+		h := &sentHook{}
+		w.OnSendSuccess = h.fire
+		ch, cancel := bus.Subscribe(4)
+		defer cancel()
+		startWorker(t, w)
+
+		mustEnqueue(t, w, "http://a.onion", "emptyack")
+		expectStatus(t, ch, StateSent, 2*time.Second)
+		time.Sleep(50 * time.Millisecond)
+		if got := h.seen(); len(got) != 0 {
+			t.Errorf("OnSendSuccess fired %d times on an empty ack body, want 0", len(got))
+		}
+	})
+
+	t.Run("no verifier", func(t *testing.T) {
+		ms := &mockSender{body: []byte(`{"acked_id":"noverifier"}`)}
+		w, _, bus := newTestWorker(t, ms, nil)
+		w.Tick = time.Hour
+		h := &sentHook{}
+		w.OnSendSuccess = h.fire
+		ch, cancel := bus.Subscribe(4)
+		defer cancel()
+		startWorker(t, w)
+
+		mustEnqueue(t, w, "http://a.onion", "noverifier")
+		expectStatus(t, ch, StateSent, 2*time.Second)
+		time.Sleep(50 * time.Millisecond)
+		if got := h.seen(); len(got) != 0 {
+			t.Errorf("OnSendSuccess fired %d times with no ack verifier, want 0", len(got))
+		}
+	})
+}
+
+func TestWorker_OnSendSuccessSilentOnFailure(t *testing.T) {
+	ms := &mockSender{failWith: errors.New("offline")}
+	w, _, bus := newTestWorker(t, ms, nil)
+	w.Tick = time.Hour
+	w.MaxAttempts = 2
+	now, advance := newMutableClock(time.Unix(1_700_000_000, 0))
+	w.now = now
+	h := &sentHook{}
+	w.OnSendSuccess = h.fire
+	ch, cancel := bus.Subscribe(4)
+	defer cancel()
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "failed1")
+	waitForCalls(t, ms, 1, time.Second)
+	if got := h.seen(); len(got) != 0 {
+		t.Fatalf("OnSendSuccess fired %d times on a rescheduled send, want 0", len(got))
+	}
+
+	advance(35 * time.Second)
+	w.signalDest("http://a.onion")
+	expectStatus(t, ch, StateFailed, time.Second)
+	time.Sleep(50 * time.Millisecond)
+
+	if got := h.seen(); len(got) != 0 {
+		t.Errorf("OnSendSuccess fired %d times on a row that reached failed, want 0", len(got))
+	}
+}
+
+func TestKickedAttemptsDoNotSpendTheGiveUpLimit(t *testing.T) {
+	ms := &mockSender{failWith: errors.New("offline")}
+	w, st, _ := newTestWorker(t, ms, nil)
+	w.Tick = time.Hour
+	w.MaxAttempts = 3
+	w.DeadLetterAge = 48 * time.Hour
+	now, _ := newMutableClock(time.Unix(1_700_000_000, 0))
+	w.now = now
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "limited")
+	waitForCalls(t, ms, 1, time.Second)
+
+	for i := 2; i <= 7; i++ {
+		if _, err := w.KickByDests([]string{"http://a.onion"}); err != nil {
+			t.Fatal(err)
+		}
+		waitForCalls(t, ms, i, 2*time.Second)
+	}
+
+	row, err := st.Load("limited")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != StateEnqueued {
+		t.Fatalf("state = %q after 6 kicked attempts, want enqueued — the kick spent the give-up limit", row.State)
+	}
+	if row.Attempts != 7 {
+		t.Errorf("Attempts = %d, want 7 — the dial count must stay honest", row.Attempts)
+	}
+	if row.KickedAttempts != 6 {
+		t.Errorf("KickedAttempts = %d, want 6", row.KickedAttempts)
+	}
+	if got := row.CountedAttempts(); got != 1 {
+		t.Errorf("CountedAttempts = %d, want 1 — only the first attempt was scheduled by the backoff", got)
+	}
+}
+
+func TestAKickedAttemptWithABadAckSpendsNoGiveUpLimit(t *testing.T) {
+	ms := &mockSender{body: []byte(`{"id":"a","kind":"sent_ack"}`)}
+	ackV := AckVerifierFunc(func(_ context.Context, _ []byte, _ string) error {
+		return errors.New("bad mac")
+	})
+	w, st, _ := newTestWorker(t, ms, ackV)
+	w.Tick = time.Hour
+	w.MaxAttempts = 3
+	w.AckVerifyMaxTries = 99
+	w.DeadLetterAge = 48 * time.Hour
+
+	w.Backoff = func(attempts int) time.Duration { return time.Duration(attempts) * time.Minute }
+	base := time.Unix(1_700_000_000, 0)
+	now, _ := newMutableClock(base)
+	w.now = now
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "badack-kicked")
+	waitForCalls(t, ms, 1, time.Second)
+
+	first, err := st.Load("badack-kicked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstWait := time.Unix(0, first.NextAttemptAt).Sub(base)
+
+	for i := 2; i <= 7; i++ {
+		if _, err := w.KickByDests([]string{"http://a.onion"}); err != nil {
+			t.Fatal(err)
+		}
+		waitForCalls(t, ms, i, 2*time.Second)
+	}
+
+	row, err := st.Load("badack-kicked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != StateEnqueued {
+		t.Fatalf("state = %q after 6 kicked attempts with a bad ack, want enqueued", row.State)
+	}
+	if row.Attempts != 7 {
+		t.Errorf("Attempts = %d, want 7 — the dial count must stay honest", row.Attempts)
+	}
+	if row.KickedAttempts != 6 {
+		t.Errorf("KickedAttempts = %d, want 6 — a bad ack does not make a kicked attempt chargeable", row.KickedAttempts)
+	}
+	if got := row.CountedAttempts(); got != 1 {
+		t.Errorf("CountedAttempts = %d, want 1 — only the first attempt was scheduled by the backoff", got)
+	}
+	if got := time.Unix(0, row.NextAttemptAt).Sub(base); got != firstWait {
+		t.Errorf("wait after six kicked bad acks = %s, want the unchanged %s", got, firstWait)
+	}
+}
+
+func TestAKickedAttemptDoesNotAdvanceTheRamp(t *testing.T) {
+	ms := &mockSender{failWith: errors.New("offline")}
+	w, st, _ := newTestWorker(t, ms, nil)
+	w.Tick = time.Hour
+	w.Backoff = func(attempts int) time.Duration { return time.Duration(attempts) * time.Minute }
+	base := time.Unix(1_700_000_000, 0)
+	now, _ := newMutableClock(base)
+	w.now = now
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "ramp")
+	waitForCalls(t, ms, 1, time.Second)
+
+	row, err := st.Load("ramp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstWait := time.Unix(0, row.NextAttemptAt).Sub(base)
+
+	for i := 2; i <= 4; i++ {
+		if _, err := w.KickByDests([]string{"http://a.onion"}); err != nil {
+			t.Fatal(err)
+		}
+		waitForCalls(t, ms, i, 2*time.Second)
+	}
+
+	row, err = st.Load("ramp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := time.Unix(0, row.NextAttemptAt).Sub(base); got != firstWait {
+		t.Errorf("wait after three kicked failures = %s, want the unchanged %s", got, firstWait)
+	}
+}
+
+func TestTheAgeGateStillBindsOnAKickedRow(t *testing.T) {
+	ms := &mockSender{failWith: errors.New("offline")}
+	w, _, bus := newTestWorker(t, ms, nil)
+	w.Tick = time.Hour
+	w.MaxAttempts = 1000
+	w.DeadLetterAge = 5 * time.Second
+	now, advance := newMutableClock(time.Unix(1_700_000_000, 0))
+	w.now = now
+	ch, cancel := bus.Subscribe(4)
+	defer cancel()
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "agekick")
+	waitForCalls(t, ms, 1, time.Second)
+
+	advance(10 * time.Second)
+	if _, err := w.KickByDests([]string{"http://a.onion"}); err != nil {
+		t.Fatal(err)
+	}
+	expectStatus(t, ch, StateFailed, 2*time.Second)
+}
+
+func row(id string, attempts int) *OutboxRow {
+	return &OutboxRow{EnvelopeID: id, Dest: "http://a.onion", Attempts: attempts}
+}
+
+func ids(rows []*OutboxRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.EnvelopeID)
+	}
+	return out
+}
+
+func TestOrderPass_FreshRowsGoBeforeRowsThatAlreadyFailed(t *testing.T) {
+	got := ids(orderPass([]*OutboxRow{
+		row("failed-twice", 2),
+		row("fresh-1", 0),
+		row("failed-once", 1),
+		row("fresh-2", 0),
+	}, "http://a.onion"))
+
+	want := []string{"fresh-1", "fresh-2", "failed-twice", "failed-once"}
+	if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+		t.Errorf("pass order: got %v, want %v", got, want)
+	}
+}
+
+func TestOrderPass_KeepsTheDueOrderInsideEachGroup(t *testing.T) {
+	got := ids(orderPass([]*OutboxRow{
+		row("a", 0), row("b", 3), row("c", 0), row("d", 1), row("e", 0),
+	}, "http://a.onion"))
+
+	want := []string{"a", "c", "e", "b", "d"}
+	if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+		t.Errorf("pass order: got %v, want %v", got, want)
+	}
+}
+
+func TestRowsForDest_TakesOnlyItsOwn(t *testing.T) {
+	mine := rowsForDest([]*OutboxRow{
+		{EnvelopeID: "x", Dest: "http://a.onion"},
+		{EnvelopeID: "y", Dest: "http://b.onion"},
+		{EnvelopeID: "z", Dest: "http://a.onion"},
+	}, "http://a.onion")
+
+	if got := ids(mine); fmt.Sprintf("%v", got) != `[x z]` {
+		t.Errorf("rows for dest: got %v, want [x z]", got)
+	}
+}
+
+type deadRowSender struct {
+	mu       sync.Mutex
+	stuckID  string
+	seen     int
+	blocking bool
+	log      []string
+	release  chan struct{}
+}
+
+func (d *deadRowSender) startBlocking() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.blocking = true
+}
+
+func (d *deadRowSender) Send(ctx context.Context, _ string, env xport.Envelope) ([]byte, error) {
+	d.mu.Lock()
+	if env.ID == d.stuckID {
+		d.seen++
+		blocking := d.blocking
+		d.mu.Unlock()
+		if !blocking {
+			return nil, errors.New("mock: peer offline")
+		}
+		select {
+		case <-d.release:
+		case <-ctx.Done():
+		}
+		return nil, errors.New("mock: peer offline")
+	}
+	d.log = append(d.log, env.ID)
+	d.mu.Unlock()
+	return nil, nil
+}
+
+func (d *deadRowSender) sentIDs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, len(d.log))
+	copy(out, d.log)
+	return out
+}
+
+func (d *deadRowSender) attemptsOnStuck() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.seen
+}
+
+func TestWorker_AFreshRowOvertakesARowThatAlreadyFailed(t *testing.T) {
+	ds := &deadRowSender{stuckID: "stuck", release: make(chan struct{})}
+	defer close(ds.release)
+
+	var open atomic.Bool
+	open.Store(true)
+
+	w, _, _ := newTestWorker(t, ds, nil)
+
+	w.Backoff = func(int) time.Duration { return 0 }
+	w.Tick = 20 * time.Millisecond
+	w.Gate = func() bool { return open.Load() }
+	startWorker(t, w)
+
+	mustEnqueue(t, w, "http://a.onion", "stuck")
+	deadline := time.Now().Add(2 * time.Second)
+	for ds.attemptsOnStuck() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the stuck row was never attempted")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	open.Store(false)
+	time.Sleep(100 * time.Millisecond)
+	ds.startBlocking()
+	mustEnqueue(t, w, "http://a.onion", "fresh")
+	open.Store(true)
+
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if got := ds.sentIDs(); len(got) > 0 {
+			if got[0] != "fresh" {
+				t.Fatalf("first send = %q, want \"fresh\"", got[0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fresh row never went out; it waited behind the row that already failed")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

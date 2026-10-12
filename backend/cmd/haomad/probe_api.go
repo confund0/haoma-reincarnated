@@ -38,7 +38,6 @@ func (d *daemon) handlePeerSelfProbe(w http.ResponseWriter, r *http.Request) {
 	state := d.probePeerSelf(r.Context(), peer.ID, peer.MyOnionAddr, false)
 	writeJSON(w, http.StatusOK, peerSelfReachPayload{
 		PeerID: state.PeerID,
-		Onion:  state.Onion,
 		Ok:     state.Ok,
 		At:     state.At.Unix(),
 	})

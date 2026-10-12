@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
+
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/store"
@@ -23,6 +25,16 @@ func init() {
 func fixedClock(unix int64) func() time.Time {
 	t := time.Unix(unix, 0)
 	return func() time.Time { return t }
+}
+
+func newLogWithStore(t *testing.T) (*events.Log, *store.Store) {
+	t.Helper()
+	st, err := store.Unlock(t.TempDir(), "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Lock() })
+	return events.New(st, events.NewBus(), fixedClock(1742643890)), st
 }
 
 func newLog(t *testing.T, now func() time.Time) (*events.Log, *events.Bus) {
@@ -540,7 +552,7 @@ func TestUpdateDeliveryState_RewritesOutboundRow(t *testing.T) {
 		t.Errorf("initial DeliveryState = %q, want enqueued", ev.DeliveryState)
 	}
 
-	updated, err := l.UpdateDeliveryState("env-sent-1", "sent")
+	updated, _, err := l.UpdateDeliveryState("env-sent-1", "sent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,11 +592,11 @@ func TestUpdateDeliveryState_DoesNotDowngradeFromRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := l.ApplyReadReceipt("msg-1", ev.DisplayTs+5, chat.ChatID("alice")); err != nil {
+	if _, _, err := l.ApplyReadReceipt("msg-1", ev.DisplayTs+5, chat.ChatID("alice")); err != nil {
 		t.Fatalf("ApplyReadReceipt: %v", err)
 	}
 
-	updated, err := l.UpdateDeliveryState("env-sent-1", "sent")
+	updated, _, err := l.UpdateDeliveryState("env-sent-1", "sent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +615,7 @@ func TestUpdateDeliveryState_DoesNotDowngradeFromRead(t *testing.T) {
 func TestUpdateDeliveryState_UnknownEnvID_ReturnsErrEventNotFound(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	_, err := l.UpdateDeliveryState("never-written", "sent")
+	_, _, err := l.UpdateDeliveryState("never-written", "sent")
 	if err == nil {
 		t.Fatal("expected ErrEventNotFound")
 	}
@@ -662,10 +674,10 @@ func TestDeleteByChat_RemovesOnlyTargetRows(t *testing.T) {
 		t.Errorf("bob rows after alice-delete = %d, want 2", len(rows))
 	}
 
-	if _, err := l.UpdateDeliveryState("al-out-x", "delivered"); err == nil {
+	if _, _, err := l.UpdateDeliveryState("al-out-x", "delivered"); err == nil {
 		t.Errorf("UpdateDeliveryState(deleted envelope) unexpectedly succeeded")
 	}
-	if _, err := l.UpdateDeliveryState("bob-out-y", "delivered"); err != nil {
+	if _, _, err := l.UpdateDeliveryState("bob-out-y", "delivered"); err != nil {
 		t.Errorf("UpdateDeliveryState(bob envelope) err = %v, want nil", err)
 	}
 	for _, id := range []string{"al-mid-out-x", "al-mid-in-x"} {
@@ -995,7 +1007,7 @@ func TestSweepExpired_OutboundFiresFromDisplayTs(t *testing.T) {
 	if _, err := l.GetByMsgID("m-1"); !errors.Is(err, events.ErrEventNotFound) {
 		t.Errorf("expected ErrEventNotFound for swept msg_id, got %v", err)
 	}
-	if _, err := l.UpdateDeliveryState("env-1", "delivered"); !errors.Is(err, events.ErrEventNotFound) {
+	if _, _, err := l.UpdateDeliveryState("env-1", "delivered"); !errors.Is(err, events.ErrEventNotFound) {
 		t.Errorf("envelope index still alive after sweep: %v", err)
 	}
 }
@@ -1125,7 +1137,7 @@ func TestSweepExpired_BreadcrumbsExpireOnRecvTs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.AppendReactionBreadcrumb("mid-tgt", "👍", "", now, 60); err != nil {
+	if _, err := l.AppendReactionBreadcrumb("mid-tgt", "👍", "", "react-midtgt", now, 60); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1163,6 +1175,47 @@ func TestSweepExpired_BreadcrumbsExpireOnRecvTs(t *testing.T) {
 	rows, _ = l.List(chat.ChatID("alice"), 0, 100)
 	if len(rows) != 1 || rows[0].Kind != events.KindText {
 		t.Errorf("survivor set drift: got %d rows, kinds=%v", len(rows), kindsOf(rows))
+	}
+}
+
+func TestSweepExpired_OutgoingCallSummaryExpiresOnDisplayTs(t *testing.T) {
+	var now int64 = 1742643890
+	clock := func() time.Time { return time.Unix(now, 0) }
+	l, _ := newLog(t, clock)
+
+	for _, c := range []struct {
+		msgID string
+		dir   events.Direction
+	}{{"cs-out", events.DirOut}, {"", events.DirIn}} {
+		body, _ := json.Marshal(events.CallSummaryBody{CallID: "call-" + string(c.dir), Direction: string(c.dir), Outcome: events.CallOutcomeCompleted})
+
+		if _, err := l.AppendLocal(events.LocalParams{
+			ChatID:        chat.ChatID("alice"),
+			Kind:          events.KindCallSummary,
+			Direction:     c.dir,
+			DisplayTs:     now - 50,
+			MsgID:         c.msgID,
+			ExpireSeconds: 60,
+			Body:          body,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, _, err := l.SweepExpired(now + 9)
+	if err != nil || n != 0 {
+		t.Fatalf("sweep before DisplayTs+TTL: n=%d err=%v, want 0", n, err)
+	}
+	n, _, err = l.SweepExpired(now + 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := l.List(chat.ChatID("alice"), 0, 100)
+	if n != 1 || len(rows) != 1 || rows[0].Direction != events.DirIn {
+		t.Fatalf("at DisplayTs+TTL: swept %d, left %d rows; want the outgoing call summary gone and the incoming one kept", n, len(rows))
+	}
+	if n, _, _ = l.SweepExpired(now + 60); n != 1 {
+		t.Fatalf("at RecvTs+TTL: swept %d, want the incoming call summary", n)
 	}
 }
 
@@ -1342,7 +1395,7 @@ func TestApplyDeliveredReceipt_DoesNotDowngradeFromRead(t *testing.T) {
 	l, _ := newLog(t, fixedClock(1742643890))
 	appendOutboundFile(t, l, "alice", "m-file")
 
-	if _, err := l.ApplyReadReceipt("m-file", 1742643895, chat.ChatID("alice")); err != nil {
+	if _, _, err := l.ApplyReadReceipt("m-file", 1742643895, chat.ChatID("alice")); err != nil {
 		t.Fatalf("ApplyReadReceipt on file: %v", err)
 	}
 	updated, err := l.ApplyDeliveredReceipt("m-file", chat.ChatID("alice"))
@@ -1381,7 +1434,7 @@ func TestApplyDeliveredReceipt_RejectsWrongChat(t *testing.T) {
 func TestApplyReadReceipt_AcceptsKindFile(t *testing.T) {
 	l, _ := newLog(t, fixedClock(1742643890))
 	appendOutboundFile(t, l, "alice", "m-file")
-	updated, err := l.ApplyReadReceipt("m-file", 1742643895, chat.ChatID("alice"))
+	updated, _, err := l.ApplyReadReceipt("m-file", 1742643895, chat.ChatID("alice"))
 	if err != nil {
 		t.Fatalf("ApplyReadReceipt on KindFile: %v", err)
 	}
@@ -1404,8 +1457,8 @@ func TestMarkRead_IncludesInboundFileRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, id := range pending {
-		if id == "in-file" {
+	for _, t := range pending {
+		if t.MsgID == "in-file" {
 			found = true
 		}
 	}
@@ -1427,8 +1480,8 @@ func TestMarkRead_ExcludesUnsealedFileRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range pending {
-		if id == "in-file" {
+	for _, target := range pending {
+		if target.MsgID == "in-file" {
 			t.Errorf("pending receipts = %v, want in-file excluded (still downloading)", pending)
 		}
 	}
@@ -1465,7 +1518,7 @@ func TestUpdateDeliveryState_InboundNotIndexed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = l.UpdateDeliveryState("env-in-1", "delivered")
+	_, _, err = l.UpdateDeliveryState("env-in-1", "delivered")
 	if err == nil {
 		t.Fatal("expected ErrEventNotFound for inbound event")
 	}
@@ -1866,6 +1919,92 @@ func TestApplyDelete_IdempotentReapply(t *testing.T) {
 	}
 }
 
+func TestApplyEdit_OnDeletedRow_KnownGap_WritesBody(t *testing.T) {
+	clock := fixedClock(1742643890)
+	l, _ := newLog(t, clock)
+
+	body, _ := json.Marshal(events.TextBody{Text: "original"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindText, SenderSeq: 1,
+		EnvelopeID: "env-1", MsgID: "mid-1", Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.ApplyDelete("mid-1", 100, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := l.ApplyEdit("mid-1", "resurrected text", 200, "")
+	if err != nil {
+		t.Fatalf("ApplyEdit: %v", err)
+	}
+
+	if updated.EditedAt != 200 {
+		t.Errorf("EditedAt = %d, want 200 (current gap behavior)", updated.EditedAt)
+	}
+	var tb events.TextBody
+	if err := json.Unmarshal(updated.Body, &tb); err != nil {
+		t.Fatalf("Body not valid TextBody after edit-on-deleted: %v", err)
+	}
+	if tb.Text != "resurrected text" {
+		t.Errorf("Body text = %q, want %q (current gap behavior)", tb.Text, "resurrected text")
+	}
+
+	if updated.DeletedAt != 100 {
+		t.Errorf("DeletedAt = %d, want 100 (ApplyEdit does not clear/check it today)", updated.DeletedAt)
+	}
+
+	got, err := l.GetByMsgID("mid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DeletedAt != 100 {
+		t.Errorf("persisted DeletedAt = %d, want 100", got.DeletedAt)
+	}
+	_ = json.Unmarshal(got.Body, &tb)
+	if tb.Text != "resurrected text" {
+		t.Errorf("persisted body text = %q, want %q (current gap behavior)", tb.Text, "resurrected text")
+	}
+}
+
+func TestApplyDelete_AfterEdit_DeleteWins(t *testing.T) {
+	clock := fixedClock(1742643890)
+	l, _ := newLog(t, clock)
+
+	body, _ := json.Marshal(events.TextBody{Text: "original"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID: chat.ChatID("alice"), Kind: events.KindText, SenderSeq: 1,
+		EnvelopeID: "env-1", MsgID: "mid-1", Body: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.ApplyEdit("mid-1", "corrected", 150, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := l.ApplyDelete("mid-1", 200, "")
+	if err != nil {
+		t.Fatalf("ApplyDelete: %v", err)
+	}
+	if updated.Body != nil {
+		t.Errorf("Body = %q, want nil", string(updated.Body))
+	}
+	if updated.DeletedAt != 200 {
+		t.Errorf("DeletedAt = %d, want 200", updated.DeletedAt)
+	}
+
+	got, err := l.GetByMsgID("mid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != nil {
+		t.Errorf("persisted Body = %q, want nil", string(got.Body))
+	}
+	if got.DeletedAt != 200 {
+		t.Errorf("persisted DeletedAt = %d, want 200", got.DeletedAt)
+	}
+}
+
 func TestAppendReactionBreadcrumb_OutboundHappyPath(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, bus := newLog(t, clock)
@@ -1882,7 +2021,7 @@ func TestAppendReactionBreadcrumb_OutboundHappyPath(t *testing.T) {
 	ch, cancel := bus.Subscribe(4)
 	defer cancel()
 
-	ev, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", 1742643920, 0)
+	ev, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", "react-midt", 1742643920, 0)
 	if err != nil {
 		t.Fatalf("AppendReactionBreadcrumb: %v", err)
 	}
@@ -1950,7 +2089,7 @@ func TestAppendReactionBreadcrumb_SortsInlineWithTarget(t *testing.T) {
 	}
 
 	now += 300
-	if _, err := l.AppendReactionBreadcrumb("mid-old", "👍", "", now, 0); err != nil {
+	if _, err := l.AppendReactionBreadcrumb("mid-old", "👍", "", "react-midold", now, 0); err != nil {
 		t.Fatalf("AppendReactionBreadcrumb: %v", err)
 	}
 
@@ -1985,7 +2124,7 @@ func TestAppendReactionBreadcrumb_InboundCarriesReactor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ev, err := l.AppendReactionBreadcrumb("mid-m", "❤️", "peer-bob", 1742643925, 0)
+	ev, err := l.AppendReactionBreadcrumb("mid-m", "❤️", "peer-bob", "react-midm", 1742643925, 0)
 	if err != nil {
 		t.Fatalf("AppendReactionBreadcrumb: %v", err)
 	}
@@ -2009,7 +2148,7 @@ func TestAppendReactionBreadcrumb_EmptyEmojiWritesRemovalAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ev, err := l.AppendReactionBreadcrumb("mid-x", "", "peer-bob", 1742643930, 0)
+	ev, err := l.AppendReactionBreadcrumb("mid-x", "", "peer-bob", "react-midx", 1742643930, 0)
 	if err != nil {
 		t.Fatalf("AppendReactionBreadcrumb empty emoji: %v", err)
 	}
@@ -2023,7 +2162,7 @@ func TestAppendReactionBreadcrumb_EmptyEmojiWritesRemovalAudit(t *testing.T) {
 func TestAppendReactionBreadcrumb_UnknownTarget(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	_, err := l.AppendReactionBreadcrumb("mid-missing", "👍", "", 1, 0)
+	_, err := l.AppendReactionBreadcrumb("mid-missing", "👍", "", "react-midmissing", 1, 0)
 	if !errors.Is(err, events.ErrEventNotFound) {
 		t.Fatalf("err = %v, want ErrEventNotFound", err)
 	}
@@ -2032,7 +2171,7 @@ func TestAppendReactionBreadcrumb_UnknownTarget(t *testing.T) {
 func TestAppendReactionBreadcrumb_EmptyTargetTreatedAsMissing(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	_, err := l.AppendReactionBreadcrumb("", "👍", "", 1, 0)
+	_, err := l.AppendReactionBreadcrumb("", "👍", "", "react-", 1, 0)
 	if !errors.Is(err, events.ErrEventNotFound) {
 		t.Fatalf("err = %v, want ErrEventNotFound", err)
 	}
@@ -2052,7 +2191,7 @@ func TestAppendReactionBreadcrumb_RejectsTombstonedTarget(t *testing.T) {
 	if _, err := l.ApplyDelete("mid-t", 1742643900, ""); err != nil {
 		t.Fatal(err)
 	}
-	_, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", 1742643950, 0)
+	_, err := l.AppendReactionBreadcrumb("mid-t", "👍", "", "react-midt", 1742643950, 0)
 	if !errors.Is(err, events.ErrReactionUnsupportedKind) {
 		t.Fatalf("err = %v, want ErrReactionUnsupportedKind (tombstoned)", err)
 	}
@@ -2079,7 +2218,7 @@ func TestAppendReactionBreadcrumb_RejectsBreadcrumbKind(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = l.AppendReactionBreadcrumb("mid-tc", "👍", "", 1742643900, 0)
+	_, err = l.AppendReactionBreadcrumb("mid-tc", "👍", "", "react-midtc", 1742643900, 0)
 	if !errors.Is(err, events.ErrReactionUnsupportedKind) {
 		t.Fatalf("err = %v, want ErrReactionUnsupportedKind (breadcrumb kind)", err)
 	}
@@ -2097,7 +2236,7 @@ func TestAppendReactionBreadcrumb_RejectsFailedDecrypt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := l.AppendReactionBreadcrumb("mid-f", "👍", "peer-bob", 1742643920, 0)
+	_, err := l.AppendReactionBreadcrumb("mid-f", "👍", "peer-bob", "react-midf", 1742643920, 0)
 	if !errors.Is(err, events.ErrReactionUnsupportedKind) {
 		t.Fatalf("err = %v, want ErrReactionUnsupportedKind (failed decrypt)", err)
 	}
@@ -2141,7 +2280,7 @@ func TestMarkRead_PendingReceiptCovers_KindTextOnly(t *testing.T) {
 	if len(pending) != 2 {
 		t.Fatalf("pending = %v, want 2 entries (only KindText DirIn DecryptOK)", pending)
 	}
-	got := map[string]bool{pending[0]: true, pending[1]: true}
+	got := map[string]bool{pending[0].MsgID: true, pending[1].MsgID: true}
 	if !got["mid-a"] || !got["mid-b"] {
 		t.Errorf("pending = %v, want {mid-a, mid-b}", pending)
 	}
@@ -2160,7 +2299,7 @@ func TestMarkRead_PendingSurvivesAcrossCallsUntilSent(t *testing.T) {
 	}
 
 	stamped, pending, err := l.MarkRead(chat.ChatID("alice"))
-	if err != nil || stamped != 1 || len(pending) != 1 || pending[0] != "mid-a" {
+	if err != nil || stamped != 1 || len(pending) != 1 || pending[0].MsgID != "mid-a" {
 		t.Fatalf("first MarkRead: stamped=%d pending=%v err=%v", stamped, pending, err)
 	}
 
@@ -2171,7 +2310,7 @@ func TestMarkRead_PendingSurvivesAcrossCallsUntilSent(t *testing.T) {
 	if stamped2 != 0 {
 		t.Errorf("second stamped = %d, want 0", stamped2)
 	}
-	if len(pending2) != 1 || pending2[0] != "mid-a" {
+	if len(pending2) != 1 || pending2[0].MsgID != "mid-a" {
 		t.Errorf("second pending = %v, want [mid-a] (retry path)", pending2)
 	}
 
@@ -2212,7 +2351,7 @@ func TestApplyReadReceipt_OutboundHappyPath(t *testing.T) {
 
 	<-ch
 
-	updated, err := l.ApplyReadReceipt("mid-1", 1742643950, chat.ChatID("alice"))
+	updated, _, err := l.ApplyReadReceipt("mid-1", 1742643950, chat.ChatID("alice"))
 	if err != nil {
 		t.Fatalf("ApplyReadReceipt: %v", err)
 	}
@@ -2246,7 +2385,7 @@ func TestApplyReadReceipt_RejectsWrongChat(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := l.ApplyReadReceipt("mid-1", 1742643950, chat.ChatID("bob"))
+	_, _, err := l.ApplyReadReceipt("mid-1", 1742643950, chat.ChatID("bob"))
 	if !errors.Is(err, events.ErrReaderNotPeer) {
 		t.Fatalf("err = %v, want ErrReaderNotPeer", err)
 	}
@@ -2263,7 +2402,7 @@ func TestApplyReadReceipt_RejectsInbound(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := l.ApplyReadReceipt("mid-i", 1742643950, chat.ChatID("bob"))
+	_, _, err := l.ApplyReadReceipt("mid-i", 1742643950, chat.ChatID("bob"))
 	if !errors.Is(err, events.ErrReaderNotPeer) {
 		t.Fatalf("err = %v, want ErrReaderNotPeer (inbound target)", err)
 	}
@@ -2280,10 +2419,10 @@ func TestApplyReadReceipt_FirstReadWins(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.ApplyReadReceipt("mid-1", 1742643950, chat.ChatID("alice")); err != nil {
+	if _, _, err := l.ApplyReadReceipt("mid-1", 1742643950, chat.ChatID("alice")); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := l.ApplyReadReceipt("mid-1", 1742643999, chat.ChatID("alice"))
+	updated, _, err := l.ApplyReadReceipt("mid-1", 1742643999, chat.ChatID("alice"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2295,7 +2434,7 @@ func TestApplyReadReceipt_FirstReadWins(t *testing.T) {
 func TestApplyReadReceipt_UnknownTarget(t *testing.T) {
 	clock := fixedClock(1742643890)
 	l, _ := newLog(t, clock)
-	_, err := l.ApplyReadReceipt("mid-ghost", 1742643950, chat.ChatID("alice"))
+	_, _, err := l.ApplyReadReceipt("mid-ghost", 1742643950, chat.ChatID("alice"))
 	if !errors.Is(err, events.ErrEventNotFound) {
 		t.Fatalf("err = %v, want ErrEventNotFound", err)
 	}
@@ -2686,5 +2825,213 @@ func TestSearchInChat_ScopedToChat(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].MsgID != "a1" {
 		t.Fatalf("hits = %+v, want exactly a1 (bob's chat should not leak)", hits)
+	}
+}
+
+func TestAppendInbound_AttachSharesTheRowsFate(t *testing.T) {
+	l, st := newLogWithStore(t)
+
+	attachKey := []byte("attached:inv-1")
+	_, err := l.AppendInbound(events.InboundParams{
+		ChatID: chat.ChatID("alice"),
+		Kind:   events.KindInvitation,
+		MsgID:  "inv-1",
+		Status: events.DecryptOK,
+		Attach: func(txn *badger.Txn) error {
+			if err := txn.Set(attachKey, []byte("held")); err != nil {
+				return err
+			}
+			return errors.New("the attached write refused")
+		},
+	})
+	if err == nil {
+		t.Fatal("the append reported success although its attached write failed")
+	}
+	rows, listErr := l.List(chat.ChatID("alice"), 0, 0)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("the row survived a failed attached write: %+v", rows)
+	}
+	if _, getErr := st.Get(attachKey); !errors.Is(getErr, store.ErrNotFound) {
+		t.Fatalf("the attached write survived its own failure: %v", getErr)
+	}
+}
+
+func TestUpdateInvitationBody_AttachSharesTheRowsFate(t *testing.T) {
+	l, st := newLogWithStore(t)
+
+	live, _ := json.Marshal(events.InvitationBody{ExpiresAt: 1742650000, State: events.InvitationLive})
+	if _, err := l.AppendInbound(events.InboundParams{
+		ChatID: chat.ChatID("alice"),
+		Kind:   events.KindInvitation,
+		MsgID:  "inv-1",
+		Status: events.DecryptOK,
+		Body:   live,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	retired, _ := json.Marshal(events.InvitationBody{ExpiresAt: 1742650000, State: events.InvitationSuperseded})
+	attachKey := []byte("attached:inv-1")
+	if _, err := l.UpdateInvitationBody("inv-1", retired, func(txn *badger.Txn) error {
+		if err := txn.Set(attachKey, []byte("superseded")); err != nil {
+			return err
+		}
+		return errors.New("the attached stamp refused")
+	}); err == nil {
+		t.Fatal("the update reported success although its attached write failed")
+	}
+	rows, err := l.List(chat.ChatID("alice"), 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want the one marker row", len(rows))
+	}
+	var body events.InvitationBody
+	if err := json.Unmarshal(rows[0].Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.State != events.InvitationLive {
+		t.Fatalf("the row was retired although the stamp attached to it failed: %q", body.State)
+	}
+	if _, err := st.Get(attachKey); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the attached write survived its own failure: %v", err)
+	}
+}
+
+func TestAppendOutbound_SiblingRowIsStoredAboveTheBottomStep(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+
+	body, _ := json.Marshal(events.TextBody{Text: "sent from my other device"})
+	got, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:              chat.ChatID("alice"),
+		Kind:                events.KindText,
+		MsgID:               "mirrored-1",
+		Body:                body,
+		MirroredFromSibling: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DeliveryState != events.DeliverySiblingFloor {
+		t.Errorf("returned delivery_state = %q, want the floor %q", got.DeliveryState, events.DeliverySiblingFloor)
+	}
+	stored, err := l.GetByMsgID("mirrored-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DeliveryState != events.DeliverySiblingFloor {
+		t.Errorf("persisted delivery_state = %q, want the floor %q — a message the peer "+
+			"has already read renders as though it never left the outbox",
+			stored.DeliveryState, events.DeliverySiblingFloor)
+	}
+}
+
+func TestAppendOutbound_SiblingRowIsStoredAboveTheBottomStep_KindFile(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+
+	body, _ := json.Marshal(struct {
+		State string `json:"state"`
+	}{State: "pending"})
+	got, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:              chat.ChatID("alice"),
+		Kind:                events.KindFile,
+		MsgID:               "mirrored-file-1",
+		Body:                body,
+		MirroredFromSibling: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DeliveryState != events.DeliverySiblingFloor {
+		t.Errorf("returned delivery_state = %q, want the floor %q", got.DeliveryState, events.DeliverySiblingFloor)
+	}
+	stored, err := l.GetByMsgID("mirrored-file-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DeliveryState != events.DeliverySiblingFloor {
+		t.Errorf("persisted delivery_state = %q, want the floor %q — an attachment the peer "+
+			"has already fetched renders as though it never left the outbox",
+			stored.DeliveryState, events.DeliverySiblingFloor)
+	}
+}
+
+func TestAppendOutbound_SiblingRowKeepsAStepAboveTheFloor(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+
+	body, _ := json.Marshal(events.TextBody{Text: "read on my other device"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:              chat.ChatID("alice"),
+		Kind:                events.KindText,
+		MsgID:               "mirrored-read",
+		Body:                body,
+		DeliveryState:       events.DeliveryRead,
+		MirroredFromSibling: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := l.GetByMsgID("mirrored-read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DeliveryState != events.DeliveryRead {
+		t.Errorf("persisted delivery_state = %q, want %q — the floor rewrote a higher step",
+			stored.DeliveryState, events.DeliveryRead)
+	}
+}
+
+func TestAppendOutbound_LocalSendKeepsTheOutboxSeed(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+
+	body, _ := json.Marshal(events.TextBody{Text: "sent from here"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:     chat.ChatID("alice"),
+		Kind:       events.KindText,
+		MsgID:      "local-1",
+		EnvelopeID: "env-local-1",
+		Body:       body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := l.GetByMsgID("local-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DeliveryState != events.DeliveryEnqueued {
+		t.Errorf("persisted delivery_state = %q, want %q — the sibling floor leaked onto a local send",
+			stored.DeliveryState, events.DeliveryEnqueued)
+	}
+}
+
+func TestUpdateDeliveryState_OutboxReportCannotPullARowUnderTheSiblingFloor(t *testing.T) {
+	l, _ := newLog(t, fixedClock(1742643890))
+
+	body, _ := json.Marshal(events.TextBody{Text: "recovered from my other device"})
+	if _, err := l.AppendOutbound(events.OutboundParams{
+		ChatID:              chat.ChatID("alice"),
+		Kind:                events.KindText,
+		MsgID:               "mirrored-2",
+		EnvelopeID:          "env-mirrored-2",
+		Body:                body,
+		MirroredFromSibling: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, report := range []string{events.DeliveryPending, events.DeliveryEnqueued} {
+		if _, _, err := l.UpdateDeliveryState("env-mirrored-2", report); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := l.GetByMsgID("mirrored-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.DeliveryState != events.DeliverySiblingFloor {
+			t.Fatalf("an outbox report of %q pulled the row to %q, under the floor %q",
+				report, stored.DeliveryState, events.DeliverySiblingFloor)
+		}
 	}
 }

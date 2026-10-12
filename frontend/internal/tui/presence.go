@@ -7,23 +7,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/logid"
 	"haoma-frontend/internal/msg"
 )
-
-func presenceColor(label string) tcell.Color {
-	switch label {
-	case "available":
-		return ColorPresenceAvailable
-	case "away":
-		return ColorPresenceAway
-	case "busy":
-		return ColorPresenceBusy
-	case "accepting":
-		return ColorPresenceAccepting
-	default:
-		return ColorPresenceUnknown
-	}
-}
 
 func presenceTag(label string) string {
 	switch label {
@@ -33,36 +19,52 @@ func presenceTag(label string) string {
 		return StylePresenceAway
 	case "busy":
 		return StylePresenceBusy
-	case "accepting":
-		return StylePresenceAccepting
 	default:
 		return StylePresenceUnknown
 	}
 }
 
-func presenceGlyph(label string) string {
-	switch label {
-	case "accepting":
-		return GlyphPresenceAccepting
-	case "unknown":
-		return GlyphPresenceUnknown
+type presenceView struct {
+	accepting bool
+	sending   bool
+	chatty    string
+}
+
+func presenceArrowsTag(v presenceView) string {
+	return arrowTag(v.accepting) + GlyphPresenceUp + arrowTag(v.sending) + GlyphPresenceDown + StyleReset
+}
+
+func arrowTag(on bool) string {
+	if on {
+		return StylePresenceArrowOn
+	}
+	return StylePresenceArrowOff
+}
+
+func presenceNameColor(chatty string) (tcell.Color, bool) {
+	switch chatty {
+	case msg.PresenceAvailable:
+		return ColorPresenceAvailable, true
+	case msg.PresenceAway:
+		return ColorPresenceAway, true
+	case msg.PresenceBusy:
+		return ColorPresenceBusy, true
 	default:
-		return GlyphPresenceOnline
+		return tcell.ColorDefault, false
 	}
 }
 
-func presenceCellText(label string) string {
-	if label == "" {
-		label = "unknown"
+func presenceNameTag(chatty string) string {
+	switch chatty {
+	case msg.PresenceAvailable:
+		return StylePresenceAvailable
+	case msg.PresenceAway:
+		return StylePresenceAway
+	case msg.PresenceBusy:
+		return StylePresenceBusy
+	default:
+		return ""
 	}
-	return presenceGlyph(label)
-}
-
-func presenceCellStyle(label string) tcell.Style {
-	if label == "" {
-		label = "unknown"
-	}
-	return tcell.StyleDefault.Foreground(presenceColor(label))
 }
 
 func effectiveSelfLabel(selfPresence string) string {
@@ -76,11 +78,14 @@ func effectiveSelfLabel(selfPresence string) string {
 	}
 }
 
-func (a *App) peerEffectiveLabel(peerID string) string {
-	if v := a.peerPresence[peerID]; v != "" {
-		return v
+func (a *App) chatPresenceLocked(chatID string) presenceView {
+	for i := range a.chats {
+		if a.chats[i].ChatID == chatID {
+			c := a.chats[i]
+			return presenceView{accepting: c.Accepting, sending: c.Sending, chatty: c.Chatty}
+		}
 	}
-	return "unknown"
+	return presenceView{}
 }
 
 func (a *App) cmdStatus(arg string) {
@@ -106,7 +111,7 @@ func (a *App) cmdStatus(arg string) {
 
 	slog.Debug("tui: /status invoked",
 		slog.String("state", state),
-		slog.String("target", target),
+		slog.String("target", logid.Short(target)),
 	)
 
 	label := effectiveSelfLabel(state)

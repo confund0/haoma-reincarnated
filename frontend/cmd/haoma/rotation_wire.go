@@ -11,6 +11,8 @@ import (
 	"haoma-frontend/internal/backendapi"
 	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/logid"
+	"haoma-frontend/internal/mirror"
 	"haoma-frontend/internal/msg"
 	"haoma-frontend/internal/rotation"
 )
@@ -32,7 +34,7 @@ func (p *rotationBackendPublisher) AddOnionNew(ctx context.Context) (string, str
 		return "", "", errors.New("rotation publisher: mint returned empty address or key")
 	}
 	slog.Debug("rotation: minted persistent onion via /onion/mint",
-		slog.String("addr", o.Address),
+		slog.String("addr", logid.Short(o.Address)),
 	)
 	return o.Address, o.PrivateKey, nil
 }
@@ -46,7 +48,7 @@ func (p *rotationBackendPublisher) DelOnion(ctx context.Context, addr string) er
 		return fmt.Errorf("rotation publisher: del onion: %w", err)
 	}
 	slog.Debug("rotation: deleted onion via /onion/del",
-		slog.String("addr", addr),
+		slog.String("addr", logid.Short(addr)),
 	)
 	return nil
 }
@@ -179,11 +181,16 @@ func newRotationManager(d *daemon) *rotation.Manager {
 		if err != nil {
 			return fmt.Errorf("rotation send: encrypt: %w", err)
 		}
-		if _, err := d.backendClient.Send(ctx, backendapi.SendRequest{
-			PeerID:         peerID,
-			Payload:        blob,
-			PresenceSource: backendapi.PresenceSourceHaoma,
-		}); err != nil {
+		if _, err := mirror.Dispatch(ctx, d.backendClient, mirror.NewRail(d.railKey, d.siblings, d.peerMeta),
+			mirror.SingleTarget(peerID),
+			func(ctx context.Context, deviceID string) (backendapi.SendRequest, []byte, error) {
+				return backendapi.SendRequest{
+					PeerID:         deviceID,
+					Payload:        blob,
+					PresenceSource: backendapi.PresenceSourceHaoma,
+				}, plain, nil
+			},
+			mirror.NewOp(w.Kind, "")); err != nil {
 			return fmt.Errorf("rotation send: backend: %w", err)
 		}
 		slog.Debug("rotation: wire kind shipped",

@@ -1,6 +1,7 @@
 package io.haoma.calculator.messenger
 
 import io.haoma.calculator.core.ipc.FrameType
+import io.haoma.calculator.log.Logger
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -55,27 +56,92 @@ fun MessengerStore.inviteOnion(alias: String) {
 
 
 suspend fun MessengerStore.acceptOnion(words: List<String>, alias: String): AcceptResult {
-    val c = ipc ?: return AcceptResult.Error("daemon not connected")
+    if (ipc == null && requestSender == null && timedRequestSender == null) {
+        return AcceptResult.Error("daemon not connected")
+    }
     return try {
-        val reply = c.request(
-            type = FrameType.PairOnionAccept,
-            payload = PairOnionAcceptRequest(words = words, alias = alias.trim()).toJson(),
+        
+        
+        val reply = askUnlessDropped(
+            FrameType.PairOnionAccept,
+            PairOnionAcceptRequest(words = words, alias = alias.trim()).toJson(),
+            PAIR_ONION_ACCEPT_TIMEOUT,
         )
         if (reply.type == FrameType.Error) {
             val err = reply.payload?.let(ErrorPayload::fromJson)
-            return AcceptResult.Error(err?.message ?: "unknown error")
+            val code = err?.code.orEmpty()
+            if (code == REASON_NO_ANSWER) return AcceptResult.Error(PAIR_JOIN_NO_ANSWER, code = code)
+            return AcceptResult.Error(err?.message ?: "unknown error", code = code)
         }
         if (reply.type != FrameType.PairOnionAccepted) {
             return AcceptResult.Error("unexpected response: ${reply.type}")
         }
         val accepted = reply.payload?.let(PairOnionAcceptedResponse::fromJson)
             ?: return AcceptResult.Error("daemon returned empty payload")
-        val label = accepted.nick.ifEmpty { "(no nick)" }
-        appendStatus("paired (onion) — $label / ${shortChat(accepted.peerId)}")
+        appendStatus("paired (onion) — ${shortChat(accepted.peerId)}")
         markFreshPeer(accepted.peerId)
         AcceptResult.Ok(accepted)
     } catch (t: Throwable) {
         AcceptResult.Error(t.message ?: "unknown failure")
+    }
+}
+
+
+data class PairJoinState(
+    val wordsInput: String = "",
+    val waitingSinceMs: Long = 0L,
+    val error: String = "",
+)
+
+
+fun MessengerStore.setPairJoinWords(text: String) {
+    _pairJoin.update { it.copy(wordsInput = text, error = "") }
+}
+
+
+fun MessengerStore.startPairJoin(wordsLookValid: Boolean = true) {
+    scope.launch { runPairJoin(wordsLookValid) }
+}
+
+internal const val PAIR_JOIN_WORDS_NEEDED = "Need the 7 words from the invite."
+
+
+internal suspend fun MessengerStore.runPairJoin(
+    wordsLookValid: Boolean = true,
+    nowMs: () -> Long = { System.currentTimeMillis() },
+) {
+    
+    
+    var tokens: List<String>? = null
+    val startedAt = nowMs()
+    _pairJoin.update { cur ->
+        tokens = null
+        val typed = splitWords(cur.wordsInput)
+        when {
+            cur.waitingSinceMs != 0L -> cur
+            typed.size < 3 -> cur.copy(error = PAIR_JOIN_WORDS_NEEDED)
+            !wordsLookValid -> cur.copy(error = JOIN_WORDS_WRONG)
+            else -> {
+                tokens = typed
+                cur.copy(waitingSinceMs = startedAt, error = "")
+            }
+        }
+    }
+    val words = tokens ?: return
+    when (val r = acceptOnion(words, "")) {
+        is AcceptResult.Ok -> _pairJoin.value = PairJoinState()
+        is AcceptResult.Error -> {
+            val line = joinFailureLine(r.code)
+            if (line != null) Logger.i("pairing", "join refused reason=${r.code}")
+            _pairJoin.update {
+                it.copy(
+                    waitingSinceMs = 0L,
+                    
+                    wordsInput = if (r.code == REASON_JOIN_INVITATION_SPENT) "" else it.wordsInput,
+                    error = line ?: r.message,
+                )
+            }
+        }
     }
 }
 
@@ -145,5 +211,10 @@ data class RecentInvite(
 
 sealed interface AcceptResult {
     data class Ok(val accepted: PairOnionAcceptedResponse) : AcceptResult
-    data class Error(val message: String) : AcceptResult
+
+    
+    data class Error(
+        val message: String,
+        val code: String = "",
+    ) : AcceptResult
 }

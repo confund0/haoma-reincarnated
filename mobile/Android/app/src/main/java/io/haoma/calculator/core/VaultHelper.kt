@@ -29,14 +29,75 @@ object VaultHelper {
 
     
     fun unseal(context: Context, passphrase: ByteArray = DefaultPassphraseBytes): Unsealed {
-        Logger.d("vault", "unseal enter pass_len=${passphrase.size}")
-        val stdout = execHelper(context, args = emptyArray(), stdin = passphrase)
+        Logger.d("vault", "unseal enter empty=${passphrase.isEmpty()}")
+        val (stdout, exit) = execHelperAllowExit(
+            context,
+            args = emptyArray(),
+            stdin = passphrase,
+            allowed = setOf(0, RESTORE_PENDING_EXIT),
+        )
+        if (exit == RESTORE_PENDING_EXIT) throw RestorePendingException()
         return splitOutput(stdout)
     }
 
     
+    const val RESTORE_PENDING_EXIT = 7
+
+    
+    class RestorePendingException : IllegalStateException("a restore did not finish")
+
+    
+    const val NOT_EMPTY_EXIT = 8
+
+    
+    class NotEmptyException : IllegalStateException(RESTORE_NOT_EMPTY)
+
+    
+    const val RESTORE_NOT_EMPTY =
+        "This device holds contacts or chats. A backup can only be restored on an empty device. " +
+            "Unlock the app and wipe it, or reinstall the app, then restore. " +
+            "If anything on this device is valuable, make a backup of it first."
+
+    
+    const val RESTORE_DID_NOT_FINISH =
+        "The restore did not finish, so this device cannot be opened. " +
+            "Uninstall the app, install it again, then restore your backup."
+
+    
+    const val RESTORE_MARKER = ".restore-commit"
+
+    
+    fun pendingRestoreMessage(context: Context): String? = pendingRestoreMessage(File(cfgDir(context), RESTORE_MARKER))
+
+    
+    internal fun pendingRestoreMessage(marker: File): String? =
+        if (marker.exists()) RESTORE_DID_NOT_FINISH else null
+
+    
+    enum class RestoreEntry { Allowed, NotEmpty, Pending }
+
+    
+    fun checkRestoreAllowed(context: Context): RestoreEntry {
+        val (_, exit) = execHelperAllowExit(
+            context,
+            args = arrayOf("--check-empty"),
+            stdin = ByteArray(0),
+            allowed = setOf(0, NOT_EMPTY_EXIT, RESTORE_PENDING_EXIT),
+        )
+        Logger.i("vault", "check-empty exit=$exit")
+        return restoreEntryFor(exit)
+    }
+
+    
+    internal fun restoreEntryFor(exit: Int): RestoreEntry = when (exit) {
+        0 -> RestoreEntry.Allowed
+        RESTORE_PENDING_EXIT -> RestoreEntry.Pending
+        else -> RestoreEntry.NotEmpty
+    }
+
+    
     fun reseal(context: Context, payloadJson: ByteArray, passphrase: ByteArray) {
-        Logger.d("vault", "reseal enter pass_len=${passphrase.size} payload_bytes=${payloadJson.size}")
+        Logger.d("vault", "reseal enter empty=${passphrase.isEmpty()} payload_bytes=${payloadJson.size}")
         val stdin = ByteArray(passphrase.size + 1 + payloadJson.size)
         try {
             System.arraycopy(passphrase, 0, stdin, 0, passphrase.size)
@@ -48,7 +109,7 @@ object VaultHelper {
             
             java.util.Arrays.fill(stdin, 0)
         }
-        Logger.i("vault", "reseal ok pass_len=${passphrase.size} payload_bytes=${payloadJson.size}")
+        Logger.i("vault", "reseal ok payload_bytes=${payloadJson.size}")
     }
 
     
@@ -62,11 +123,14 @@ object VaultHelper {
 
     
     fun archiveStage(context: Context, archivePath: String): String {
-        val stdout = execHelper(
+        val (stdout, exit) = execHelperAllowExit(
             context,
             args = arrayOf("--archive-stage=$archivePath"),
             stdin = ByteArray(0),
+            allowed = setOf(0, NOT_EMPTY_EXIT, RESTORE_PENDING_EXIT),
         )
+        if (exit == NOT_EMPTY_EXIT) throw NotEmptyException()
+        if (exit == RESTORE_PENDING_EXIT) throw RestorePendingException()
         val staging = stdout.toString(Charsets.UTF_8).trim()
         require(staging.isNotEmpty()) { "archive-stage produced empty stdout" }
         Logger.i("vault", "archive-stage ok staging=$staging")
@@ -74,14 +138,55 @@ object VaultHelper {
     }
 
     
-    fun archiveCommit(context: Context, stagingPath: String, passphrase: ByteArray): Unsealed {
-        Logger.d("vault", "archive-commit enter pass_len=${passphrase.size} staging=$stagingPath")
-        val stdout = execHelper(
+    sealed interface CommitResult {
+        
+        data class Swapped(val unsealed: Unsealed) : CommitResult
+
+        
+        data object WrongPassphrase : CommitResult
+
+        
+        data object NotApplied : CommitResult
+
+        
+        data object Broken : CommitResult
+
+        
+        data object StoreInUse : CommitResult
+
+        
+        data object SwappedNoBundle : CommitResult
+
+        
+        data object Pending : CommitResult
+
+        
+        data object NotEmpty : CommitResult
+    }
+
+    
+    fun archiveCommit(context: Context, stagingPath: String, passphrase: ByteArray): CommitResult {
+        Logger.d("vault", "archive-commit enter empty=${passphrase.isEmpty()} staging=$stagingPath")
+        val (stdout, exit) = execHelperAllowExit(
             context,
             args = arrayOf("--archive-commit=$stagingPath"),
             stdin = passphrase,
+            allowed = setOf(0, 1, 3, 4, 5, 6, RESTORE_PENDING_EXIT, NOT_EMPTY_EXIT),
         )
-        return splitOutput(stdout)
+        Logger.i("vault", "archive-commit exit=$exit")
+        return commitResultFor(exit) { splitOutput(stdout) }
+    }
+
+    
+    internal fun commitResultFor(exit: Int, unsealed: () -> Unsealed): CommitResult = when (exit) {
+        0 -> CommitResult.Swapped(unsealed())
+        1 -> CommitResult.WrongPassphrase
+        3 -> CommitResult.NotApplied
+        5 -> CommitResult.StoreInUse
+        6 -> CommitResult.SwappedNoBundle
+        RESTORE_PENDING_EXIT -> CommitResult.Pending
+        NOT_EMPTY_EXIT -> CommitResult.NotEmpty
+        else -> CommitResult.Broken
     }
 
     
@@ -91,13 +196,15 @@ object VaultHelper {
     }
 
     
-    fun findStagedRestoreDirs(context: Context): List<String> {
-        val cfg = cfgDir(context)
-        if (!cfg.exists() || !cfg.isDirectory) return emptyList()
-        return cfg.listFiles { f -> f.isDirectory && f.name.startsWith(".staging-") }
-            ?.sortedByDescending { it.name }
-            ?.map { it.absolutePath }
-            ?: emptyList()
+    fun cleanRestoreLeftovers(context: Context): Boolean {
+        val (_, exit) = execHelperAllowExit(
+            context,
+            args = arrayOf("--clean-restore-leftovers"),
+            stdin = ByteArray(0),
+            allowed = setOf(0, RESTORE_PENDING_EXIT),
+        )
+        Logger.i("vault", "clean-restore-leftovers exit=$exit")
+        return exit == 0
     }
 
     

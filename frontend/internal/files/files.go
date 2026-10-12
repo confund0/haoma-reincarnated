@@ -42,6 +42,12 @@ const (
 
 const MaxPlaintextBytes = 10 * 1024 * 1024
 
+const MaxSiblingPadBytes = MaxPlaintextBytes / 4
+
+const MaxPullBytes = MaxPlaintextBytes + MaxSiblingPadBytes + 1<<20
+
+var ErrPlaintextLength = errors.New("files: declared plaintext length does not fit the blob")
+
 var ErrSealedNotFound = errors.New("files: sealed file not found")
 
 type Manager struct {
@@ -475,6 +481,17 @@ func (m *Manager) DeleteStaging(msgID string) error {
 var ErrAEADOpen = errors.New("files: aead open failed")
 
 func (m *Manager) DecryptSealMove(chatID chat.ChatID, msgID string, key, nonce []byte) (string, error) {
+	return m.decryptSealMove(chatID, msgID, key, nonce, -1)
+}
+
+func (m *Manager) DecryptSealMoveTrimmed(chatID chat.ChatID, msgID string, key, nonce []byte, plainLen int) (string, error) {
+	if plainLen < 0 {
+		return "", ErrPlaintextLength
+	}
+	return m.decryptSealMove(chatID, msgID, key, nonce, plainLen)
+}
+
+func (m *Manager) decryptSealMove(chatID chat.ChatID, msgID string, key, nonce []byte, trimTo int) (string, error) {
 	if msgID == "" {
 		return "", errors.New("files: empty msg id")
 	}
@@ -504,6 +521,14 @@ func (m *Manager) DecryptSealMove(chatID chat.ChatID, msgID string, key, nonce [
 	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrAEADOpen, err)
+	}
+	if trimTo >= 0 {
+		if trimTo > len(plaintext) {
+			zero(plaintext)
+			return "", fmt.Errorf("%w: declared %d, opened %d", ErrPlaintextLength, trimTo, len(plaintext))
+		}
+		zero(plaintext[trimTo:])
+		plaintext = plaintext[:trimTo]
 	}
 	if len(plaintext) > MaxPlaintextBytes {
 

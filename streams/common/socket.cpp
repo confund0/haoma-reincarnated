@@ -42,8 +42,6 @@ int listen_local_unix(const std::string& name) {
 
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
-  // Abstract namespace: leading NUL, then the name bytes. No fs entry,
-  // no cleanup needed, name lives only while the listening fd is open.
   if (name.size() + 1 > sizeof(addr.sun_path)) {
     LOG_ERR("listen_local_unix: name too long (%zu)", name.size());
     ::close(fd);

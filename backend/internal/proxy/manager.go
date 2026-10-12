@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+
+	"haoma/internal/logid"
 )
 
 type Modality string
@@ -63,8 +65,9 @@ type entry struct {
 	active   net.Conn
 	closed   bool
 
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel   context.CancelFunc
+	done     chan struct{}
+	peerHost string
 }
 
 type Manager struct {
@@ -123,7 +126,8 @@ func (m *Manager) StartFetch(parent context.Context, token string, modality Moda
 	if peerURL == "" {
 		return errors.New("proxy: empty peer_url")
 	}
-	if _, err := url.Parse(peerURL); err != nil {
+	parsed, err := url.Parse(peerURL)
+	if err != nil {
 		return fmt.Errorf("proxy: bad peer_url: %w", err)
 	}
 	if hc == nil {
@@ -146,6 +150,7 @@ func (m *Manager) StartFetch(parent context.Context, token string, modality Moda
 		localPort: localPort,
 		cancel:    cancel,
 		done:      make(chan struct{}),
+		peerHost:  parsed.Hostname(),
 	}
 	m.entries[token] = e
 	m.mu.Unlock()
@@ -180,6 +185,7 @@ func (m *Manager) runFetch(ctx context.Context, e *entry, peerURL string, hc *ht
 		return
 	}
 	resp, err := hc.Do(req)
+	err = logid.RedactURLError(err)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			m.log.Warn("proxy fetch: GET failed",
@@ -312,12 +318,24 @@ func (m *Manager) HandleServe(w http.ResponseWriter, r *http.Request, token stri
 		dst = &flushWriter{w: w, f: flusher}
 	}
 	n, copyErr := io.Copy(dst, conn)
-	m.log.Info("proxy serve finished",
+
+	ended := "eof"
+	switch {
+	case errors.Is(copyErr, net.ErrClosed):
+		ended, copyErr = "closed", nil
+	case copyErr != nil:
+		ended = "error"
+	}
+	attrs := []any{
 		slog.String("token", shortToken(token)),
 		slog.String("streamer", streamerAddr),
 		slog.Int64("bytes", n),
-		slog.Any("err", copyErr),
-	)
+		slog.String("ended", ended),
+	}
+	if copyErr != nil {
+		attrs = append(attrs, slog.Any("err", copyErr))
+	}
+	m.log.Info("proxy serve finished", attrs...)
 	return true
 }
 
@@ -357,6 +375,17 @@ func (m *Manager) Has(token string) bool {
 	defer m.mu.Unlock()
 	_, ok := m.entries[token]
 	return ok
+}
+
+func (m *Manager) FetchingFrom(match func(host string) bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.entries {
+		if e.kind == kindFetch && match(e.peerHost) {
+			return true
+		}
+	}
+	return false
 }
 
 type flushWriter struct {

@@ -196,9 +196,18 @@ data class PeerEntry(
     val lastActiveAt: Long,
     val lastPassiveAt: Long,
     val retiredAt: Long,
+    
     val accepting: Boolean,
+    
+    val sending: Boolean = false,
     val chatty: String,
     val effective: String,
+    
+
+    val sibling: Boolean,
+    
+
+    val unreachable: Boolean,
 ) {
     companion object {
         fun fromJson(o: JSONObject): PeerEntry = PeerEntry(
@@ -211,8 +220,11 @@ data class PeerEntry(
             lastPassiveAt = o.optLong("last_passive_at", 0L),
             retiredAt = o.optLong("retired_at", 0L),
             accepting = o.optBoolean("accepting", false),
+            sending = o.optBoolean("sending", false),
             chatty = o.optStringOrEmpty("chatty"),
             effective = o.optStringOrEmpty("effective"),
+            sibling = o.optBoolean("sibling", false),
+            unreachable = o.optBoolean("unreachable", false),
         )
     }
 }
@@ -246,9 +258,17 @@ data class ChatEntry(
     val createdAt: Long,
     val lastActivityAt: Long,
     val unreadCount: Long,
+    
     val accepting: Boolean,
+    
+    val sending: Boolean = false,
     val chatty: String,
     val effective: String,
+    
+
+    val waitingForSession: Boolean = false,
+    val waitingForContact: Boolean = false,
+    val chatStartedAt: Long = 0L,
 ) {
     companion object {
         fun fromJson(o: JSONObject): ChatEntry = ChatEntry(
@@ -267,8 +287,12 @@ data class ChatEntry(
             lastActivityAt = o.optLong("last_activity_at", 0L),
             unreadCount = o.optLong("unread_count", 0L),
             accepting = o.optBoolean("accepting", false),
+            sending = o.optBoolean("sending", false),
             chatty = o.optStringOrEmpty("chatty"),
             effective = o.optStringOrEmpty("effective"),
+            waitingForSession = o.optBoolean("waiting_for_session", false),
+            waitingForContact = o.optBoolean("waiting_for_contact", false),
+            chatStartedAt = o.optLong("chat_started_at", 0L),
         )
     }
 }
@@ -365,9 +389,11 @@ data class PeerLastSeenChangedPayload(
     }
 }
 
+
 data class PresenceChangedPayload(
     val peerId: String,
     val accepting: Boolean,
+    val sending: Boolean,
     val chatty: String,
     val effective: String,
 ) {
@@ -375,6 +401,26 @@ data class PresenceChangedPayload(
         fun fromJson(o: JSONObject): PresenceChangedPayload = PresenceChangedPayload(
             peerId = o.optStringOrEmpty("peer_id"),
             accepting = o.optBoolean("accepting", false),
+            sending = o.optBoolean("sending", false),
+            chatty = o.optStringOrEmpty("chatty"),
+            effective = o.optStringOrEmpty("effective"),
+        )
+    }
+}
+
+
+data class ChatPresenceChangedPayload(
+    val chatId: String,
+    val accepting: Boolean,
+    val sending: Boolean,
+    val chatty: String,
+    val effective: String,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): ChatPresenceChangedPayload = ChatPresenceChangedPayload(
+            chatId = o.optStringOrEmpty("chat_id"),
+            accepting = o.optBoolean("accepting", false),
+            sending = o.optBoolean("sending", false),
             chatty = o.optStringOrEmpty("chatty"),
             effective = o.optStringOrEmpty("effective"),
         )
@@ -604,6 +650,542 @@ data class PairOnionCancelRequest(val handleId: String) {
 }
 
 
+class DeviceLinkOfferRequest {
+    fun toJson(): JSONObject = JSONObject()
+}
+
+
+data class DeviceLinkStartedResponse(
+    val handleId: String,
+    val words: List<String>,
+    val expiresAt: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceLinkStartedResponse = DeviceLinkStartedResponse(
+            handleId = o.optStringOrEmpty("handle_id"),
+            words = o.optStringList("words"),
+            expiresAt = o.optLong("expires_at", 0L),
+        )
+    }
+}
+
+
+data class DeviceLinkProbePush(
+    val handleId: String,
+    val attempt: Int,
+    val ready: Boolean,
+    val error: String,
+    val at: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceLinkProbePush = DeviceLinkProbePush(
+            handleId = o.optStringOrEmpty("handle_id"),
+            attempt = o.optInt("attempt", 0),
+            ready = o.optBoolean("ready", false),
+            error = o.optStringOrEmpty("error"),
+            at = o.optLong("at", 0L),
+        )
+    }
+}
+
+
+data class DeviceLinkAcceptRequest(val words: List<String>) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("words", stringListJson(words))
+    }
+}
+
+
+data class DeviceLinkAcceptedResponse(
+    val peerId: String,
+    val adoptedFingerprint: String,
+    val contactsCleared: Boolean,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceLinkAcceptedResponse = DeviceLinkAcceptedResponse(
+            peerId = o.optStringOrEmpty("peer_id"),
+            adoptedFingerprint = o.optStringOrEmpty("adopted_fingerprint"),
+            contactsCleared = o.optBoolean("contacts_cleared", false),
+        )
+    }
+}
+
+
+data class DeviceLinkCompletedPush(
+    val handleId: String,
+    val peerId: String,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceLinkCompletedPush = DeviceLinkCompletedPush(
+            handleId = o.optStringOrEmpty("handle_id"),
+            peerId = o.optStringOrEmpty("peer_id"),
+        )
+    }
+}
+
+
+data class DeviceLinkFailedPush(
+    val handleId: String,
+    val reason: String,
+    val detail: String,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceLinkFailedPush = DeviceLinkFailedPush(
+            handleId = o.optStringOrEmpty("handle_id"),
+            reason = o.optStringOrEmpty("reason"),
+            detail = o.optStringOrEmpty("detail"),
+        )
+    }
+}
+
+
+data class DeviceLinkCancelRequest(val handleId: String) {
+    fun toJson(): JSONObject = JSONObject().apply { put("handle_id", handleId) }
+}
+
+
+class DeviceLinksListRequest {
+    fun toJson(): JSONObject = JSONObject()
+}
+
+
+data class DeviceLinkEntry(
+    val peerId: String,
+    val linkedAt: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceLinkEntry = DeviceLinkEntry(
+            peerId = o.optStringOrEmpty("peer_id"),
+            linkedAt = o.optLong("linked_at", 0L),
+        )
+    }
+}
+
+
+data class DeviceLinksListedResponse(val devices: List<DeviceLinkEntry>) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceLinksListedResponse =
+            DeviceLinksListedResponse(devices = o.deviceLinkArray("devices"))
+    }
+}
+
+internal fun JSONObject.deviceLinkArray(key: String): List<DeviceLinkEntry> {
+    val arr = optJSONArray(key) ?: return emptyList()
+    return buildList {
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { add(DeviceLinkEntry.fromJson(it)) }
+        }
+    }
+}
+
+
+data class DeviceSyncRequest(val full: Boolean) {
+    fun toJson(): JSONObject = JSONObject().apply { put("full", full) }
+}
+
+
+data class DeviceSyncSentResponse(val siblings: Int?, val full: Boolean, val alreadyRunning: Boolean) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceSyncSentResponse = DeviceSyncSentResponse(
+            siblings = if (o.has("siblings") && !o.isNull("siblings")) o.optInt("siblings", 0) else null,
+            full = o.optBoolean("full", false),
+            alreadyRunning = o.optBoolean("already_running", false),
+        )
+    }
+}
+
+
+data class DeviceSyncFinishedPush(
+    val full: Boolean,
+    val siblings: Int,
+    val answered: Int,
+    val rowsApplied: Int,
+    val timedOut: Boolean,
+    val snapshotApplied: Int = 0,
+    val held: Int = 0,
+    val unreachable: Int = 0,
+) {
+    
+    val changes: Int get() = rowsApplied + snapshotApplied
+
+    companion object {
+        fun fromJson(o: JSONObject): DeviceSyncFinishedPush = DeviceSyncFinishedPush(
+            full = o.optBoolean("full", false),
+            siblings = o.optInt("siblings", 0),
+            answered = o.optInt("answered", 0),
+            rowsApplied = o.optInt("rows_applied", 0),
+            timedOut = o.optBoolean("timed_out", false),
+            snapshotApplied = o.optInt("snapshot_applied", 0),
+            held = o.optInt("held", 0),
+            unreachable = o.optInt("unreachable", 0),
+        )
+    }
+}
+
+
+data class InheritedContactEntry(
+    val fingerprint: String,
+    val nick: String = "",
+    val alias: String = "",
+    val label: String = "",
+    val devices: Int = 0,
+    val paired: Int = 0,
+    val offers: Int = 0,
+    val waiting: Boolean = false,
+    val invited: Boolean = false,
+    val open: Int = 0,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): InheritedContactEntry = InheritedContactEntry(
+            fingerprint = o.optStringOrEmpty("fingerprint"),
+            nick = o.optStringOrEmpty("nick"),
+            alias = o.optStringOrEmpty("alias"),
+            label = o.optStringOrEmpty("label"),
+            devices = o.optInt("devices", 0),
+            paired = o.optInt("paired", 0),
+            offers = o.optInt("offers", 0),
+            waiting = o.optBoolean("waiting", false),
+            invited = o.optBoolean("invited", false),
+            open = o.optInt("open", 0),
+        )
+    }
+}
+
+
+data class InheritedContactsBody(
+    val contacts: List<InheritedContactEntry>,
+    val linked: Boolean,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): InheritedContactsBody {
+            val arr = o.optJSONArray("contacts")
+            val contacts = buildList {
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val c = arr.optJSONObject(i)?.let(InheritedContactEntry::fromJson) ?: continue
+                        
+                        
+                        if (c.fingerprint.isNotEmpty()) add(c)
+                    }
+                }
+            }
+            return InheritedContactsBody(contacts = contacts, linked = o.optBoolean("linked", false))
+        }
+    }
+}
+
+
+data class InvitationOfferRequest(
+    val fingerprint: String,
+    val force: Boolean = false,
+    val openOnly: Boolean = false,
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("fingerprint", fingerprint)
+        if (force) put("force", true)
+        if (openOnly) put("open_only", true)
+    }
+}
+
+
+data class InvitationOfferedResponse(
+    val msgId: String,
+    val expiresAt: Long,
+    val siblings: Int,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): InvitationOfferedResponse = InvitationOfferedResponse(
+            msgId = o.optStringOrEmpty("msg_id"),
+            expiresAt = o.optLong("expires_at", 0L),
+            siblings = o.optInt("siblings", 0),
+        )
+    }
+}
+
+
+data class InvitationAcceptRequest(val msgId: String) {
+    fun toJson(): JSONObject = JSONObject().apply { put("msg_id", msgId) }
+}
+
+
+data class InvitationAcceptedResponse(
+    val msgId: String,
+    val peerId: String,
+    val chatId: String,
+    val identityFingerprint: String,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): InvitationAcceptedResponse = InvitationAcceptedResponse(
+            msgId = o.optStringOrEmpty("msg_id"),
+            peerId = o.optStringOrEmpty("peer_id"),
+            chatId = o.optStringOrEmpty("chat_id"),
+            identityFingerprint = o.optStringOrEmpty("identity_fingerprint"),
+        )
+    }
+}
+
+
+object InvitationDirection {
+    
+    const val IN = "in"
+
+    
+    const val OUT = "out"
+}
+
+
+object InvitationState {
+    const val LIVE = "live"
+    const val SUPERSEDED = "superseded"
+    const val ACCEPTED = "accepted"
+    const val FAILED = "failed"
+}
+
+
+data class InvitationEntry(
+    val msgId: String,
+    val label: String,
+    val direction: String,
+    val expiresAt: Long,
+    val state: String,
+    val fingerprint: String = "",
+) {
+    
+
+    fun standing(nowSeconds: Long): Boolean =
+        state == InvitationState.LIVE && expiresAt > 0L && nowSeconds < expiresAt
+
+    companion object {
+        fun fromJson(o: JSONObject): InvitationEntry = InvitationEntry(
+            msgId = o.optStringOrEmpty("msg_id"),
+            label = o.optStringOrEmpty("label"),
+            direction = o.optStringOrEmpty("direction"),
+            expiresAt = o.optLong("expires_at", 0L),
+            state = o.optStringOrEmpty("state"),
+            fingerprint = o.optStringOrEmpty("fingerprint"),
+        )
+    }
+}
+
+
+data class InvitationsListedResponse(val invitations: List<InvitationEntry>) {
+    companion object {
+        fun fromJson(o: JSONObject): InvitationsListedResponse {
+            val arr = o.optJSONArray("invitations")
+            return InvitationsListedResponse(
+                invitations = buildList {
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) {
+                            arr.optJSONObject(i)?.let { add(InvitationEntry.fromJson(it)) }
+                        }
+                    }
+                },
+            )
+        }
+    }
+}
+
+
+object DestroyPinSetReason {
+    
+    const val ALREADY_SET = "already_set"
+
+    
+    const val BAD_PIN_SHAPE = "bad_pin_shape"
+
+    
+    const val WRONG_DESTROY_PIN = "wrong_destroy_pin"
+
+    
+    const val NO_LINKED_DEVICE = "no_linked_device"
+}
+
+
+object DestroyPinVerifiedReason {
+    
+    const val NO_SALT_FOR_SIBLING = "no_salt_for_sibling"
+
+    
+    const val NOT_MY_DEVICE = "not_my_device"
+
+    
+    const val ANSWER_DID_NOT_CHECK_OUT = "answer_did_not_check_out"
+}
+
+
+class GetDestroyPinRequest {
+    fun toJson(): JSONObject = JSONObject()
+}
+
+
+data class DestroyPinSiblingEntry(
+    val peerId: String,
+    val saltHeld: Boolean,
+    val receivedAt: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DestroyPinSiblingEntry = DestroyPinSiblingEntry(
+            peerId = o.optStringOrEmpty("peer_id"),
+            saltHeld = o.optBoolean("salt_held", false),
+            receivedAt = o.optLong("received_at", 0L),
+        )
+    }
+}
+
+
+data class DestroyPinListedResponse(
+    val set: Boolean,
+    val setAt: Long,
+    val siblings: List<DestroyPinSiblingEntry>,
+    
+
+    val waiting: DestroyWaiting? = null,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DestroyPinListedResponse = DestroyPinListedResponse(
+            set = o.optBoolean("set", false),
+            setAt = o.optLong("set_at", 0L),
+            siblings = o.destroyPinSiblingArray("siblings"),
+            waiting = o.optJSONObject("waiting")?.let(DestroyWaiting::fromJson),
+        )
+    }
+}
+
+
+data class DestroyWaiting(
+    val peerId: String,
+    val deadline: Long,
+    val startedAt: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DestroyWaiting = DestroyWaiting(
+            peerId = o.optStringOrEmpty("peer_id"),
+            deadline = o.optLong("deadline", 0L),
+            startedAt = o.optLong("started_at", 0L),
+        )
+    }
+}
+
+internal fun JSONObject.destroyPinSiblingArray(key: String): List<DestroyPinSiblingEntry> {
+    val arr = optJSONArray(key) ?: return emptyList()
+    return buildList {
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { add(DestroyPinSiblingEntry.fromJson(it)) }
+        }
+    }
+}
+
+
+data class SetDestroyPinRequest(val newPin: String) {
+    fun toJson(): JSONObject = JSONObject().apply { put("new", newPin) }
+}
+
+
+data class DestroyPinSetResponse(
+    val accepted: Boolean,
+    val reason: String,
+    val saltPushed: Int,
+    val siblings: Int,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DestroyPinSetResponse = DestroyPinSetResponse(
+            accepted = o.optBoolean("accepted", false),
+            reason = o.optStringOrEmpty("reason"),
+            saltPushed = o.optInt("salt_pushed", 0),
+            siblings = o.optInt("siblings", 0),
+        )
+    }
+}
+
+
+data class VerifyDestroyPinRequest(
+    val peerId: String,
+    val pin: String,
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("peer_id", peerId)
+        put("pin", pin)
+    }
+}
+
+
+data class DestroyPinVerifiedResponse(
+    val answered: Boolean,
+    val verified: Boolean,
+    val reason: String,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DestroyPinVerifiedResponse = DestroyPinVerifiedResponse(
+            answered = o.optBoolean("answered", false),
+            verified = o.optBoolean("verified", false),
+            reason = o.optStringOrEmpty("reason"),
+        )
+    }
+}
+
+
+data class UnlinkDeviceRequest(
+    val peerId: String,
+    val pin: String = "",
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("peer_id", peerId)
+        if (pin.isNotEmpty()) put("pin", pin)
+    }
+}
+
+
+data class DeviceUnlinkedResponse(
+    val unlinked: Boolean,
+    val sent: Boolean,
+    val receipted: Boolean,
+    val deadline: Long,
+    val reason: String,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceUnlinkedResponse = DeviceUnlinkedResponse(
+            unlinked = o.optBoolean("unlinked", false),
+            sent = o.optBoolean("sent", false),
+            receipted = o.optBoolean("receipted", false),
+            deadline = o.optLong("deadline", 0L),
+            reason = o.optStringOrEmpty("reason"),
+        )
+    }
+}
+
+
+data class DeviceWipingResponse(val started: Boolean) {
+    companion object {
+        fun fromJson(o: JSONObject): DeviceWipingResponse = DeviceWipingResponse(
+            started = o.optBoolean("started", false),
+        )
+    }
+}
+
+
+data class DestroyDevicePush(val reason: String, val eraseId: String = "") {
+    companion object {
+        fun fromJson(o: JSONObject): DestroyDevicePush = DestroyDevicePush(
+            reason = o.optStringOrEmpty("reason"),
+            eraseId = o.optStringOrEmpty("erase_id"),
+        )
+    }
+}
+
+
+data class DestroyAttemptsSeenPush(
+    val count: Int,
+    val lastAt: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject): DestroyAttemptsSeenPush = DestroyAttemptsSeenPush(
+            count = o.optInt("count", 0),
+            lastAt = o.optLong("last_at", 0L),
+        )
+    }
+}
+
+
 object EventDirection {
     const val IN = "in"
     const val OUT = "out"
@@ -621,10 +1203,14 @@ object EventKind {
     
 
     const val ONION_ROTATION = "onion_rotation"
+    
+
+    const val INVITATION = "invitation"
 }
 
 
 object DeliveryState {
+    const val PENDING = "pending"
     const val ENQUEUED = "enqueued"
     const val SENT = "sent"
     const val DELIVERED = "delivered"
@@ -632,13 +1218,28 @@ object DeliveryState {
     const val FAILED = "failed"
 
     
-    fun rank(state: String): Int = when (state) {
-        ENQUEUED -> 0
-        FAILED -> 0    
-        SENT -> 1
-        DELIVERED -> 2
-        READ -> 3
-        else -> 0
+    fun rank(state: String): Int? = when (state) {
+        "" -> 0
+        PENDING, ENQUEUED -> 1
+        SENT -> 2
+        DELIVERED -> 3
+        READ -> 4
+        else -> null
+    }
+
+    
+    fun outranks(cur: String, next: String): Boolean {
+        val curRank = rank(cur) ?: return false
+        val nextRank = rank(next) ?: return false
+        return nextRank > curRank
+    }
+
+    
+    fun advances(cur: String, next: String): Boolean {
+        if (next.isEmpty() || cur == next) return false
+        if (cur.isEmpty()) return true
+        if (next == FAILED) return cur != DELIVERED && cur != READ
+        return outranks(cur, next)
     }
 }
 
@@ -663,6 +1264,9 @@ data class TimelineEvent(
     val readAt: Long,
     val editedAt: Long,
     val deletedAt: Long,
+    
+
+    val mirroredFromSibling: Boolean = false,
 ) {
     
     fun bodyTextOrEmpty(): String =
@@ -678,6 +1282,12 @@ data class TimelineEvent(
     val isInbound: Boolean get() = direction == EventDirection.IN
     val isTombstoned: Boolean get() = deletedAt > 0L
     val isEdited: Boolean get() = editedAt > 0L
+
+    
+    fun isRetryableFile(): Boolean {
+        if (kind != EventKind.FILE || isTombstoned) return false
+        return FileEventBody.fromJson(body).state == FileState.FAILED_TRANSIENT
+    }
 
     
     fun isReadyImage(): Boolean {
@@ -714,6 +1324,7 @@ data class TimelineEvent(
             readAt = o.optLong("read_at", 0L),
             editedAt = o.optLong("edited_at", 0L),
             deletedAt = o.optLong("deleted_at", 0L),
+            mirroredFromSibling = o.optBoolean("mirrored_from_sibling", false),
         )
     }
 }
@@ -1079,14 +1690,12 @@ data class PeerSelfProbeRequest(val peerId: String) {
 
 data class PeerSelfReachPayload(
     val peerId: String,
-    val onion: String,
     val ok: Boolean,
     val at: Long,
 ) {
     companion object {
         fun fromJson(o: JSONObject): PeerSelfReachPayload = PeerSelfReachPayload(
             peerId = o.optStringOrEmpty("peer_id"),
-            onion = o.optStringOrEmpty("onion"),
             ok = o.optBoolean("ok", false),
             at = o.optLong("at", 0L),
         )
@@ -1111,11 +1720,6 @@ data class ExternalReachPayload(
             at = o.optLong("at", 0L),
         )
     }
-}
-
-
-data class TorRecoverRequest(val mode: String) {
-    fun toJson(): JSONObject = JSONObject().apply { put("mode", mode) }
 }
 
 
@@ -1165,6 +1769,9 @@ object CallAction {
 
 
 const val CallEndReasonAutoHangup = "auto-hangup"
+
+
+const val CallAnsweredElsewhere = "answered_elsewhere"
 
 
 object CallControlAction {
@@ -1433,6 +2040,9 @@ data class SettingsSnapshot(
     
     val notifyPersistUntilOpen: Boolean,
     val notifyDeepLink: Boolean,
+    
+    
+    val showFailedDestroyAttempts: Boolean,
     val threatProfile: String,
     val panicAction: String,
     val hasTorPassword: Boolean,
@@ -1449,6 +2059,7 @@ data class SettingsSnapshot(
         put("notifications_on_lock", notificationsOnLock)
         if (notifyPersistUntilOpen) put("notify_persist_until_open", true)
         if (notifyDeepLink) put("notify_deep_link", true)
+        if (showFailedDestroyAttempts) put("show_failed_destroy_attempts", true)
         if (threatProfile.isNotEmpty()) put("threat_profile", threatProfile)
         if (panicAction.isNotEmpty()) put("panic_action", panicAction)
         put("has_tor_password", hasTorPassword)

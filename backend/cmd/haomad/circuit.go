@@ -10,16 +10,19 @@ import (
 )
 
 func (d *daemon) peerIsoTag(peerID string) string {
-	return "haomad-peer:" + peerID
+	return d.routes.tag(peerID)
 }
 
 func (d *daemon) httpClientForPeer(peerID string) (*http.Client, error) {
-	hc, err := xport.NewTorHTTPClient(d.cfg.torSocks, d.peerIsoTag(peerID))
+
+	tag := d.peerIsoTag(peerID)
+	hc, err := xport.NewTorHTTPClient(d.socksAddr(), tag)
 	if err != nil {
 		return nil, err
 	}
 	hc.Timeout = 60 * time.Second
-	return hc, nil
+	d.stallFault.wrap(d, peerID, tag, hc)
+	return d.watchRoute(peerID, tag, d.watchForRemoval(peerID, hc)), nil
 }
 
 func (d *daemon) peerIDByDest(dest string) (string, bool) {

@@ -26,6 +26,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.haoma.calculator.messenger.CallAnsweredElsewhere
+import io.haoma.calculator.messenger.isCallNoAnswer
 import io.haoma.calculator.messenger.EventKind
 import io.haoma.calculator.messenger.MessengerStore
 import io.haoma.calculator.messenger.TimelineEvent
@@ -145,7 +147,11 @@ private fun CallRow(event: TimelineEvent) {
     val dirGlyph = if (direction == "in") "↓" else "↑"
     val modality = if (isVideo) "video" else "audio"
     val outcomeLabel = outcomeLabel(outcome, body)
-    val accent = if (outcome == "completed") ChatPalette.CallSummaryOk else ChatPalette.CallSummaryBad
+    val accent = when {
+        outcome == "completed" || outcome == CallAnsweredElsewhere -> ChatPalette.CallSummaryOk
+        isCallNoAnswer(outcome, body.optString("fail_reason")) -> ChatPalette.CallSummaryNeutral
+        else -> ChatPalette.CallSummaryBad
+    }
     val tsLabel = formatCallTimestamp(event.displayTs)
 
     Row(
@@ -190,8 +196,9 @@ private fun outcomeLabel(outcome: String, body: JSONObject): String = when (outc
     "missed" -> "missed"
     "cancelled" -> "cancelled"
     "rejected" -> "declined"
-    "failed" -> "failed"
+    "failed" -> if (isCallNoAnswer(outcome, body.optString("fail_reason"))) "no answer" else "failed"
     "disrupted" -> "disrupted"
+    CallAnsweredElsewhere -> "answered on another device"
     else -> outcome.ifEmpty { "—" }
 }
 

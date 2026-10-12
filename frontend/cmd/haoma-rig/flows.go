@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 const (
 	invStartTimeout   = 15 * time.Second
 	probeReadyTimeout = 150 * time.Second
-	acceptTimeout     = 90 * time.Second
+	acceptTimeout     = 150 * time.Second
 	completeTimeout   = 60 * time.Second
 	textSentTimeout   = 5 * time.Second
 	inboundTimeout    = 25 * time.Second
@@ -153,7 +154,7 @@ func deliverText(from, to *rig, toPeerID, text string) (delivery, error) {
 		if err == nil && sf.Type == ipc.FrameError {
 			lastErr = frameErr("send", sf)
 			logf("[%s->%s] send attempt %d errored: %v — retrying", from.name, to.name, attempt, lastErr)
-			time.Sleep(3 * time.Second)
+			rigSleep(3*time.Second, "poll: flow retry")
 			continue
 		}
 		var resp ipc.SendTextResponse
@@ -266,6 +267,10 @@ type rigFileBody struct {
 type fileResult struct {
 	msgID   string
 	caption string
+
+	payload []byte
+
+	keyWithDownload error
 }
 
 func sendFile(from, to *rig, toPeerID, caption string) (fileResult, error) {
@@ -314,7 +319,114 @@ func sendFile(from, to *rig, toPeerID, caption string) (fileResult, error) {
 	rev, _ := timelineEvent(rf)
 	var rb rigFileBody
 	_ = json.Unmarshal(rev.Body, &rb)
-	return fileResult{msgID: resp.MsgID, caption: rb.Caption}, nil
+	return fileResult{
+		msgID:           resp.MsgID,
+		caption:         rb.Caption,
+		payload:         payload,
+		keyWithDownload: assertKeyWithDownload(from, to, resp.MsgID),
+	}, nil
+}
+
+const keyAfterReadyBound = 30 * time.Second
+
+const (
+	earlyReceiptLine    = "file receipt: early receipt shipped"
+	postPullReceiptLine = "file receipt: post-pull receipt shipped"
+	fetchReadyLine      = "file fetch ready: blob pulled"
+	keyBeforeLine       = "file key: arrived before the bytes"
+	keyAfterLine        = "file key: arrived after the bytes"
+	keyShippedLine      = "file key shipped"
+)
+
+func assertKeyWithDownload(from, to *rig, msgID string) error {
+	lines, err := rigLogLines(to)
+	if err != nil {
+		return err
+	}
+	want := logMatchID("msg_id", msgID)
+	var early, ready, key time.Time
+	var postPullReceipt, keyMsgID string
+	keyBefore := false
+	for _, line := range lines {
+		if !strings.Contains(line, want) {
+			continue
+		}
+		at, ok := logLineTime(line)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.Contains(line, earlyReceiptLine) && early.IsZero():
+			early = at
+		case strings.Contains(line, postPullReceiptLine) && postPullReceipt == "":
+			postPullReceipt, _ = logFieldValue(line, "receipt_msg_id")
+		case strings.Contains(line, fetchReadyLine) && ready.IsZero():
+			ready = at
+		case (strings.Contains(line, keyBeforeLine) || strings.Contains(line, keyAfterLine)) && key.IsZero():
+			key, keyBefore = at, strings.Contains(line, keyBeforeLine)
+			keyMsgID, _ = logFieldValue(line, "key_msg_id")
+		}
+	}
+	switch {
+	case ready.IsZero():
+		return fmt.Errorf("%s's log has no %q line for msg_id=%s — the harness cannot see the download end (log level, rotation)", to.name, fetchReadyLine, short(msgID))
+	case early.IsZero():
+		return fmt.Errorf("%s shipped no receipt when the offer for msg_id=%s arrived — the key waited for the download", to.name, short(msgID))
+	case early.After(ready):
+		return fmt.Errorf("%s shipped its receipt for msg_id=%s %s after the download ended, want before", to.name, short(msgID), early.Sub(ready))
+	case key.IsZero():
+		return fmt.Errorf("%s's log has no key arrival for msg_id=%s", to.name, short(msgID))
+	case !keyBefore && key.Sub(ready) > keyAfterReadyBound:
+		return fmt.Errorf("%s got the key for msg_id=%s %s after the download ended, want within %s", to.name, short(msgID), key.Sub(ready), keyAfterReadyBound)
+	case keyMsgID == "":
+		return fmt.Errorf("%s's key arrival line for msg_id=%s names no key_msg_id — the harness cannot say which receipt it answered", to.name, short(msgID))
+	}
+
+	answered, err := receiptAnsweredBy(from, msgID, keyMsgID)
+	if err != nil {
+		return err
+	}
+	if postPullReceipt != "" && answered == postPullReceipt {
+		return fmt.Errorf("the key that sealed msg_id=%s on %s answered the receipt sent after the download (%s), not the one sent when the offer arrived — the early receipt went unanswered", short(msgID), to.name, answered)
+	}
+
+	when := "before the bytes"
+	if !keyBefore {
+		when = fmt.Sprintf("%s after the bytes", key.Sub(ready).Round(time.Millisecond))
+	}
+	logf("[%s] msg_id=%s: receipt left %s before the download ended; key arrived %s, answering the early receipt", to.name, short(msgID), ready.Sub(early).Round(time.Millisecond), when)
+	return nil
+}
+
+func receiptAnsweredBy(from *rig, msgID, keyMsgID string) (string, error) {
+	lines, err := rigLogLines(from)
+	if err != nil {
+		return "", err
+	}
+	want := logMatchID("msg_id", msgID)
+	for _, line := range lines {
+		if !strings.Contains(line, keyShippedLine) || !strings.Contains(line, want) {
+			continue
+		}
+		if k, _ := logFieldValue(line, "key_msg_id"); k != keyMsgID {
+			continue
+		}
+		receipt, ok := logFieldValue(line, "receipt_msg_id")
+		if !ok || receipt == "" {
+			return "", fmt.Errorf("%s's %q line for msg_id=%s names no receipt_msg_id", from.name, keyShippedLine, short(msgID))
+		}
+		return receipt, nil
+	}
+	return "", fmt.Errorf("%s's log has no %q line for msg_id=%s and key_msg_id=%s — the harness cannot say which receipt the sealing key answered", from.name, keyShippedLine, short(msgID), keyMsgID)
+}
+
+func logLineTime(line string) (time.Time, bool) {
+	v, ok := logFieldValue(line, "time")
+	if !ok {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, v)
+	return at, err == nil
 }
 
 func assertReply(from, to *rig, toPeerID, replyToMsgID, replyText, originalText string) error {

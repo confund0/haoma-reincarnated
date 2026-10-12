@@ -14,6 +14,9 @@ var sensitiveStringKeys = map[string]bool{
 	"dest":        true,
 	"token":       true,
 	"fingerprint": true,
+
+	"from": true,
+	"peer": true,
 }
 
 var urlStringKeys = map[string]bool{
@@ -23,6 +26,11 @@ var urlStringKeys = map[string]bool{
 var opaqueStringKeys = map[string]bool{
 	"nick":        true,
 	"sender_nick": true,
+
+	"label":        true,
+	"alias":        true,
+	"inviter_nick": true,
+	"joiner_nick":  true,
 }
 
 type redactHandler struct {

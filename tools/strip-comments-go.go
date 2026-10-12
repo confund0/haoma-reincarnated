@@ -6,6 +6,8 @@
 //   - Any //go:* directive (build tags, embed, generate, etc.).
 //   - Any //lint:* (staticcheck), //nolint:* (golangci-lint),
 //     //noinspection, //export, or //line directive.
+//   - Any //haoma:* directive. "// haoma: x" (a space after the
+//     slashes) is not a directive and is stripped like any comment.
 //
 // Everything else — package docs, function docs, field docs, inline
 // trailing comments — is dropped.
@@ -13,8 +15,7 @@
 // Generated files (header line containing "Code generated ... DO NOT
 // EDIT.") are left untouched.
 //
-// Used by tools/release.sh against the public-cut tree, NOT against
-// the private repo. Safe to run multiple times; idempotent.
+// Used by tools/release.sh. Safe to run multiple times; idempotent.
 package main
 
 import (
@@ -103,6 +104,20 @@ func stripFile(path string) (bool, error) {
 		return false, fmt.Errorf("parse: %w", err)
 	}
 
+	// Commentary inside a group that holds a directive is cut from the
+	// source text first and the file parsed again. Dropping it only from
+	// the AST would leave its lines blank, and a blank line between a
+	// directive and its declaration detaches the directive (go/ast no
+	// longer puts it in the Doc; //go:embed stops compiling).
+	if cut := cutDirectiveCommentary(fset, f, src); len(cut) != len(src) {
+		src = cut
+		fset = token.NewFileSet()
+		f, err = parser.ParseFile(fset, path, src, parser.ParseComments)
+		if err != nil {
+			return false, fmt.Errorf("parse after cut: %w", err)
+		}
+	}
+
 	keepGroups := make(map[*ast.CommentGroup]bool)
 	for i, cg := range f.Comments {
 		if i == 0 && isLicenseHeader(cg) {
@@ -159,6 +174,57 @@ func stripFile(path string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// cutDirectiveCommentary returns src without the non-directive comments
+// of every comment group that holds a directive (the license header
+// group is left alone). A comment alone on its line is cut with its
+// line; a comment that shares its line with code is cut by itself.
+func cutDirectiveCommentary(fset *token.FileSet, f *ast.File, src []byte) []byte {
+	type span struct{ from, to int }
+	var cuts []span
+	for i, cg := range f.Comments {
+		if i == 0 && isLicenseHeader(cg) {
+			continue
+		}
+		if !hasDirective(cg) {
+			continue
+		}
+		for _, c := range cg.List {
+			if isDirectiveLine(c.Text) {
+				continue
+			}
+			from := fset.Position(c.Slash).Offset
+			to := fset.Position(c.End()).Offset
+			ls := from
+			for ls > 0 && src[ls-1] != '\n' {
+				ls--
+			}
+			le := to
+			for le < len(src) && src[le] != '\n' {
+				le++
+			}
+			if strings.TrimSpace(string(src[ls:from])) == "" &&
+				strings.TrimSpace(string(src[to:le])) == "" {
+				if le < len(src) {
+					le++
+				}
+				cuts = append(cuts, span{ls, le})
+			} else {
+				cuts = append(cuts, span{from, to})
+			}
+		}
+	}
+	if len(cuts) == 0 {
+		return src
+	}
+	out := make([]byte, 0, len(src))
+	prev := 0
+	for _, s := range cuts {
+		out = append(out, src[prev:s.from]...)
+		prev = s.to
+	}
+	return append(out, src[prev:]...)
 }
 
 func indexOfGroupInComments(all []*ast.CommentGroup, target *ast.CommentGroup) int {
@@ -227,8 +293,11 @@ func isDirectiveLine(text string) bool {
 	//   //go:embed, //go:build, //go:generate, //go:noinline, //go:linkname, //go:nosplit
 	//   //lint:ignore, //lint:file-ignore       (staticcheck)
 	//   //nolint:..., //noinspection, //export, //line
+	//   //haoma:... (this repo's own directive form; see CLAUDE.md)
 	switch {
 	case strings.HasPrefix(body, "go:"):
+		return true
+	case strings.HasPrefix(body, "haoma:"):
 		return true
 	case strings.HasPrefix(body, "lint:"):
 		return true

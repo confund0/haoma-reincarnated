@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"haoma-frontend/internal/backuparchive"
 	"haoma-frontend/internal/lockfile"
 	"haoma-frontend/internal/logging"
 	"haoma-frontend/internal/paths"
@@ -33,6 +34,8 @@ func main() {
 		logFormat     string
 		showVersion   bool
 		restoreBackup string
+		torBin        string
+		systemTor     bool
 	)
 	flag.StringVar(&cfgDir, "cfg-dir", "", "data root: anchors vault.enc + vault.lock + daemon tier dirs. Empty = platform per-user dir (Linux ~/.haoma, Windows %AppData%/haoma). Tilde + relative paths resolved against CWD.")
 	flag.StringVar(&haomadBin, "haomad-bin", "", "path to the haomad binary; default = same directory as haoma-text.")
@@ -41,14 +44,28 @@ func main() {
 	flag.StringVar(&logLevel, "log-level", "warn", "log level: debug|info|warn|error. Passed through to spawned haomad + haoma.")
 	flag.StringVar(&logFile, "log-file", "", "log destination: empty = <cfg-dir>/haoma-text.log (privacy default — never leak to stdio while the TUI owns the screen), \"-\" = stderr (foreground dev only), else a file path (created with 0600).")
 	flag.StringVar(&logFormat, "log-format", "text", "log format: text|json")
-	flag.StringVar(&restoreBackup, "restore-backup", "", "before unlock, restore a .tar produced by /backup: existing cfg-dir contents move to <cfg-dir>/.pre-restore-<ts>/, archive extracts in place, then the normal passphrase prompt runs against the restored vault.")
+	flag.StringVar(&restoreBackup, "restore-backup", "", "before unlock, restore an archive made by /backup onto an empty device (no contact, no chat, no linked device; any other device is refused before anything is staged): extracts the archive into <cfg-dir>/.staging-<ts>/, asks for the passphrase of the backed-up device, stops a running haomad, then deletes the empty device's vault and stores and moves the backup in. tor/ and the logs stay. A restore refused before the swap leaves this device as it was; one that fails during the swap says to delete <cfg-dir> and restore again.")
 	idleOverride := flag.Int("idle-timeout-seconds", 0, "override the vault's IdleTimeoutSeconds for this run (dev convenience). 0 = use vault value.")
+	flag.StringVar(&torBin, "tor-bin", defaultTorBin, "tor binary haomad starts as a tor of its own, with its data dir in <cfg-dir>/tor; a bare name is looked up on PATH. No tor control password is needed with it. Not used with --system-tor.")
+	flag.BoolVar(&systemTor, "system-tor", false, "use the tor already running on 127.0.0.1:9050 (SOCKS) and 9051 (control) instead of a tor of haomad's own. Its control password is the vault's tor password (/set-tor-password), needed only if that tor asks for one.")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
 	if showVersion {
 		fmt.Println("haoma-text", version)
 		return
+	}
+
+	torBinSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "tor-bin" {
+			torBinSet = true
+		}
+	})
+	tor, err := torFlags(systemTor, torBin, torBinSet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "haoma-text: %v\n", err)
+		os.Exit(2)
 	}
 
 	runVaultBootflow(cfgDir, spawnOpts{
@@ -60,6 +77,7 @@ func main() {
 		logFormat:     logFormat,
 		idleOverride:  *idleOverride,
 		restoreBackup: restoreBackup,
+		tor:           tor,
 	})
 }
 
@@ -91,6 +109,8 @@ func runVaultBootflow(cfgDirFlag string, opts spawnOpts) {
 		os.Exit(1)
 	}
 
+	opts.tor = opts.tor.withDir(root)
+
 	logFile := opts.logFile
 	if logFile == "" {
 		logFile = filepath.Join(root, "haoma-text.log")
@@ -116,18 +136,34 @@ func runVaultBootflow(cfgDirFlag string, opts spawnOpts) {
 
 	opts = resolveDaemonBins(opts)
 
-	if opts.restoreBackup != "" {
-		if err := runRestoreBackup(root, opts.haomaVaultBin, opts.restoreBackup); err != nil {
-			fatal("restore-backup", slog.Any("err", err))
-		}
-
-		fmt.Fprintln(os.Stderr, "haoma-text: backup restored — unlock with the passphrase of the source device.")
-	}
+	cleanRestoreLeftovers(opts.haomaVaultBin, root)
 
 	vaultPath := filepath.Join(root, vaultFileName)
-	unlocked, err := openOrCreateVault(vaultPath)
-	if err != nil {
-		fatal("vault", slog.Any("err", err))
+	var unlocked vaultUnlock
+	if opts.restoreBackup != "" {
+
+		var report restoreReport
+		unlocked, report, err = runRestoreBackup(root, opts.haomaVaultBin, opts.restoreBackup, promptPassphrase)
+		if err != nil {
+
+			var sentence sentenceError
+			if errors.As(err, &sentence) {
+				fmt.Fprintln(os.Stderr, "haoma-text: "+sentence.text)
+			} else {
+				fmt.Fprintf(os.Stderr, "haoma-text: restore: %v\n", err)
+			}
+			fatal("restore-backup", slog.Any("err", err))
+		}
+		fmt.Fprintln(os.Stderr, "haoma-text: backup restored.")
+		for _, line := range report.Lines() {
+			fmt.Fprintln(os.Stderr, "haoma-text: "+line)
+		}
+	} else {
+		unlocked, err = openOrCreateVault(vaultPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "haoma-text: %v\n", err)
+			fatal("vault", slog.Any("err", err))
+		}
 	}
 	slog.Info("vault unlocked",
 		slog.String("cfg_dir", root),
@@ -138,7 +174,7 @@ func runVaultBootflow(cfgDirFlag string, opts spawnOpts) {
 
 	vc := newVaultController(vaultPath, unlocked.passphrase, unlocked.payload, unlocked.params, opts.haomaVaultBin)
 
-	defer vc.Wipe()
+	defer vc.Zero()
 	if err := spawnAndRun(root, vc, opts); err != nil {
 		fatal("supervisor", slog.Any("err", err))
 	}
@@ -151,6 +187,13 @@ type vaultUnlock struct {
 }
 
 func openOrCreateVault(path string) (vaultUnlock, error) {
+
+	root := filepath.Dir(path)
+	if pending, err := backuparchive.PendingCommit(root); err != nil {
+		return vaultUnlock{}, err
+	} else if pending != nil {
+		return vaultUnlock{}, errors.New(pending.Message(root))
+	}
 	if _, err := os.Stat(path); err == nil {
 		return unlockExisting(path)
 	} else if !os.IsNotExist(err) {

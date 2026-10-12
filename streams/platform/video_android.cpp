@@ -1,15 +1,3 @@
-// NdkCamera video backend (Android, API 26+). Implements VideoCapture
-// from platform/video_backend.h.
-//
-// Mirrors audio_android.cpp's posture: own the platform sensor inside
-// the streamer process. Permission inherited from the app UID
-// (CAMERA permission is granted by the host APK in V-2b's manifest).
-//
-// Chosen lens: LENS_FACING_FRONT. Geometry: caller-supplied width x
-// height @ fps via VideoCapture::open. Output format request: YUV_420_888
-// (which the device may deliver as planar I420 or semi-planar NV12/21).
-// On callback, we repack into packed I420 (Y / U / V contiguous) using
-// the per-plane pixel & row strides AImage reports.
 
 #include "video_backend.h"
 #include "../common/log.h"
@@ -51,7 +39,7 @@ struct NdkVideoCapture final : VideoCapture {
   int height_ = 0;
   int fps_    = 15;
   std::function<void(const uint8_t* i420)> on_frame_;
-  std::vector<uint8_t> packed_;  // reusable I420 staging buffer
+  std::vector<uint8_t> packed_;  
 
   ACameraManager*        mgr_     = nullptr;
   ACameraDevice*         device_  = nullptr;
@@ -113,19 +101,14 @@ void NdkVideoCapture::on_image_avail(void* ctx, AImageReader* reader) {
     uint8_t* dst = (plane_idx == 0) ? y_dst : (plane_idx == 1 ? u_dst : v_dst);
 
     if (pixel_stride == 1 && row_stride == plane_w) {
-      // Packed row, no stride padding — single memcpy.
       std::memcpy(dst, plane_ptr, (size_t)plane_w * (size_t)plane_h);
     } else if (pixel_stride == 1) {
-      // Planar, but row-stride-padded — copy row by row.
       for (int r = 0; r < plane_h; ++r) {
         std::memcpy(dst + (size_t)r * (size_t)plane_w,
                     plane_ptr + (size_t)r * (size_t)row_stride,
                     (size_t)plane_w);
       }
     } else {
-      // Semi-planar (NV12/NV21) — pixel stride 2 means UV is
-      // interleaved in this plane's buffer. De-interleave into our
-      // contiguous U or V destination.
       for (int r = 0; r < plane_h; ++r) {
         const uint8_t* src_row = plane_ptr + (size_t)r * (size_t)row_stride;
         uint8_t* dst_row = dst + (size_t)r * (size_t)plane_w;
@@ -141,20 +124,18 @@ void NdkVideoCapture::on_image_avail(void* ctx, AImageReader* reader) {
   if (self->on_frame_) self->on_frame_(self->packed_.data());
 }
 
-void NdkVideoCapture::on_camera_disconnect(void* /*ctx*/, ACameraDevice* /*device*/) {
+void NdkVideoCapture::on_camera_disconnect(void*  , ACameraDevice*  ) {
   LOG_ERR("ndkcam: camera disconnected");
 }
 
-void NdkVideoCapture::on_camera_error(void* /*ctx*/, ACameraDevice* /*device*/, int error) {
+void NdkVideoCapture::on_camera_error(void*  , ACameraDevice*  , int error) {
   LOG_ERR("ndkcam: camera error %d", error);
 }
 
-void NdkVideoCapture::on_session_active(void* /*ctx*/, ACameraCaptureSession* /*session*/) {}
-void NdkVideoCapture::on_session_ready (void* /*ctx*/, ACameraCaptureSession* /*session*/) {}
-void NdkVideoCapture::on_session_closed(void* /*ctx*/, ACameraCaptureSession* /*session*/) {}
+void NdkVideoCapture::on_session_active(void*  , ACameraCaptureSession*  ) {}
+void NdkVideoCapture::on_session_ready (void*  , ACameraCaptureSession*  ) {}
+void NdkVideoCapture::on_session_closed(void*  , ACameraCaptureSession*  ) {}
 
-// Pick the first camera reporting LENS_FACING_FRONT. Returns empty
-// string if none found.
 std::string find_front_camera(ACameraManager* mgr) {
   ACameraIdList* ids = nullptr;
   if (ACameraManager_getCameraIdList(mgr, &ids) != ACAMERA_OK || !ids) return "";
@@ -193,7 +174,7 @@ bool NdkVideoCapture::open(int width, int height, int fps,
     return false;
   }
 
-  if (AImageReader_new(width_, height_, AIMAGE_FORMAT_YUV_420_888, /*maxImages=*/2, &reader_) != AMEDIA_OK
+  if (AImageReader_new(width_, height_, AIMAGE_FORMAT_YUV_420_888,  2, &reader_) != AMEDIA_OK
       || !reader_) {
     LOG_ERR("ndkcam: AImageReader_new failed");
     return false;
@@ -277,10 +258,10 @@ void NdkVideoCapture::close() {
   if (mgr_)     { ACameraManager_delete(mgr_); mgr_ = nullptr; }
 }
 
-}  // namespace
+}  
 
-std::unique_ptr<VideoCapture> make_video_capture(const VideoCaptureConfig& /*cfg*/) {
+std::unique_ptr<VideoCapture> make_video_capture(const VideoCaptureConfig&  ) {
   return std::make_unique<NdkVideoCapture>();
 }
 
-}  // namespace haoma::streams
+}  

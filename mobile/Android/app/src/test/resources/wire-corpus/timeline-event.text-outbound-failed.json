@@ -1,0 +1,25 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4192,
+      "chat_id": "1d84b0f7c25e49a3b6d70f1c8a34e5b9",
+      "direction": "out",
+      "kind": "text",
+      "display_ts": 1754901000,
+      "sender_ts": 1754901000,
+      "recv_ts": 1754901000,
+      "sender_seq": 91,
+      "envelope_id": "70c3b1e9a24d85f06b3c9e1740da285b",
+      "envelope_ids": [
+        "70c3b1e9a24d85f06b3c9e1740da285b"
+      ],
+      "msg_id": "1fb60d3892c74ae5a03b6e19d75c284f",
+      "body": {
+        "text": "are you still coming on Thursday"
+      },
+      "delivery_state": "failed",
+      "expire_seconds": 86400
+    }
+  }
+}

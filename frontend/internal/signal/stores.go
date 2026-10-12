@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	"go.mau.fi/libsignal/ecc"
@@ -85,9 +86,96 @@ func (s *Stores) GetRemoteIdentity(address *protocol.SignalAddress) (*identity.K
 func (s *Stores) LoadPreKey(_ context.Context, id uint32) (*record.PreKey, error) {
 	raw, err := s.store.Get(opkKey(id))
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.logOPKMiss(id)
+		}
 		return nil, err
 	}
 	return record.NewPreKeyFromBytes(raw, s.serializer.PreKeyRecord)
+}
+
+func (s *Stores) logOPKMiss(id uint32) {
+	var (
+		reserved      bool
+		count         int
+		lowest        uint32
+		highest       uint32
+		erasedThrough uint32
+	)
+
+	var boundaryErr error
+	err := s.store.View(func(txn *badger.Txn) error {
+
+		erasedThrough, boundaryErr = readErasedThrough(txn)
+		if _, gerr := txn.Get(opkDispensedKey(id)); gerr == nil {
+			reserved = true
+		} else if !errors.Is(gerr, badger.ErrKeyNotFound) {
+			return gerr
+		}
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(opkKeyPrefix)
+		opts.PrefetchValues = false
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.ValidForPrefix([]byte(opkKeyPrefix)); it.Next() {
+			cur := binary.BigEndian.Uint32(it.Item().Key()[len(opkKeyPrefix):])
+			if count == 0 || cur < lowest {
+				lowest = cur
+			}
+			if cur > highest {
+				highest = cur
+			}
+			count++
+		}
+		return nil
+	})
+
+	cause := opkMissCauseUnknown
+	if err == nil && boundaryErr == nil {
+		cause = opkMissCause(id, erasedThrough, highest, count)
+	}
+	attrs := []any{
+		slog.Uint64("id", uint64(id)),
+		slog.String("cause", cause),
+		slog.Bool("reserved", reserved),
+		slog.Int("pool", count),
+		slog.Uint64("lowest", uint64(lowest)),
+		slog.Uint64("highest", uint64(highest)),
+		slog.Uint64("erased_through", uint64(erasedThrough)),
+	}
+	if err != nil {
+		attrs = append(attrs, slog.Any("read_err", err))
+	}
+	if boundaryErr != nil {
+		attrs = append(attrs, slog.Any("boundary_err", boundaryErr))
+	}
+
+	slog.Warn("one-time prekey miss", attrs...)
+}
+
+const (
+	opkMissCauseAdoption = "pool_erased_by_adoption"
+
+	opkMissCauseSpent = "spent"
+
+	opkMissCauseNeverWritten = "never_written"
+
+	opkMissCausePoolEmpty = "pool_empty"
+
+	opkMissCauseUnknown = "unknown"
+)
+
+func opkMissCause(id, erasedThrough, highest uint32, count int) string {
+	if erasedThrough > 0 && id <= erasedThrough {
+		return opkMissCauseAdoption
+	}
+	if count == 0 {
+		return opkMissCausePoolEmpty
+	}
+	if id > highest {
+		return opkMissCauseNeverWritten
+	}
+	return opkMissCauseSpent
 }
 
 func (s *Stores) StorePreKey(_ context.Context, id uint32, rec *record.PreKey) error {
@@ -108,6 +196,10 @@ func (s *Stores) ContainsPreKey(_ context.Context, id uint32) (bool, error) {
 func (s *Stores) RemovePreKey(_ context.Context, id uint32) error {
 	if err := s.store.Delete(opkKey(id)); err != nil {
 		return err
+	}
+
+	if err := s.store.Delete(opkDispensedKey(id)); err != nil {
+		slog.Debug("opk dispensed-marker delete failed", slog.Uint64("id", uint64(id)), slog.Any("err", err))
 	}
 	slog.Debug("opk consumed", slog.Uint64("id", uint64(id)))
 	minted, err := s.maybeRefill(LowWaterOPK, DefaultOPKCount)
@@ -165,46 +257,63 @@ func countAndMaxOPK(txn *badger.Txn) (count int, maxID uint32, err error) {
 	defer it.Close()
 	prefixLen := len(opkKeyPrefix)
 	for it.Rewind(); it.Valid(); it.Next() {
-		count++
 		k := it.Item().Key()
-		if len(k) == prefixLen+4 {
-			id := binary.BigEndian.Uint32(k[prefixLen:])
-			if id > maxID {
-				maxID = id
-			}
+		if len(k) != prefixLen+4 {
+			continue
 		}
+		id := binary.BigEndian.Uint32(k[prefixLen:])
+		if id > maxID {
+			maxID = id
+		}
+		if _, derr := txn.Get(opkDispensedKey(id)); derr == nil {
+			continue
+		} else if !errors.Is(derr, badger.ErrKeyNotFound) {
+			return 0, 0, derr
+		}
+		count++
 	}
 	return count, maxID, nil
 }
 
-func (s *Stores) AvailableOPK() (uint32, []byte, error) {
+func (s *Stores) DispenseOPK() (uint32, []byte, error) {
 	var chosen *record.PreKey
-	err := s.store.View(func(txn *badger.Txn) error {
+	err := s.store.Update(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = []byte(opkKeyPrefix)
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		it.Rewind()
-		if !it.Valid() {
+		for it.Rewind(); it.ValidForPrefix([]byte(opkKeyPrefix)); it.Next() {
+			item := it.Item()
+			id := binary.BigEndian.Uint32(item.Key()[len(opkKeyPrefix):])
+			if _, derr := txn.Get(opkDispensedKey(id)); derr == nil {
+				continue
+			} else if !errors.Is(derr, badger.ErrKeyNotFound) {
+				return derr
+			}
+			var raw []byte
+			if err := item.Value(func(v []byte) error {
+				raw = append([]byte(nil), v...)
+				return nil
+			}); err != nil {
+				return err
+			}
+			opk, err := decodePreKey(raw, s.serializer.PreKeyRecord)
+			if err != nil {
+				return fmt.Errorf("decode opk: %w", err)
+			}
+			var stamp [8]byte
+			binary.BigEndian.PutUint64(stamp[:], uint64(time.Now().Unix()))
+			if err := txn.Set(opkDispensedKey(id), stamp[:]); err != nil {
+				return err
+			}
+			chosen = opk
 			return nil
 		}
-		var raw []byte
-		if err := it.Item().Value(func(v []byte) error {
-			raw = append([]byte(nil), v...)
-			return nil
-		}); err != nil {
-			return err
-		}
-		opk, err := decodePreKey(raw, s.serializer.PreKeyRecord)
-		if err != nil {
-			return fmt.Errorf("decode opk: %w", err)
-		}
-		chosen = opk
 		return nil
 	})
 	if err != nil {
-		return 0, nil, fmt.Errorf("signal: available opk: %w", err)
+		return 0, nil, fmt.Errorf("signal: dispense opk: %w", err)
 	}
 	if chosen == nil {
 		return 0, nil, ErrOPKPoolEmpty
@@ -212,6 +321,13 @@ func (s *Stores) AvailableOPK() (uint32, []byte, error) {
 	id := chosen.ID()
 	if id.IsEmpty {
 		return 0, nil, ErrOPKPoolEmpty
+	}
+	slog.Debug("opk dispensed into an invite bundle", slog.Uint64("id", uint64(id.Value)))
+
+	if minted, rerr := s.maybeRefill(LowWaterOPK, DefaultOPKCount); rerr != nil {
+		slog.Debug("opk refill after dispense failed", slog.Any("err", rerr))
+	} else if minted > 0 {
+		slog.Debug("opk pool refilled after dispense", slog.Int("minted", minted))
 	}
 	return id.Value, chosen.KeyPair().PublicKey().Serialize(), nil
 }
@@ -278,6 +394,29 @@ func (s *Stores) LoadSession(_ context.Context, address *protocol.SignalAddress)
 		return nil, err
 	}
 	return record.NewSessionFromBytes(raw, s.serializer.Session, s.serializer.State)
+}
+
+func (s *Stores) RemoteRegistrationID(_ context.Context, address *protocol.SignalAddress) (uint32, bool, error) {
+	raw, err := s.store.Get(sessionKey(address.String()))
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	rec, err := record.NewSessionFromBytes(raw, s.serializer.Session, s.serializer.State)
+	if err != nil {
+		return 0, false, err
+	}
+	st := rec.SessionState()
+	if st == nil {
+		return 0, false, nil
+	}
+	id := st.RemoteRegistrationID()
+	if id == 0 {
+		return 0, false, nil
+	}
+	return id, true, nil
 }
 
 func (s *Stores) GetSubDeviceSessions(_ context.Context, _ string) ([]uint32, error) {

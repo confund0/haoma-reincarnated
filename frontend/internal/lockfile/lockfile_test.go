@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestAcquire_HappyPath(t *testing.T) {
@@ -62,6 +63,48 @@ func TestAcquire_AfterReleaseSucceeds(t *testing.T) {
 		t.Fatalf("re-Acquire after Release: %v", err)
 	}
 	defer lk2.Release()
+}
+
+func TestAcquireBlocking_WaitsThenTakesIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.lock")
+
+	held, err := AcquireBlocking(path)
+	if err != nil {
+		t.Fatalf("first AcquireBlocking: %v", err)
+	}
+
+	second := make(chan *Lock, 1)
+	failed := make(chan error, 1)
+	go func() {
+		lk, err := AcquireBlocking(path)
+		if err != nil {
+			failed <- err
+			return
+		}
+		second <- lk
+	}()
+
+	select {
+	case <-second:
+		t.Fatal("second AcquireBlocking returned while the first still held the lock")
+	case err := <-failed:
+		t.Fatalf("second AcquireBlocking errored instead of waiting: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	if err := held.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	select {
+	case lk := <-second:
+		_ = lk.Release()
+	case err := <-failed:
+		t.Fatalf("second AcquireBlocking errored after release: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("second AcquireBlocking still waiting after the first released")
+	}
 }
 
 func TestRelease_Idempotent(t *testing.T) {

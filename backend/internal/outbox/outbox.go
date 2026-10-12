@@ -36,17 +36,24 @@ const (
 )
 
 type OutboxRow struct {
-	EnvelopeID     string         `json:"envelope_id"`
-	Dest           string         `json:"dest"`
-	Envelope       xport.Envelope `json:"envelope"`
-	State          string         `json:"state"`
-	Attempts       int            `json:"attempts"`
-	AckFailures    int            `json:"ack_failures,omitempty"`
-	FirstAt        int64          `json:"first_at"`
-	NextAttemptAt  int64          `json:"next_attempt_at"`
-	StateChangedAt int64          `json:"state_changed_at"`
-	LastError      string         `json:"last_error,omitempty"`
+	EnvelopeID  string         `json:"envelope_id"`
+	Dest        string         `json:"dest"`
+	Envelope    xport.Envelope `json:"envelope"`
+	State       string         `json:"state"`
+	Attempts    int            `json:"attempts"`
+	AckFailures int            `json:"ack_failures,omitempty"`
+
+	Kicked         bool   `json:"kicked,omitempty"`
+	KickedAttempts int    `json:"kicked_attempts,omitempty"`
+	FirstAt        int64  `json:"first_at"`
+	NextAttemptAt  int64  `json:"next_attempt_at"`
+	StateChangedAt int64  `json:"state_changed_at"`
+	LastError      string `json:"last_error,omitempty"`
+
+	GaveUp bool `json:"gave_up,omitempty"`
 }
+
+func (r *OutboxRow) CountedAttempts() int { return r.Attempts - r.KickedAttempts }
 
 type DeliveryStatus struct {
 	EnvelopeID string `json:"envelope_id"`
@@ -165,7 +172,7 @@ func (s *Store) Load(envID string) (*OutboxRow, error) {
 	return &row, nil
 }
 
-func (s *Store) Advance(row *OutboxRow, newState string, nextAt time.Time, attempts, ackFailures int, lastErr string, now time.Time) error {
+func (s *Store) Advance(row *OutboxRow, newState string, nextAt time.Time, attempts, kickedAttempts, ackFailures int, lastErr string, now time.Time) error {
 	terminal := newState == StateSent || newState == StateFailed
 
 	oldDueKey := makeDueKey(time.Unix(0, row.NextAttemptAt), row.EnvelopeID)
@@ -176,6 +183,8 @@ func (s *Store) Advance(row *OutboxRow, newState string, nextAt time.Time, attem
 	updated := *row
 	updated.State = newState
 	updated.Attempts = attempts
+	updated.KickedAttempts = kickedAttempts
+	updated.Kicked = false
 	updated.AckFailures = ackFailures
 	updated.LastError = lastErr
 	updated.StateChangedAt = now.UnixNano()
@@ -302,6 +311,18 @@ func (s *Store) KickByDests(dests []string, now time.Time) (int, error) {
 	for _, d := range dests {
 		want[d] = struct{}{}
 	}
+	n, _, err := s.kick(func(dest string) bool {
+		_, ok := want[dest]
+		return ok
+	}, now)
+	return n, err
+}
+
+func (s *Store) KickAll(keep func(dest string) bool, now time.Time) (int, []string, error) {
+	return s.kick(keep, now)
+}
+
+func (s *Store) kick(match func(dest string) bool, now time.Time) (int, []string, error) {
 	nowNanos := now.UnixNano()
 	prefix := statePrefix + StateEnqueued + ":"
 
@@ -318,10 +339,11 @@ func (s *Store) KickByDests(dests []string, now time.Time) (int, error) {
 			if err := loadInTxn(txn, envID, &row); err != nil {
 				return err
 			}
-			if _, ok := want[row.Dest]; !ok {
+			if match != nil && !match(row.Dest) {
 				continue
 			}
 			if row.NextAttemptAt <= nowNanos {
+
 				continue
 			}
 			toKick = append(toKick, &row)
@@ -329,18 +351,35 @@ func (s *Store) KickByDests(dests []string, now time.Time) (int, error) {
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if len(toKick) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 
+	if kickBetweenReadAndWrite != nil {
+		kickBetweenReadAndWrite()
+	}
+	var moved []*OutboxRow
 	err = s.st.Update(func(txn *badger.Txn) error {
-		for _, row := range toKick {
+		moved = moved[:0]
+		for _, seen := range toKick {
+
+			var row OutboxRow
+			if err := loadInTxn(txn, seen.EnvelopeID, &row); err != nil {
+				if errors.Is(err, badger.ErrKeyNotFound) {
+					continue
+				}
+				return err
+			}
+			if row.State != StateEnqueued || row.NextAttemptAt <= nowNanos {
+				continue
+			}
 			oldDueKey := makeDueKey(time.Unix(0, row.NextAttemptAt), row.EnvelopeID)
 			newDueKey := makeDueKey(now, row.EnvelopeID)
-			updated := *row
+			updated := row
 			updated.NextAttemptAt = nowNanos
+			updated.Kicked = true
 			raw, err := json.Marshal(updated)
 			if err != nil {
 				return err
@@ -354,17 +393,31 @@ func (s *Store) KickByDests(dests []string, now time.Time) (int, error) {
 			if err := txn.Set(newDueKey, []byte(row.EnvelopeID)); err != nil {
 				return err
 			}
+			moved = append(moved, &row)
 		}
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return len(toKick), nil
+	seen := make(map[string]struct{}, len(moved))
+	var dests []string
+	for _, row := range moved {
+		if _, ok := seen[row.Dest]; ok {
+			continue
+		}
+		seen[row.Dest] = struct{}{}
+		dests = append(dests, row.Dest)
+	}
+	return len(moved), dests, nil
 }
 
+var kickBetweenReadAndWrite func()
+
+const SentRetention = 7 * 24 * time.Hour
+
 const (
-	gcSentAge   = 7 * 24 * time.Hour
+	gcSentAge   = SentRetention
 	gcFailedAge = 30 * 24 * time.Hour
 )
 
@@ -428,6 +481,14 @@ type Worker struct {
 
 	Gate func() bool
 
+	GateWatch time.Duration
+
+	SkipDest func(dest string) bool
+
+	OnSendSuccess func(dest string)
+
+	OnUndelivered func(dest string, queuedAt time.Time, countedAttempts int)
+
 	OnDialFailure func(dest string)
 
 	Tick              time.Duration
@@ -454,6 +515,11 @@ type destState struct {
 	kick chan struct{}
 }
 
+const (
+	DefaultGiveUpAge   = 48 * time.Hour
+	DefaultMaxAttempts = 72
+)
+
 func NewWorker(st *Store, sender Sender, ackVerifier AckVerifier, bus *Bus) *Worker {
 	return &Worker{
 		store:             st,
@@ -463,10 +529,11 @@ func NewWorker(st *Store, sender Sender, ackVerifier AckVerifier, bus *Bus) *Wor
 		dests:             map[string]*destState{},
 		drainCh:           make(chan struct{}),
 		Tick:              30 * time.Second,
+		GateWatch:         time.Second,
 		GCInterval:        1 * time.Hour,
 		Backoff:           doublingBackoffWithJitter,
-		MaxAttempts:       12,
-		DeadLetterAge:     7 * 24 * time.Hour,
+		MaxAttempts:       DefaultMaxAttempts,
+		DeadLetterAge:     DefaultGiveUpAge,
 		AckVerifyMaxTries: 5,
 		SendTimeout:       60 * time.Second,
 		now:               time.Now,
@@ -505,11 +572,29 @@ func (w *Worker) KickByDests(dests []string) (int, error) {
 	return n, nil
 }
 
+func (w *Worker) KickAll(keep func(dest string) bool) (rows, dests int, err error) {
+	n, moved, err := w.store.KickAll(keep, w.now())
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, d := range moved {
+		w.ensureDest(d)
+		w.signalDest(d)
+	}
+	return n, len(moved), nil
+}
+
 func (w *Worker) Run(ctx context.Context) error {
 	w.destsMu.Lock()
 	w.runCtx = ctx
 	w.running = true
 	w.destsMu.Unlock()
+
+	watchGate := w.Gate != nil && w.GateWatch > 0
+	gateOpen := true
+	if watchGate {
+		gateOpen = w.Gate()
+	}
 
 	seedRows, err := w.store.ListByState(StateEnqueued, 0, 0)
 	if err != nil {
@@ -528,8 +613,22 @@ func (w *Worker) Run(ctx context.Context) error {
 	gcTick := time.NewTicker(w.GCInterval)
 	defer gcTick.Stop()
 
+	var gateC <-chan time.Time
+	if watchGate {
+		gateTick := time.NewTicker(w.GateWatch)
+		defer gateTick.Stop()
+		gateC = gateTick.C
+	}
+
 	for {
 		select {
+		case <-gateC:
+			open := w.Gate()
+			if open && !gateOpen {
+				n := w.wakeAllDests()
+				slog.Debug("outbox: gate opened; woke every destination", slog.Int("destinations", n))
+			}
+			gateOpen = open
 		case <-ctx.Done():
 
 			w.destsMu.Lock()
@@ -558,6 +657,22 @@ func (w *Worker) ensureDest(dest string) {
 	w.dests[dest] = ds
 	w.destsWG.Add(1)
 	go w.runDest(dest, ds)
+}
+
+func (w *Worker) wakeAllDests() int {
+	w.destsMu.Lock()
+	all := make([]*destState, 0, len(w.dests))
+	for _, ds := range w.dests {
+		all = append(all, ds)
+	}
+	w.destsMu.Unlock()
+	for _, ds := range all {
+		select {
+		case ds.kick <- struct{}{}:
+		default:
+		}
+	}
+	return len(all)
 }
 
 func (w *Worker) signalDest(dest string) {
@@ -591,9 +706,49 @@ func (w *Worker) runDest(dest string, ds *destState) {
 	}
 }
 
+func rowsForDest(rows []*OutboxRow, dest string) []*OutboxRow {
+	mine := make([]*OutboxRow, 0, len(rows))
+	for _, row := range rows {
+		if row.Dest == dest {
+			mine = append(mine, row)
+		}
+	}
+	return mine
+}
+
+func orderPass(rows []*OutboxRow, dest string) []*OutboxRow {
+	ordered := make([]*OutboxRow, 0, len(rows))
+	var deferred int
+	for _, row := range rows {
+		if row.Attempts == 0 {
+			ordered = append(ordered, row)
+		}
+	}
+	for _, row := range rows {
+		if row.Attempts != 0 {
+			ordered = append(ordered, row)
+			deferred++
+		}
+	}
+	if deferred > 0 && len(ordered) > deferred {
+		slog.Debug("outbox: fresh rows ordered ahead of failed ones",
+			slog.String("dest", dest),
+			slog.Int("fresh", len(ordered)-deferred),
+			slog.Int("already_failed", deferred),
+		)
+	}
+	return ordered
+}
+
 func (w *Worker) drainDest(ctx context.Context, dest string) {
 	if w.Gate != nil && !w.Gate() {
 		slog.Debug("outbox: drain skipped (gate closed)", slog.String("dest", dest))
+		return
+	}
+	if w.SkipDest != nil && w.SkipDest(dest) {
+		slog.Debug("outbox: drain skipped, this destination is held",
+			slog.String("dest", dest),
+		)
 		return
 	}
 	rows, err := w.store.ListDue(w.now())
@@ -601,10 +756,7 @@ func (w *Worker) drainDest(ctx context.Context, dest string) {
 		slog.Warn("outbox: list due failed", slog.String("dest", dest), slog.Any("err", err))
 		return
 	}
-	for _, row := range rows {
-		if row.Dest != dest {
-			continue
-		}
+	for _, row := range orderPass(rowsForDest(rows, dest), dest) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -642,6 +794,8 @@ func (w *Worker) Drain(ctx context.Context) {
 	}
 }
 
+const resendOnNewCircuitLine = "outbox: sending again at once on a new circuit"
+
 func (w *Worker) processRow(ctx context.Context, row *OutboxRow) {
 	now := w.now()
 	slog.Debug("outbox: attempting send",
@@ -652,6 +806,16 @@ func (w *Worker) processRow(ctx context.Context, row *OutboxRow) {
 	sendCtx, cancel := context.WithTimeout(ctx, w.SendTimeout)
 	body, sendErr := w.sender.Send(sendCtx, row.Dest, row.Envelope)
 	cancel()
+	if errors.Is(sendErr, xport.ErrCircuitRenewed) && ctx.Err() == nil {
+
+		slog.Debug(resendOnNewCircuitLine,
+			slog.String("envelope_id", row.EnvelopeID),
+			slog.String("dest", row.Dest),
+		)
+		sendCtx, cancel = context.WithTimeout(ctx, w.SendTimeout)
+		body, sendErr = w.sender.Send(sendCtx, row.Dest, row.Envelope)
+		cancel()
+	}
 
 	if sendErr != nil {
 		w.handleSendErr(row, sendErr, now)
@@ -662,6 +826,12 @@ func (w *Worker) processRow(ctx context.Context, row *OutboxRow) {
 
 func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 	newAttempts := row.Attempts + 1
+
+	newKicked := row.KickedAttempts
+	if row.Kicked {
+		newKicked++
+	}
+	counted := newAttempts - newKicked
 	var peerErr *xport.PeerHTTPError
 	isPeerHTTP := errors.As(sendErr, &peerErr)
 
@@ -671,7 +841,7 @@ func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 			slog.String("dest", row.Dest),
 			slog.String("err", peerErr.Error()),
 		)
-		w.transition(row, StateFailed, time.Time{}, newAttempts, row.AckFailures, logid.RedactOnions(peerErr.Error()), now)
+		w.transition(row, StateFailed, time.Time{}, newAttempts, newKicked, row.AckFailures, false, logid.RedactOnions(peerErr.Error()), now)
 		return
 	}
 
@@ -679,19 +849,26 @@ func (w *Worker) handleSendErr(row *OutboxRow, sendErr error, now time.Time) {
 		w.OnDialFailure(row.Dest)
 	}
 
-	if newAttempts >= w.MaxAttempts || now.UnixNano()-row.FirstAt >= int64(w.DeadLetterAge) {
-		w.transition(row, StateFailed, time.Time{}, newAttempts, row.AckFailures, logid.RedactOnions(sendErr.Error()), now)
+	if counted >= w.MaxAttempts || now.UnixNano()-row.FirstAt >= int64(w.DeadLetterAge) {
+
+		gaveUp := *row
+		gaveUp.GaveUp = true
+		if w.transition(&gaveUp, StateFailed, time.Time{}, newAttempts, newKicked, row.AckFailures, false, logid.RedactOnions(sendErr.Error()), now) && w.OnUndelivered != nil {
+			w.OnUndelivered(row.Dest, time.Unix(0, row.FirstAt), counted)
+		}
 		return
 	}
 
-	nextAt := now.Add(w.Backoff(newAttempts))
+	nextAt := now.Add(w.Backoff(counted))
 	slog.Debug("outbox: rescheduling",
 		slog.String("envelope_id", row.EnvelopeID),
 		slog.Int("attempts", newAttempts),
+		slog.Int("kicked_attempts", newKicked),
+		slog.Bool("was_kicked", row.Kicked),
 		slog.Time("next_at", nextAt),
 		slog.Any("err", sendErr),
 	)
-	if err := w.store.Advance(row, StateEnqueued, nextAt, newAttempts, row.AckFailures, logid.RedactOnions(sendErr.Error()), now); err != nil {
+	if err := w.store.Advance(row, StateEnqueued, nextAt, newAttempts, newKicked, row.AckFailures, logid.RedactOnions(sendErr.Error()), now); err != nil {
 		slog.Warn("outbox: advance (reschedule) failed",
 			slog.String("envelope_id", row.EnvelopeID),
 			slog.Any("err", err),
@@ -707,7 +884,7 @@ func (w *Worker) handleSendOK(ctx context.Context, row *OutboxRow, body []byte, 
 			slog.String("envelope_id", row.EnvelopeID),
 			slog.String("dest", row.Dest),
 		)
-		w.transition(row, StateSent, time.Time{}, row.Attempts+1, 0, "", now)
+		w.transition(row, StateSent, time.Time{}, row.Attempts+1, row.KickedAttempts, 0, false, "", now)
 		return
 	}
 	if w.ackV == nil {
@@ -715,17 +892,24 @@ func (w *Worker) handleSendOK(ctx context.Context, row *OutboxRow, body []byte, 
 		slog.Warn("outbox: no AckVerifier; treating 200+body as sent (back-compat)",
 			slog.String("envelope_id", row.EnvelopeID),
 		)
-		w.transition(row, StateSent, time.Time{}, row.Attempts+1, 0, "", now)
+		w.transition(row, StateSent, time.Time{}, row.Attempts+1, row.KickedAttempts, 0, false, "", now)
 		return
 	}
 	if err := w.ackV.VerifyAck(ctx, trimmed, row.Dest); err != nil {
+		newAttempts := row.Attempts + 1
+
+		newKicked := row.KickedAttempts
+		if row.Kicked {
+			newKicked++
+		}
+		counted := newAttempts - newKicked
 		newAckFails := row.AckFailures + 1
 		redacted := "ack verify: " + logid.RedactOnions(err.Error())
 		if newAckFails >= w.AckVerifyMaxTries {
-			w.transition(row, StateFailed, time.Time{}, row.Attempts+1, newAckFails, redacted, now)
+			w.transition(row, StateFailed, time.Time{}, newAttempts, newKicked, newAckFails, false, redacted, now)
 		} else {
-			nextAt := now.Add(w.Backoff(row.Attempts + 1))
-			if err2 := w.store.Advance(row, StateEnqueued, nextAt, row.Attempts+1, newAckFails, redacted, now); err2 != nil {
+			nextAt := now.Add(w.Backoff(counted))
+			if err2 := w.store.Advance(row, StateEnqueued, nextAt, newAttempts, newKicked, newAckFails, redacted, now); err2 != nil {
 				slog.Warn("outbox: advance (bad ack reschedule) failed",
 					slog.String("envelope_id", row.EnvelopeID),
 					slog.Any("err", err2),
@@ -734,22 +918,23 @@ func (w *Worker) handleSendOK(ctx context.Context, row *OutboxRow, body []byte, 
 		}
 		return
 	}
-	w.transition(row, StateSent, time.Time{}, row.Attempts+1, 0, "", now)
+
+	w.transition(row, StateSent, time.Time{}, row.Attempts+1, row.KickedAttempts, 0, true, "", now)
 }
 
-func (w *Worker) transition(row *OutboxRow, newState string, nextAt time.Time, attempts, ackFailures int, lastErr string, now time.Time) {
+func (w *Worker) transition(row *OutboxRow, newState string, nextAt time.Time, attempts, kickedAttempts, ackFailures int, peerAuthenticated bool, lastErr string, now time.Time) bool {
 	slog.Debug("outbox: transition",
 		slog.String("envelope_id", row.EnvelopeID),
-		slog.String("from", row.State),
+		slog.String("from_state", row.State),
 		slog.String("to", newState),
 	)
-	if err := w.store.Advance(row, newState, nextAt, attempts, ackFailures, lastErr, now); err != nil {
+	if err := w.store.Advance(row, newState, nextAt, attempts, kickedAttempts, ackFailures, lastErr, now); err != nil {
 		slog.Warn("outbox: advance failed",
 			slog.String("envelope_id", row.EnvelopeID),
 			slog.String("new_state", newState),
 			slog.Any("err", err),
 		)
-		return
+		return false
 	}
 	w.bus.publish(DeliveryStatus{
 		EnvelopeID: row.EnvelopeID,
@@ -758,6 +943,14 @@ func (w *Worker) transition(row *OutboxRow, newState string, nextAt time.Time, a
 		Attempts:   attempts,
 		LastError:  lastErr,
 	})
+
+	if newState == StateSent && peerAuthenticated && w.OnSendSuccess != nil {
+		slog.Debug("outbox: ack verified, peer is reachable",
+			slog.String("envelope_id", row.EnvelopeID),
+		)
+		w.OnSendSuccess(row.Dest)
+	}
+	return true
 }
 
 func makeRowKey(envID string) []byte {
@@ -789,8 +982,10 @@ func loadInTxn(txn *badger.Txn, envID string, row *OutboxRow) error {
 	})
 }
 
+const BackoffBase = 30 * time.Second
+
 func doublingBackoffWithJitter(attempts int) time.Duration {
-	base := 30 * time.Second
+	base := BackoffBase
 	for i := 1; i < attempts; i++ {
 		base *= 2
 		if base >= time.Hour {

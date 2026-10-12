@@ -1,0 +1,13 @@
+{
+  "type": "msg.read-receipt-sent",
+  "payload": {
+    "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+    "envelope_id": "d59b03c8a17e42f6805b1c9e73d04a26",
+    "msg_id": "0b3e79c14fa8256d90c1b7e438f05a92",
+    "sender_seq": 346,
+    "targets": [
+      "6ad3910e75c2483bb0f9e6172c8d5401",
+      "b58c1e703da24f96820b7c1e5d436a09"
+    ]
+  }
+}

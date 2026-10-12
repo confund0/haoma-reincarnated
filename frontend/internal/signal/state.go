@@ -17,13 +17,14 @@ import (
 )
 
 const (
-	keyRegistrationID = "signal:reg_id"
-	keyIdentityPub    = "signal:identity_pub"
-	keyIdentityPriv   = "signal:identity_priv"
-	spkKeyPrefix      = "signal:spk:"
-	opkKeyPrefix      = "signal:opk:"
-	remoteIdentPrefix = "signal:remote_ident:"
-	sessionPrefix     = "signal:session:"
+	keyRegistrationID  = "signal:reg_id"
+	keyIdentityPub     = "signal:identity_pub"
+	keyIdentityPriv    = "signal:identity_priv"
+	spkKeyPrefix       = "signal:spk:"
+	opkKeyPrefix       = "signal:opk:"
+	opkDispensedPrefix = "signal:opk_out:"
+	remoteIdentPrefix  = "signal:remote_ident:"
+	sessionPrefix      = "signal:session:"
 )
 
 const DefaultOPKCount = 100
@@ -206,7 +207,7 @@ func Load(st *store.Store) (*State, error) {
 	return state, nil
 }
 
-func (s *State) AvailableOPK() (uint32, []byte, error) {
+func (s *State) DispenseOPK() (uint32, []byte, error) {
 	for _, k := range s.OneTimePreKeys {
 		id := k.ID()
 		if id.IsEmpty {
@@ -265,7 +266,9 @@ func ConsumeOneTimePreKey(st *store.Store, id uint32) error {
 }
 
 func opkKey(id uint32) []byte { return prefixedIDKey(opkKeyPrefix, id) }
-func spkKey(id uint32) []byte { return prefixedIDKey(spkKeyPrefix, id) }
+
+func opkDispensedKey(id uint32) []byte { return prefixedIDKey(opkDispensedPrefix, id) }
+func spkKey(id uint32) []byte          { return prefixedIDKey(spkKeyPrefix, id) }
 
 func prefixedIDKey(prefix string, id uint32) []byte {
 	b := make([]byte, 0, len(prefix)+4)

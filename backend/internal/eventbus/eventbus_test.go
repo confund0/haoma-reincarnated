@@ -175,3 +175,34 @@ func TestBus_PrefixExact_MatchesExactTopic(t *testing.T) {
 	recvTopic(t, ch, TopicSystemIDSEvent)
 	recvNone(t, ch, 50*time.Millisecond)
 }
+
+func TestBus_PublishReportsDeliveredAndDropped(t *testing.T) {
+	var b Bus
+
+	if delivered, dropped := b.Publish(TopicInboxReceived, "nobody"); delivered != 0 || dropped != 0 {
+		t.Fatalf("no subscribers: delivered=%d dropped=%d, want 0 and 0", delivered, dropped)
+	}
+
+	taking, cancelTaking := b.Subscribe("", 4)
+	defer cancelTaking()
+	full, cancelFull := b.Subscribe("", 1)
+	defer cancelFull()
+
+	if delivered, dropped := b.Publish(TopicInboxReceived, "first"); delivered != 2 || dropped != 0 {
+		t.Fatalf("first publish: delivered=%d dropped=%d, want 2 and 0", delivered, dropped)
+	}
+
+	delivered, dropped := b.Publish(TopicInboxReceived, "second")
+	if delivered != 1 || dropped != 1 {
+		t.Fatalf("second publish: delivered=%d dropped=%d, want 1 and 1", delivered, dropped)
+	}
+
+	_, cancelOther := b.Subscribe("peer.", 1)
+	defer cancelOther()
+	if _, dropped := b.Publish(TopicInboxReceived, "third"); dropped != 1 {
+		t.Fatalf("a non-matching prefix was counted: dropped=%d, want 1", dropped)
+	}
+
+	recvTopic(t, taking, TopicInboxReceived)
+	recvTopic(t, full, TopicInboxReceived)
+}

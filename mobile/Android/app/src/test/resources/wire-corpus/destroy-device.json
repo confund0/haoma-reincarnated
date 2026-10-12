@@ -1,0 +1,7 @@
+{
+  "type": "destroy_device",
+  "payload": {
+    "reason": "a linked device commanded this one to erase itself",
+    "erase_id": "3f9c2ab7d1e04856"
+  }
+}

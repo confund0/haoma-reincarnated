@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"haoma-frontend/internal/events"
 	"haoma-frontend/internal/ipc"
 	"haoma-frontend/internal/ipcclient"
 )
@@ -25,7 +27,11 @@ type App struct {
 	pages   *tview.Pages
 	winBar  *tview.TextView
 	hintBar *tview.TextView
+	topBar  *tview.Flex
 	sysBar  *tview.TextView
+
+	joinBar *tview.TextView
+	sysRow  *tview.Flex
 	input   *tview.InputField
 
 	haomaConnected  bool
@@ -35,6 +41,11 @@ type App struct {
 	torUnreachable  bool
 	torOnionCount   int
 
+	deviceAlert bool
+
+	lastSkew     *int
+	lastSkewOver bool
+
 	lastLoggedHaoma   int
 	lastLoggedBackend int
 
@@ -43,8 +54,35 @@ type App struct {
 
 	statusView *tview.TextView
 
-	peers        []ipc.PeerEntry
+	peers []ipc.PeerEntry
+
+	ceremonyMu   sync.Mutex
+	flow         *linkFlow
+	ceremonyStop chan struct{}
+
+	pairJoin pairJoinWait
+
+	verifyMu     sync.Mutex
+	verifyStop   chan struct{}
 	contactTable *tview.Table
+
+	inherited     []ipc.InheritedContactEntry
+	contactRows   []contactRow
+	contactMarked map[string]bool
+	pairState     map[string]string
+	pairQueue     []string
+	pairRunning   bool
+
+	pairOffered map[string]bool
+
+	pairOpenOnly map[string]bool
+
+	pushedDuringOffer map[string]bool
+
+	linked bool
+
+	inheritedFrame *tview.Table
+	inheritedRows  []inheritedRow
 
 	chats      []ipc.ChatEntry
 	chatsTable *tview.Table
@@ -63,7 +101,7 @@ type App struct {
 	escPending bool
 
 	selfPresence string
-	peerPresence map[string]string
+	peerPresence map[string]presenceView
 
 	selfNick          string
 	selfNickIsDefault bool
@@ -71,7 +109,19 @@ type App struct {
 	defaultRetentionSec uint64
 	defaultSendReceipts bool
 
+	chatDefaultsKnown bool
+
 	pendingOnionInvites map[string]pendingOnionInvite
+
+	pendingLinkOffers map[string]pendingOnionInvite
+
+	lastLinkOfferHandle string
+
+	invitesRefresh func()
+
+	invitesDismiss func()
+
+	invitesAnsweredHere map[string]bool
 
 	activeCalls map[string]ipc.CallEntry
 
@@ -107,9 +157,13 @@ type App struct {
 
 	VaultCtl VaultController
 
+	SystemTor bool
+
 	BackupCtl BackupController
 
 	settings *settingsPage
+
+	syncWait syncOutstanding
 }
 
 type responseHandler func(f ipc.Frame)
@@ -131,8 +185,9 @@ func New(client *ipcclient.Client) *App {
 		history:             map[string][]string{},
 		historyIdx:          map[string]int{},
 		drafts:              map[string]string{},
-		peerPresence:        map[string]string{},
+		peerPresence:        map[string]presenceView{},
 		pendingOnionInvites: map[string]pendingOnionInvite{},
+		pendingLinkOffers:   map[string]pendingOnionInvite{},
 		activeCalls:         map[string]ipc.CallEntry{},
 		liveCalls:           map[string]*liveCallPage{},
 		videoSinks:          map[string]context.CancelFunc{},
@@ -140,6 +195,9 @@ func New(client *ipcclient.Client) *App {
 		rotationCooldowns:   map[string]rotationCooldown{},
 		lastLoggedHaoma:     -1,
 		lastLoggedBackend:   -1,
+
+		defaultRetentionSec: 28 * 24 * 3600,
+		defaultSendReceipts: true,
 	}
 	a.lastActivity.Store(time.Now().Unix())
 
@@ -148,9 +206,9 @@ func New(client *ipcclient.Client) *App {
 	a.statusView = newStatusView()
 	a.statusView.SetChangedFunc(func() { a.app.Draw() })
 
-	a.contactTable = buildContactsTable(nil, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+	a.contactTable = buildContactsTable(nil, a.peerPresenceOf, a.peerRotationCell, a.openChat)
 
-	a.chatsTable = buildChatsTable(nil, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+	a.chatsTable = buildChatsTable(nil, a.peerLabelForChat, a.chatPresence, a.peerRotationCell, a.openChat)
 
 	a.pages = tview.NewPages()
 	a.pages.AddPage("status", a.statusView, true, true)
@@ -166,7 +224,7 @@ func New(client *ipcclient.Client) *App {
 	a.hintBar = tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignRight).
-		SetText(a.hintBarText("status"))
+		SetText(hintStrip(a.hintBarText("status")))
 	a.hintBar.SetChangedFunc(func() { a.app.Draw() })
 
 	a.sysBar = tview.NewTextView().
@@ -174,6 +232,11 @@ func New(client *ipcclient.Client) *App {
 		SetText(a.sysBarText())
 	a.sysBar.SetBackgroundColor(tcell.NewRGBColor(0x20, 0x20, 0x20))
 	a.sysBar.SetChangedFunc(func() { a.app.Draw() })
+	a.joinBar = tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignRight)
+	a.joinBar.SetBackgroundColor(tcell.NewRGBColor(0x20, 0x20, 0x20))
+	a.joinBar.SetChangedFunc(func() { a.app.Draw() })
 
 	a.input = tview.NewInputField().
 		SetLabel("> ").
@@ -226,13 +289,19 @@ func New(client *ipcclient.Client) *App {
 
 	topBar := tview.NewFlex().
 		AddItem(a.winBar, 0, 1, false).
-		AddItem(a.hintBar, 30, 0, false)
+		AddItem(a.hintBar, 0, 0, false)
+	a.topBar = topBar
+
+	sysRow := tview.NewFlex().
+		AddItem(a.sysBar, 0, 1, false).
+		AddItem(a.joinBar, 0, 0, false)
+	a.sysRow = sysRow
 
 	root := tview.NewFlex().
 		SetDirection(tview.FlexRow).
 		AddItem(a.pages, 0, 1, false).
 		AddItem(topBar, 1, 0, false).
-		AddItem(a.sysBar, 1, 0, false).
+		AddItem(sysRow, 1, 0, false).
 		AddItem(a.input, 1, 0, true)
 
 	a.mainRoot = root
@@ -241,14 +310,20 @@ func New(client *ipcclient.Client) *App {
 
 	appendStatus(a.statusView, "[yellow]connecting to haoma…[white]")
 
-	go a.pumpIncoming()
-	go a.pumpConnection()
+	if client != nil {
+		go a.pumpIncoming()
+		go a.pumpConnection()
+	}
 	return a
 }
 
 func (a *App) Run() error {
 	defer a.client.Close()
 	return a.app.Run()
+}
+
+func (a *App) SetScreen(s tcell.Screen) {
+	a.app.SetScreen(s)
 }
 
 func (a *App) Stop() {
@@ -284,9 +359,13 @@ func (a *App) winBarText() string {
 		n := i + 1
 		unread := a.chatBadge[name] || (name == "chats" && chatsHasUnread)
 		inCall := strings.HasPrefix(name, "chat:") && chatsInCall[strings.TrimPrefix(name, "chat:")]
+
+		alert := name == "status" && a.deviceAlert
 		switch {
 		case inCall:
 			fmt.Fprintf(&sb, " %s[%d:%s %s]%s", StyleWinBarInCall, n, a.winName(name), GlyphInCall, StyleReset)
+		case alert:
+			fmt.Fprintf(&sb, " %s[%d:%s %s]%s", StyleWinBarAlert, n, a.winName(name), GlyphAlert, StyleReset)
 		case name == front:
 			fmt.Fprintf(&sb, " %s[%d:%s]%s", StyleWinBarActive, n, a.winName(name), StyleReset)
 		case unread:
@@ -298,17 +377,54 @@ func (a *App) winBarText() string {
 	return sb.String()
 }
 
+const (
+	hintContactsSolo = "Keys: e:edit f:fp"
+	hintContacts     = "Keys: e:edit f:fp tab:switch"
+	hintInherited    = "Keys: space:mark p:pair v:details x:stop tab:switch"
+	hintChats        = "Keys: e:edit"
+	hintChat         = "Keys: PgUp:older"
+)
+
+func hintBarWidth(hint string) int {
+	if hint == "" {
+		return 0
+	}
+
+	return len([]rune(hint)) + 1
+}
+
 func (a *App) hintBarText(name string) string {
 	var hint string
 	switch {
 	case name == "contacts":
-		hint = "Keys: e:edit f:fp"
+
+		a.winMu.Lock()
+		enterable := a.linked && len(a.inherited) > 0
+		a.winMu.Unlock()
+		hint = hintContactsSolo
+		if enterable {
+			hint = hintContacts
+		}
 	case name == "chats":
-		hint = "Keys: e:edit"
+		hint = hintChats
 	case strings.HasPrefix(name, "chat:"):
-		hint = "Keys: PgUp:older"
+		hint = hintChat
 	default:
 
+		return ""
+	}
+	return hint
+}
+
+func (a *App) setHint(hint string) {
+	a.hintBar.SetText(hintStrip(hint))
+	if a.topBar != nil {
+		a.topBar.ResizeItem(a.hintBar, hintBarWidth(hint), 0)
+	}
+}
+
+func hintStrip(hint string) string {
+	if hint == "" {
 		return ""
 	}
 
@@ -467,6 +583,29 @@ func (a *App) peerRetiredAt(peerID string) int64 {
 	return 0
 }
 
+func (a *App) chatPrimaryLocked(chatID string) string {
+	for i := range a.chats {
+		if a.chats[i].ChatID == chatID {
+			return a.chats[i].PeerID
+		}
+	}
+	return ""
+}
+
+func (a *App) syncChatPageLocked(cp *chatPage) {
+	if primary := a.chatPrimaryLocked(cp.chatID); primary != "" && primary != cp.peerID {
+
+		cp.peerID = primary
+		cp.retiredAt = 0
+	}
+	if p := a.peerByIDLocked(cp.peerID); p != nil {
+		if p.Label != "" {
+			cp.nickname = p.Label
+		}
+		cp.retiredAt = p.RetiredAt
+	}
+}
+
 func (a *App) switchTo(name string) {
 
 	a.exitSearchMode()
@@ -486,7 +625,7 @@ func (a *App) switchTo(name string) {
 
 	a.historyResetCursor()
 	a.winBar.SetText(a.winBarText())
-	a.hintBar.SetText(a.hintBarText(name))
+	a.setHint(a.hintBarText(name))
 
 	switch name {
 	case "contacts":
@@ -549,6 +688,17 @@ func (a *App) openChat(peerID string) {
 		retiredAt = p.RetiredAt
 		chatID = p.ChatID
 	}
+
+	if chatID != "" {
+		if primary := a.chatPrimaryLocked(chatID); primary != "" && primary != peerID {
+			peerID = primary
+			nick, retiredAt = "", 0
+			if p := a.peerByIDLocked(primary); p != nil {
+				nick = p.Label
+				retiredAt = p.RetiredAt
+			}
+		}
+	}
 	a.winMu.Unlock()
 
 	if chatID == "" {
@@ -606,7 +756,10 @@ func (a *App) openChat(peerID string) {
 	var cp *chatPage
 	if !alreadyOpen {
 		cp = newChatPage(chatID, peerID, nick, retiredAt)
-		cp.applyTitle(a.peerEffectiveLabel(peerID))
+		cp.applyTitle(a.chatPresenceLocked(chatID))
+
+		cp.systemLine = a.systemLineForChatLocked(chatID)
+		cp.rebuild()
 		a.chatPages[chatID] = cp
 		a.winOrder = append(a.winOrder, pageName)
 	}
@@ -760,6 +913,8 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 
 	if ev.Key() == tcell.KeyRune && ev.Rune() == '/' {
 		if _, isInput := a.app.GetFocus().(*tview.InputField); !isInput {
+
+			a.closeInvitesPage()
 			a.input.SetText("/")
 			a.app.SetFocus(a.input)
 			return nil
@@ -791,13 +946,20 @@ func (a *App) pumpConnection() {
 		}
 		a.winMu.Unlock()
 
+		if up {
+			a.resumePairingRun()
+		} else {
+			a.abandonPending()
+		}
+
 		a.app.QueueUpdateDraw(func() {
 			a.sysBar.SetText(a.sysBarText())
 			switch shouldLog {
 			case 1:
 				appendStatus(a.statusView, "[green]haoma connected[white] — waiting for backend status")
 			case 0:
-				appendStatus(a.statusView, "[red]haoma disconnected[white] — input disabled, reconnecting…")
+
+				appendStatus(a.statusView, "[red]haoma disconnected[white] — input disabled. RESTART THE APP.")
 			}
 		})
 	}
@@ -806,11 +968,15 @@ func (a *App) pumpConnection() {
 func (a *App) pumpIncoming() {
 	for f := range a.client.Incoming() {
 		if h := a.takePending(f.ID); h != nil {
+			slog.Debug("tui: reply matched its request",
+				slog.String("type", string(f.Type)), slog.String("corr_id", f.ID))
 			h(f)
 			continue
 		}
 		a.routeFrame(f)
 	}
+
+	a.abandonPending()
 	a.app.QueueUpdateDraw(func() {
 		appendStatus(a.statusView, "(disconnected from daemon)")
 	})
@@ -833,6 +999,7 @@ func (a *App) routeFrame(f ipc.Frame) {
 		a.selfNickIsDefault = p.SelfNickIsDefault
 		a.defaultRetentionSec = p.DefaultRetentionSec
 		a.defaultSendReceipts = p.DefaultSendReceipts
+		a.chatDefaultsKnown = true
 		a.winMu.Unlock()
 		a.app.QueueUpdateDraw(func() {
 			appendStatus(a.statusView, "[green]connected[white] — daemon %s (protocol v%d)", p.DaemonVersion, p.ProtocolVersion)
@@ -865,7 +1032,9 @@ func (a *App) routeFrame(f ipc.Frame) {
 			a.winMu.Lock()
 			a.defaultRetentionSec = p.RetentionSec
 			a.defaultSendReceipts = p.SendReceipts
+			a.chatDefaultsKnown = true
 			a.winMu.Unlock()
+			a.confirmPresetRetention(p.RetentionSec)
 		}
 
 	case ipc.FramePairOnionProbe:
@@ -908,11 +1077,20 @@ func (a *App) routeFrame(f ipc.Frame) {
 	case ipc.FramePresenceChanged:
 		a.routePresenceChanged(f)
 
+	case ipc.FrameChatPresenceChanged:
+		a.routeChatPresenceChanged(f)
+
 	case ipc.FramePeerLastSeenChanged:
 		a.routePeerLastSeenChanged(f)
 
 	case ipc.FramePeerUpdated:
 		a.routePeerUpdated(f)
+
+	case ipc.FrameInheritedContactsChanged:
+		a.routeInheritedContactsChanged(f)
+
+	case ipc.FrameDeviceSyncFinished:
+		a.routeDeviceSyncFinished(f)
 
 	case ipc.FrameChatUpdated:
 		a.routeChatUpdated(f)
@@ -950,6 +1128,8 @@ func (a *App) routeFrame(f ipc.Frame) {
 
 	case ipc.FramePeerPaired:
 
+		a.sendRequest(ipc.FrameListInheritedContacts, nil, a.handleInheritedContactsListed)
+
 	case ipc.FramePairOnionCompleted:
 
 		var p ipc.PairOnionCompletedPush
@@ -979,6 +1159,29 @@ func (a *App) routeFrame(f ipc.Frame) {
 		a.app.QueueUpdateDraw(func() {
 			appendStatus(a.statusView, "[red]onion invite failed[white] (%s) %s", p.Reason, p.Detail)
 		})
+
+	case ipc.FrameDeviceLinkAccepted:
+
+		a.routeDeviceLinkAccepted(f)
+
+	case ipc.FrameDeviceLinkProbe:
+
+		a.routeDeviceLinkProbe(f)
+
+	case ipc.FrameDestroyDevice:
+		a.routeDestroyDevice(f)
+
+	case ipc.FrameDestroyAttemptsSeen:
+		a.routeDestroyAttemptsSeen(f)
+
+	case ipc.FrameDeviceLinkCompleted:
+		a.routeDeviceLinkCompleted(f)
+
+	case ipc.FrameDeviceLinkCancelled:
+		a.routeDeviceLinkCancelled(f)
+
+	case ipc.FrameDeviceLinkFailed:
+		a.routeDeviceLinkFailed(f)
 
 	case ipc.FrameStatusEvent, ipc.FrameError:
 		a.app.QueueUpdateDraw(func() {
@@ -1036,9 +1239,6 @@ func (a *App) routePeerUpdated(f ipc.Frame) {
 	}
 	slog.Debug("tui: peer_updated received",
 		slog.String("peer_id", p.Peer.ID),
-		slog.String("label", p.Peer.Label),
-		slog.String("nick", p.Peer.Nick),
-		slog.String("alias", p.Peer.Alias),
 		slog.Int64("retired_at", p.Peer.RetiredAt),
 	)
 	a.winMu.Lock()
@@ -1056,27 +1256,14 @@ func (a *App) routePeerUpdated(f ipc.Frame) {
 	a.winMu.Unlock()
 
 	a.app.QueueUpdateDraw(func() {
-		a.winMu.Lock()
-		peers := a.peers
-		a.winMu.Unlock()
-		front, _ := a.pages.GetFrontPage()
-		a.contactTable = buildContactsTable(peers, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
-		a.installContactsKeys(a.contactTable)
-		a.pages.RemovePage("contacts")
-		a.pages.AddPage("contacts", a.contactTable, true, false)
-		if front == "contacts" {
-			a.pages.SwitchToPage("contacts")
-			a.app.SetFocus(a.contactTable)
-		}
+		a.rebuildContactsPage()
 
 		a.winMu.Lock()
 		defer a.winMu.Unlock()
 		for _, cp := range a.chatPages {
 			if cp.peerID == p.Peer.ID {
-				if p.Peer.Label != "" {
-					cp.nickname = p.Peer.Label
-				}
-				cp.applyTitle(a.peerEffectiveLabel(p.Peer.ID))
+				a.syncChatPageLocked(cp)
+				cp.applyTitle(a.chatPresenceLocked(cp.chatID))
 			}
 		}
 	})
@@ -1094,7 +1281,6 @@ func (a *App) routeChatUpdated(f ipc.Frame) {
 	slog.Debug("tui: chat_updated received",
 		slog.String("chat_id", p.Chat.ChatID),
 		slog.String("peer_id", p.Chat.PeerID),
-		slog.String("label", p.Chat.Label),
 	)
 	a.winMu.Lock()
 	patched := false
@@ -1108,14 +1294,28 @@ func (a *App) routeChatUpdated(f ipc.Frame) {
 	if !patched {
 		a.chats = append(a.chats, p.Chat)
 	}
+
+	cp := a.chatPages[p.Chat.ChatID]
+	if cp != nil {
+		a.syncChatPageLocked(cp)
+	}
 	a.winMu.Unlock()
 
 	a.app.QueueUpdateDraw(func() {
 		a.winMu.Lock()
 		chats := a.chats
+		line := ""
+		if cp != nil {
+			cp.applyTitle(a.chatPresenceLocked(cp.chatID))
+			line = a.systemLineForChatLocked(cp.chatID)
+		}
 		a.winMu.Unlock()
+		if cp != nil {
+
+			cp.setSystemLine(line)
+		}
 		front, _ := a.pages.GetFrontPage()
-		a.chatsTable = buildChatsTable(chats, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+		a.chatsTable = a.chatsTableKeepingCursor(chats)
 		a.installChatsKeys(a.chatsTable)
 		a.pages.RemovePage("chats")
 		a.pages.AddPage("chats", a.chatsTable, true, false)
@@ -1188,7 +1388,7 @@ func (a *App) rebuildChatsTable() {
 		chats := a.chats
 		a.winMu.Unlock()
 		front, _ := a.pages.GetFrontPage()
-		a.chatsTable = buildChatsTable(chats, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+		a.chatsTable = a.chatsTableKeepingCursor(chats)
 		a.installChatsKeys(a.chatsTable)
 		a.pages.RemovePage("chats")
 		a.pages.AddPage("chats", a.chatsTable, true, false)
@@ -1236,24 +1436,16 @@ func (a *App) routePeerDeleted(f ipc.Frame) {
 		for _, id := range droppedChatIDs {
 			a.closeChatByChat(id)
 		}
+		a.rebuildContactsPage()
 		a.winMu.Lock()
-		peers := a.peers
 		chats := a.chats
 		a.winMu.Unlock()
 		front, _ := a.pages.GetFrontPage()
-		a.contactTable = buildContactsTable(peers, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
-		a.installContactsKeys(a.contactTable)
-		a.pages.RemovePage("contacts")
-		a.pages.AddPage("contacts", a.contactTable, true, false)
-		a.chatsTable = buildChatsTable(chats, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+		a.chatsTable = a.chatsTableKeepingCursor(chats)
 		a.installChatsKeys(a.chatsTable)
 		a.pages.RemovePage("chats")
 		a.pages.AddPage("chats", a.chatsTable, true, false)
-		switch front {
-		case "contacts":
-			a.pages.SwitchToPage("contacts")
-			a.app.SetFocus(a.contactTable)
-		case "chats":
+		if front == "chats" {
 			a.pages.SwitchToPage("chats")
 			a.app.SetFocus(a.chatsTable)
 		}
@@ -1306,7 +1498,7 @@ func (a *App) routeChatDeleted(f ipc.Frame) {
 		chats := a.chats
 		a.winMu.Unlock()
 		front, _ := a.pages.GetFrontPage()
-		a.chatsTable = buildChatsTable(chats, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+		a.chatsTable = a.chatsTableKeepingCursor(chats)
 		a.installChatsKeys(a.chatsTable)
 		a.pages.RemovePage("chats")
 		a.pages.AddPage("chats", a.chatsTable, true, false)
@@ -1326,55 +1518,60 @@ func (a *App) routePresenceChanged(f ipc.Frame) {
 	if p.PeerID == "" {
 		return
 	}
-	label := p.Effective
-	if label == "" {
-		label = "unknown"
-	}
 	a.winMu.Lock()
-	prev := a.peerPresence[p.PeerID]
-	a.peerPresence[p.PeerID] = label
-	var pages []*chatPage
-	for _, cp := range a.chatPages {
-		if cp.peerID == p.PeerID {
-			pages = append(pages, cp)
-		}
-	}
+	a.peerPresence[p.PeerID] = presenceView{accepting: p.Accepting, sending: p.Sending, chatty: p.Chatty}
 	a.winMu.Unlock()
 	slog.Debug("tui: presence_changed received",
 		slog.String("peer_id", p.PeerID),
-		slog.String("effective", label),
-		slog.String("prev", prev),
+		slog.String("effective", p.Effective),
 		slog.Bool("accepting", p.Accepting),
+		slog.Bool("sending", p.Sending),
 		slog.String("chatty", p.Chatty),
-		slog.Int("open_chat_pages", len(pages)),
 	)
-	a.app.QueueUpdateDraw(func() {
-		for _, cp := range pages {
-			cp.applyTitle(label)
-		}
 
-		a.winMu.Lock()
-		peers := a.peers
-		chats := a.chats
-		a.winMu.Unlock()
-		front, _ := a.pages.GetFrontPage()
-		a.contactTable = buildContactsTable(peers, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
-		a.installContactsKeys(a.contactTable)
-		a.pages.RemovePage("contacts")
-		a.pages.AddPage("contacts", a.contactTable, true, false)
-		a.chatsTable = buildChatsTable(chats, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
-		a.installChatsKeys(a.chatsTable)
-		a.pages.RemovePage("chats")
-		a.pages.AddPage("chats", a.chatsTable, true, false)
-		switch front {
-		case "contacts":
-			a.pages.SwitchToPage("contacts")
-			a.app.SetFocus(a.contactTable)
-		case "chats":
-			a.pages.SwitchToPage("chats")
-			a.app.SetFocus(a.chatsTable)
-		}
+	a.app.QueueUpdateDraw(func() {
+		a.rebuildContactsPage()
 	})
+}
+
+func (a *App) routeChatPresenceChanged(f ipc.Frame) {
+	var p ipc.ChatPresenceChangedPayload
+	if err := json.Unmarshal(f.Payload, &p); err != nil {
+		slog.Warn("tui: chat_presence_changed decode failed", slog.Any("err", err))
+		return
+	}
+	if p.ChatID == "" {
+		return
+	}
+	a.winMu.Lock()
+	held := false
+	for i := range a.chats {
+		if a.chats[i].ChatID == p.ChatID {
+			a.chats[i].Accepting = p.Accepting
+			a.chats[i].Sending = p.Sending
+			a.chats[i].Chatty = p.Chatty
+			a.chats[i].Effective = p.Effective
+			held = true
+			break
+		}
+	}
+	cp := a.chatPages[p.ChatID]
+	view := a.chatPresenceLocked(p.ChatID)
+	a.winMu.Unlock()
+	slog.Debug("tui: chat_presence_changed received",
+		slog.String("chat_id", p.ChatID),
+		slog.String("effective", p.Effective),
+		slog.Bool("accepting", p.Accepting),
+		slog.Bool("sending", p.Sending),
+		slog.Bool("held", held),
+	)
+	if !held {
+		return
+	}
+	if cp != nil {
+		a.app.QueueUpdateDraw(func() { cp.applyTitle(view) })
+	}
+	a.rebuildChatsTable()
 }
 
 func (a *App) routePeerLastSeenChanged(f ipc.Frame) {
@@ -1404,18 +1601,7 @@ func (a *App) routePeerLastSeenChanged(f ipc.Frame) {
 		return
 	}
 	a.app.QueueUpdateDraw(func() {
-		a.winMu.Lock()
-		peers := a.peers
-		a.winMu.Unlock()
-		front, _ := a.pages.GetFrontPage()
-		a.contactTable = buildContactsTable(peers, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
-		a.installContactsKeys(a.contactTable)
-		a.pages.RemovePage("contacts")
-		a.pages.AddPage("contacts", a.contactTable, true, false)
-		if front == "contacts" {
-			a.pages.SwitchToPage("contacts")
-			a.app.SetFocus(a.contactTable)
-		}
+		a.rebuildContactsPage()
 	})
 }
 
@@ -1431,6 +1617,26 @@ func (a *App) routeBackendStatus(f ipc.Frame) {
 	a.torUnreachable = p.Tor.Unreachable
 	a.torOnionCount = p.OnionCount
 
+	var driftLines []string
+	cs := p.ClockSkew
+	a.deviceAlert = cs.Known && cs.OverLimit
+	if cs.Known && (a.lastSkew == nil || *a.lastSkew != cs.Seconds || a.lastSkewOver != cs.OverLimit) {
+		seconds := cs.Seconds
+		was := a.lastSkewOver
+		a.lastSkew = &seconds
+		a.lastSkewOver = cs.OverLimit
+		switch {
+		case cs.OverLimit:
+			driftLines = append(driftLines, fmt.Sprintf(
+				"%sclock drift%s — this machine reads %s. Nothing here fixes it: correct the clock on this machine.",
+				StylePipelineBad, StyleReset, skewPhrase(cs.Seconds)))
+		case was:
+			driftLines = append(driftLines, fmt.Sprintf(
+				"%sclock drift is over%s — this machine is within %ds of real time again",
+				StylePipelineOK, StyleReset, cs.LimitSeconds))
+		}
+	}
+
 	shouldLog := -1
 	switch {
 	case p.BackendReachable && a.lastLoggedBackend != 1:
@@ -1444,13 +1650,30 @@ func (a *App) routeBackendStatus(f ipc.Frame) {
 
 	a.app.QueueUpdateDraw(func() {
 		a.sysBar.SetText(a.sysBarText())
+		a.winBar.SetText(a.winBarText())
 		switch shouldLog {
 		case 1:
 			appendStatus(a.statusView, "[green]haomad reachable[white]")
 		case 0:
 			appendStatus(a.statusView, "[yellow]haomad unreachable[white] — messages will queue")
 		}
+		for _, line := range driftLines {
+			appendStatus(a.statusView, "%s", line)
+		}
 	})
+}
+
+func skewPhrase(skew int) string {
+	way := "fast"
+	if skew < 0 {
+		way = "slow"
+		skew = -skew
+	}
+	unit := "seconds"
+	if skew == 1 {
+		unit = "second"
+	}
+	return fmt.Sprintf("%d %s %s", skew, unit, way)
 }
 
 func (a *App) handleSubscribed(f ipc.Frame) {
@@ -1461,6 +1684,7 @@ func (a *App) handleSubscribed(f ipc.Frame) {
 		})
 	}
 	a.sendRequest(ipc.FrameListPeers, nil, a.handlePeersListed)
+	a.sendRequest(ipc.FrameListInheritedContacts, nil, a.handleInheritedContactsListed)
 	a.sendRequest(ipc.FrameListChats, nil, a.handleChatsListed)
 
 	a.pushSettingsSync()
@@ -1478,34 +1702,19 @@ func (a *App) handlePeersListed(f ipc.Frame) {
 	a.peers = p.Peers
 	a.winMu.Unlock()
 	a.app.QueueUpdateDraw(func() {
-		a.winMu.Lock()
-		peers := a.peers
-		a.winMu.Unlock()
-		front, _ := a.pages.GetFrontPage()
-		a.contactTable = buildContactsTable(peers, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
-		a.installContactsKeys(a.contactTable)
-		a.pages.RemovePage("contacts")
-		a.pages.AddPage("contacts", a.contactTable, true, false)
-		if front == "contacts" {
-			a.pages.SwitchToPage("contacts")
-			a.app.SetFocus(a.contactTable)
-		}
+		a.rebuildContactsPage()
 
 		a.winMu.Lock()
 		defer a.winMu.Unlock()
-		for _, peer := range peers {
+		for _, peer := range a.peers {
 			if peer.Effective != "" {
-				a.peerPresence[peer.ID] = peer.Effective
+				a.peerPresence[peer.ID] = presenceView{accepting: peer.Accepting, sending: peer.Sending, chatty: peer.Chatty}
 			}
-			cp := a.chatPages[peer.ChatID]
-			if cp == nil {
-				continue
-			}
-			if peer.Label != "" && cp.nickname != peer.Label {
-				cp.nickname = peer.Label
-			}
-			cp.retiredAt = peer.RetiredAt
-			cp.applyTitle(a.peerEffectiveLabel(peer.ID))
+		}
+
+		for _, cp := range a.chatPages {
+			a.syncChatPageLocked(cp)
+			cp.applyTitle(a.chatPresenceLocked(cp.chatID))
 		}
 	})
 }
@@ -1560,6 +1769,10 @@ func (a *App) routeTimelineEvent(f ipc.Frame) {
 	}
 	pageName := "chat:" + chatID
 
+	if ev.Kind == string(events.KindInvitation) {
+		a.routeInvitationRow(ev)
+	}
+
 	if ev.Direction == "out" && ev.EnvelopeID != "" {
 		a.winMu.Lock()
 		a.envToChat[ev.EnvelopeID] = chatID
@@ -1593,7 +1806,10 @@ func (a *App) routeTimelineEvent(f ipc.Frame) {
 }
 
 func (a *App) sendRequest(t ipc.FrameType, payload any, handler responseHandler) {
-	id := a.nextCorrID()
+	a.sendRequestAs(a.nextCorrID(), t, payload, handler)
+}
+
+func (a *App) sendRequestAs(id string, t ipc.FrameType, payload any, handler responseHandler) bool {
 	if handler != nil {
 		a.pendingMu.Lock()
 		a.pending[id] = handler
@@ -1603,14 +1819,46 @@ func (a *App) sendRequest(t ipc.FrameType, payload any, handler responseHandler)
 	if err != nil {
 		a.log("[red]send error[white] build %s: %v", t, err)
 		a.clearPending(id)
-		return
+		return false
 	}
 	a.client.Send(f)
+	slog.Debug("tui: request sent",
+		slog.String("type", string(t)), slog.String("corr_id", id),
+		slog.Bool("awaits_reply", handler != nil))
+	return true
 }
+
+const corrIDPrefix = "tui-"
 
 func (a *App) nextCorrID() string {
 	n := a.corrSeq.Add(1)
-	return "tui-" + strconv.FormatUint(n, 10)
+	return corrIDPrefix + strconv.FormatUint(n, 10)
+}
+
+func sortCorrIDs(ids []string) {
+	seq := func(id string) (uint64, bool) {
+		rest, ok := strings.CutPrefix(id, corrIDPrefix)
+		if !ok {
+			return 0, false
+		}
+		n, err := strconv.ParseUint(rest, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		ni, oki := seq(ids[i])
+		nj, okj := seq(ids[j])
+		switch {
+		case oki && okj:
+			return ni < nj
+		case oki != okj:
+			return oki
+		default:
+			return ids[i] < ids[j]
+		}
+	})
 }
 
 func (a *App) takePending(id string) responseHandler {
@@ -1632,11 +1880,49 @@ func (a *App) clearPending(id string) {
 	a.pendingMu.Unlock()
 }
 
+func (a *App) abandonPending() {
+	a.pendingMu.Lock()
+	orphans := a.pending
+	a.pending = map[string]responseHandler{}
+	a.pendingMu.Unlock()
+
+	if len(orphans) == 0 {
+		return
+	}
+	slog.Debug("ipc: requests abandoned with the connection",
+		slog.Int("request_count", len(orphans)),
+	)
+
+	ids := make([]string, 0, len(orphans))
+	for id := range orphans {
+		ids = append(ids, id)
+	}
+	sortCorrIDs(ids)
+	for _, id := range ids {
+		f, err := ipc.NewFrame(ipc.FrameError, id, ipc.ErrorPayload{
+			Code:    ipc.ReasonNoAnswer,
+			Message: "the connection to the daemon went down before this was answered",
+		})
+		if err != nil {
+
+			slog.Warn("ipc: an abandoned request could not be answered",
+				slog.String("corr_id", id),
+				slog.Any("err", err),
+			)
+			continue
+		}
+		slog.Debug("ipc: one request abandoned with the connection",
+			slog.String("corr_id", id),
+		)
+		orphans[id](f)
+	}
+}
+
 func (a *App) log(format string, args ...any) {
 	stamp := time.Now().Format("15:04:05")
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(a.statusView, "[gray]%s[white] %s\n", stamp, msg)
-	a.statusView.ScrollToEnd()
+	scrollStatusToEnd(a.statusView)
 }
 
 func (a *App) PostStatus(format string, args ...any) {

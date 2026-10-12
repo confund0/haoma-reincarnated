@@ -2,8 +2,8 @@
 # CameraSource (app process) and frames arrive over cam's AF_UNIX raw
 # listener via --input-from-raw. The NDK Camera2 backend
 # (platform/video_android.cpp) is intentionally not linked here; a noop
-# make_video_capture() satisfies the symbol. video_android.cpp stays in
-# the tree one slice for diff readability; post-Slice 5 cleanup deletes.
+# make_video_capture() satisfies the symbol. video_android.cpp is unused
+# here for now; a later cleanup removes it.
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
   set(_cam_video_impl ${CMAKE_SOURCE_DIR}/platform/video_noop.cpp)
 else()

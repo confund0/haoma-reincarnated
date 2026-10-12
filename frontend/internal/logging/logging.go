@@ -14,6 +14,7 @@ type Config struct {
 	Format   string
 	Service  string
 	MaxBytes int64
+	FileMode os.FileMode
 }
 
 func New(cfg Config) (*slog.Logger, func() error, error) {
@@ -21,7 +22,7 @@ func New(cfg Config) (*slog.Logger, func() error, error) {
 	if err != nil {
 		return nil, noopCloser, err
 	}
-	w, closer, err := openWriter(cfg.File, cfg.MaxBytes)
+	w, closer, err := openWriter(cfg.File, cfg.MaxBytes, cfg.FileMode)
 	if err != nil {
 		return nil, noopCloser, err
 	}
@@ -60,14 +61,14 @@ func parseLevel(s string) (slog.Level, error) {
 	return 0, fmt.Errorf("logging: unknown level %q (want debug|info|warn|error)", s)
 }
 
-func openWriter(path string, maxBytes int64) (io.Writer, func() error, error) {
+func openWriter(path string, maxBytes int64, mode os.FileMode) (io.Writer, func() error, error) {
 	if path == "" {
 		return io.Discard, noopCloser, nil
 	}
 	if path == "-" {
 		return os.Stderr, noopCloser, nil
 	}
-	rw, err := newRotatingWriter(path, maxBytes)
+	rw, err := newRotatingWriter(path, maxBytes, mode)
 	if err != nil {
 		return nil, noopCloser, fmt.Errorf("logging: open %s: %w", path, err)
 	}

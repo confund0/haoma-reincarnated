@@ -10,6 +10,7 @@ build:
 
 test:
 	go test ./...
+	go test -tags faults ./cmd/haomad
 	@# Short fuzz pass on the vendored bencode pkg — catches obvious
 	@# crashers on hostile DHT-payload bytes in ~6s total. Found
 	@# crashes auto-save to testdata/fuzz/ and become permanent

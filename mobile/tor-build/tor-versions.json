@@ -1,9 +1,9 @@
 {
   "_comment": "Pinned upstream versions for the Tor cross-compile. Schema mirrors Briar's tor-reproducer/tor-versions.json. Bump 'commit' fields to move forward; commit the resulting libtor.so + updated tor-prebuilt.lock together.",
-  "0.4.8.22": {
+  "0.4.9.13": {
     "tor": {
       "url": "https://gitlab.torproject.org/tpo/core/tor.git",
-      "commit": "tor-0.4.8.22"
+      "commit": "tor-0.4.9.13"
     },
     "libevent": {
       "url": "https://github.com/libevent/libevent.git",
@@ -11,7 +11,7 @@
     },
     "openssl": {
       "url": "https://github.com/openssl/openssl.git",
-      "commit": "openssl-3.5.4"
+      "commit": "openssl-3.5.8"
     },
     "zlib": {
       "url": "https://github.com/madler/zlib.git",

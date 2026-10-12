@@ -221,6 +221,8 @@ internal fun AdvancedSection(store: MessengerStore, onBack: () -> Unit) {
                 }
             }
 
+            WipeDeviceBlock(store = store)
+
             Spacer(modifier = Modifier.height(24.dp))
         }
     }

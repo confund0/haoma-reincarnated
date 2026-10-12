@@ -98,10 +98,15 @@ func (d *daemon) handleProxyFetch(w http.ResponseWriter, r *http.Request) {
 
 	var hc *http.Client
 	if peerID, ok := d.peerIDByDest(req.PeerURL); ok {
+
+		if d.unlinkRefusesPeer(peerID) {
+			writeErr(w, http.StatusConflict, errUnlinkPeerRemoved)
+			return
+		}
 		hc, err = d.httpClientForPeer(peerID)
 	} else {
 
-		hc, err = xport.NewTorHTTPClient(d.cfg.torSocks, "haomad-proxy:"+req.Token)
+		hc, err = xport.NewTorHTTPClient(d.socksAddr(), "haomad-proxy:"+req.Token)
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)

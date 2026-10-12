@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# streams/smoke.sh — manual loopback for Calls-1d/1e (Linux/PipeWire).
+# streams/smoke.sh — manual call loopback (Linux/PipeWire).
 #
-# For the Android-arm64 on-device loopback (M-CALLS-A.4), don't run
+# For the Android-arm64 on-device loopback, don't run
 # this script — there's no socat in /system, and we don't want to
 # pull Termux into the loop.  Recipe instead, two `adb shell`s + dual
 # adb-forward + a host-side socat bridging the two listeners:
@@ -26,9 +26,9 @@
 # matching monotonic counters in mic/spk trace.frame events, no
 # frames_dropped post-warmup.
 #
-# Default path (no CMDS): same shape as the 1d smoke that worked.
-# Each streamer's stdin is plain `<keyfile` redirection — 32 bytes of
-# key, then EOF.  In 1e the control reader treats stdin EOF as
+# Default path (no CMDS): each streamer's stdin is plain `<keyfile`
+# redirection — 32 bytes of key, then EOF.  The control reader treats
+# stdin EOF as
 # non-fatal, so the streamers happily run for the rest of the call
 # without control input.  Talk into the mic, hear yourself in spk.
 #
@@ -43,7 +43,7 @@
 #                        silent-drop branch.  Mic encrypts with key A,
 #                        spk decrypts with key B; AEAD verify fails on
 #                        every frame; spk plays silence + logs one warn.
-#   CMDS=1             — drive the 1e control plane: after warm-up,
+#   CMDS=1             — drive the control plane: after warm-up,
 #                        ships a stats/mute/unmute/bitrate/exit sequence
 #                        at mic, then exits.  Implies a FIFO on mic
 #                        stdin (spk stays on plain `<keyfile`).

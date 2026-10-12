@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+
 	"haoma-frontend/internal/ipc"
 )
 
@@ -48,7 +51,7 @@ func TestFileArrow_StateAndDirectionMatrix(t *testing.T) {
 		{"out failed", "out", "ready", "failed", "[red]✗-[-]"},
 	}
 	for _, c := range cases {
-		if got := fileArrow(c.dir, c.transferState, c.deliveryState); got != c.want {
+		if got := fileArrow(c.dir, c.transferState, c.deliveryState, false); got != c.want {
 			t.Errorf("%s: fileArrow(%q,%q,%q) = %q, want %q", c.name, c.dir, c.transferState, c.deliveryState, got, c.want)
 		}
 	}
@@ -177,7 +180,7 @@ func TestUpdateFileProgress_LiveCounter(t *testing.T) {
 func TestApplyTitle_Retired(t *testing.T) {
 	cp := newChatPage("chat-abc", "peer123abcdef", "alice", 1776956500)
 
-	cp.applyTitle("available")
+	cp.applyTitle(presenceView{accepting: true, sending: true, chatty: "available"})
 
 	title := cp.view.GetTitle()
 	if !strings.Contains(title, GlyphRetired) {
@@ -186,8 +189,8 @@ func TestApplyTitle_Retired(t *testing.T) {
 	if !strings.Contains(title, "retired 2026-04-23") {
 		t.Errorf("retired title missing date: %q", title)
 	}
-	if strings.Contains(title, "●") || strings.Contains(title, "○") || strings.Contains(title, "◐") {
-		t.Errorf("retired title should not carry presence chip: %q", title)
+	if strings.Contains(title, GlyphPresenceUp) || strings.Contains(title, GlyphPresenceDown) {
+		t.Errorf("retired title should not carry the presence arrows: %q", title)
 	}
 }
 
@@ -225,28 +228,37 @@ func TestSetDeliveryState_DoesNotDowngradeFromRead(t *testing.T) {
 	}
 }
 
-func TestApplyTitle_PresenceChip(t *testing.T) {
+func TestApplyTitle_Arrows(t *testing.T) {
 	cases := []struct {
-		label string
-		glyph string
-		word  string
+		name string
+		v    presenceView
+		want string
 	}{
-		{"available", GlyphPresenceOnline, "[available]"},
-		{"away", GlyphPresenceOnline, "[away]"},
-		{"busy", GlyphPresenceOnline, "[busy]"},
-		{"accepting", GlyphPresenceAccepting, "[accepting]"},
-		{"unknown", GlyphPresenceUnknown, "[unknown]"},
+		{"nothing heard", presenceView{},
+			" " + StylePresenceArrowOff + "↑" + StylePresenceArrowOff + "↓" + StyleReset + " bob "},
+		{"up only", presenceView{accepting: true},
+			" " + StylePresenceArrowOn + "↑" + StylePresenceArrowOff + "↓" + StyleReset + " bob "},
+		{"down only, available", presenceView{sending: true, chatty: "available"},
+			" " + StylePresenceArrowOff + "↑" + StylePresenceArrowOn + "↓" + StyleReset + " " + StylePresenceAvailable + "bob" + StyleReset + " "},
+		{"both, away", presenceView{accepting: true, sending: true, chatty: "away"},
+			" " + StylePresenceArrowOn + "↑" + StylePresenceArrowOn + "↓" + StyleReset + " " + StylePresenceAway + "bob" + StyleReset + " "},
+		{"busy", presenceView{chatty: "busy"},
+			" " + StylePresenceArrowOff + "↑" + StylePresenceArrowOff + "↓" + StyleReset + " " + StylePresenceBusy + "bob" + StyleReset + " "},
+		{"a state this build does not know is no colour", presenceView{chatty: "later"},
+			" " + StylePresenceArrowOff + "↑" + StylePresenceArrowOff + "↓" + StyleReset + " bob "},
 	}
 	for _, c := range cases {
 		cp := newChatPage("chat-abc", "peer123abcdef", "bob", 0)
-		cp.applyTitle(c.label)
-		title := cp.view.GetTitle()
-		if !strings.Contains(title, c.glyph) {
-			t.Errorf("label=%q: title %q missing glyph %q", c.label, title, c.glyph)
+		cp.applyTitle(c.v)
+		if got := cp.view.GetTitle(); got != c.want {
+			t.Errorf("%s: title %q, want %q", c.name, got, c.want)
 		}
-		if !strings.Contains(title, c.word) {
-			t.Errorf("label=%q: title %q missing wording %q", c.label, title, c.word)
-		}
+	}
+
+	cp := newChatPage("chat-abc", "peer123abcdef", "[bob]", 0)
+	cp.applyTitle(presenceView{chatty: "busy"})
+	if title := cp.view.GetTitle(); !strings.Contains(title, tview.Escape("[bob]")) {
+		t.Errorf("title %q does not escape the name", title)
 	}
 }
 
@@ -429,7 +441,7 @@ func TestBuildContactsTable_RotationColumn(t *testing.T) {
 		}
 		return rotationCellInfo{}
 	}
-	tbl := buildContactsTable(peers, nil, rot, func(string) {})
+	tbl := buildContactsTable(pairedContactRows(peers), nil, rot, func(string) {})
 
 	if got := tbl.GetCell(1, 1).Text; got != GlyphRotationOurs {
 		t.Errorf("alice (we) marker = %q, want %q", got, GlyphRotationOurs)
@@ -475,30 +487,40 @@ func TestBuildChatsTable_RotationColumn(t *testing.T) {
 
 func TestBuildContactsTable_PresenceColumn(t *testing.T) {
 	peers := []ipc.PeerEntry{
-		{ID: "alice", Alias: "alice"},
-		{ID: "bob", Alias: "bob"},
+		{ID: "alice", Nick: "alice", Alias: "ali"},
+		{ID: "bob", Nick: "bob", Alias: "bobby"},
 		{ID: "carol", Alias: "carol", RetiredAt: 1776956500},
+		{ID: "dave", Nick: "dave", Alias: "d"},
 	}
-	cache := map[string]string{
-		"alice": "available",
+	cache := map[string]presenceView{
+		"alice": {sending: true, chatty: "available"},
 
-		"carol": "available",
+		"carol": {accepting: true, chatty: "available"},
+		"dave":  {accepting: true, chatty: "busy"},
 	}
-	resolve := func(id string) string {
-		if v, ok := cache[id]; ok {
-			return v
+	resolve := func(id string) presenceView { return cache[id] }
+	tbl := buildContactsTable(pairedContactRows(peers), resolve, nil, func(string) {})
+
+	cases := []struct {
+		row    int
+		arrows string
+		name   tcell.Color
+	}{
+		{1, StylePresenceArrowOff + "↑" + StylePresenceArrowOn + "↓" + StyleReset, ColorPresenceAvailable},
+		{2, StylePresenceArrowOff + "↑" + StylePresenceArrowOff + "↓" + StyleReset, tview.Styles.PrimaryTextColor},
+		{4, StylePresenceArrowOn + "↑" + StylePresenceArrowOff + "↓" + StyleReset, ColorPresenceBusy},
+	}
+	for _, c := range cases {
+		if got := tbl.GetCell(c.row, colPresence).Text; got != c.arrows {
+			t.Errorf("row %d: presence cell = %q, want %q", c.row, got, c.arrows)
 		}
-		return ""
+		for _, col := range []int{colNick, colAlias} {
+			if fg, _, _ := tbl.GetCell(c.row, col).Style.Decompose(); fg != c.name {
+				t.Errorf("row %d col %d: name colour %v, want %v", c.row, col, fg, c.name)
+			}
+		}
 	}
-	tbl := buildContactsTable(peers, resolve, nil, func(string) {})
-
-	if got := tbl.GetCell(1, 0).Text; got != GlyphPresenceOnline {
-		t.Errorf("alice presence cell = %q, want %q", got, GlyphPresenceOnline)
-	}
-	if got := tbl.GetCell(2, 0).Text; got != GlyphPresenceUnknown {
-		t.Errorf("bob presence cell = %q, want %q", got, GlyphPresenceUnknown)
-	}
-	if got := tbl.GetCell(3, 0).Text; got != "—" {
+	if got := tbl.GetCell(3, colPresence).Text; got != "—" {
 		t.Errorf("retired peer presence cell = %q, want %q", got, "—")
 	}
 }
@@ -507,20 +529,30 @@ func TestBuildChatsTable_PresenceColumn(t *testing.T) {
 	chats := []ipc.ChatEntry{
 		{ChatID: "chat-dm", Kind: ipc.ChatKindDirect, PeerID: "alice", Label: "alice"},
 		{ChatID: "chat-grp", Kind: ipc.ChatKindGroup, GroupName: "team", Label: "team"},
+		{ChatID: "chat-quiet", Kind: ipc.ChatKindDirect, PeerID: "bob", Label: "bob"},
 	}
-	resolve := func(id string) string {
-		if id == "alice" {
-			return "busy"
+	resolve := func(id string) presenceView {
+		if id == "chat-dm" {
+			return presenceView{accepting: true, sending: true, chatty: "busy"}
 		}
-		return ""
+		return presenceView{}
 	}
 	tbl := buildChatsTable(chats, nil, resolve, nil, func(string) {})
 
-	if got := tbl.GetCell(1, 0).Text; got != GlyphPresenceOnline {
-		t.Errorf("DM presence cell = %q, want %q", got, GlyphPresenceOnline)
+	if got, want := tbl.GetCell(1, 0).Text, StylePresenceArrowOn+"↑"+StylePresenceArrowOn+"↓"+StyleReset; got != want {
+		t.Errorf("DM presence cell = %q, want %q", got, want)
+	}
+	if fg, _, _ := tbl.GetCell(1, 2).Style.Decompose(); fg != ColorPresenceBusy {
+		t.Errorf("DM label colour = %v, want busy red", fg)
 	}
 	if got := tbl.GetCell(2, 0).Text; got != "" {
 		t.Errorf("group presence cell = %q, want empty", got)
+	}
+	if got, want := tbl.GetCell(3, 0).Text, StylePresenceArrowOff+"↑"+StylePresenceArrowOff+"↓"+StyleReset; got != want {
+		t.Errorf("quiet DM presence cell = %q, want %q", got, want)
+	}
+	if fg, _, _ := tbl.GetCell(3, 2).Style.Decompose(); fg != tview.Styles.PrimaryTextColor {
+		t.Errorf("quiet DM label colour = %v, want the normal colour", fg)
 	}
 }
 
@@ -529,7 +561,7 @@ func TestBuildContactsTable_RetiredSuffix(t *testing.T) {
 		{ID: "live", Alias: "alice", LastPassiveAt: 1776000000},
 		{ID: "gone", Alias: "bob", RetiredAt: 1776956500},
 	}
-	tbl := buildContactsTable(peers, nil, nil, func(string) {})
+	tbl := buildContactsTable(pairedContactRows(peers), nil, nil, func(string) {})
 
 	liveAlias := tbl.GetCell(1, 3).Text
 	if strings.Contains(liveAlias, "retired") {
@@ -711,10 +743,41 @@ func TestOutboundArrow_StateMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.state, func(t *testing.T) {
-			if got := outboundArrow(c.state); got != c.want {
+			if got := outboundArrow(c.state, false); got != c.want {
 				t.Errorf("outboundArrow(%q) = %q, want %q", c.state, got, c.want)
 			}
 		})
+	}
+}
+
+func TestOutboundArrow_MirroredTintsTheDeliveryGlyphNotTheReadGlyph(t *testing.T) {
+	cases := []struct {
+		state, want string
+	}{
+		{"", "[gray]<-[-]"},
+		{"enqueued", "[gray]<-[-]"},
+		{"sent", "[purple]<[green]-[-]"},
+		{"delivered", "[purple]<[green]-[-]"},
+		{"read", "[purple]<[green]<[-]"},
+		{"failed", "[red]✗-[-]"},
+	}
+	for _, c := range cases {
+		t.Run(c.state, func(t *testing.T) {
+			if got := outboundArrow(c.state, true); got != c.want {
+				t.Errorf("outboundArrow(%q, mirrored) = %q, want %q", c.state, got, c.want)
+			}
+		})
+	}
+}
+
+func TestOutboundArrow_RecoveredRowIsNotPending(t *testing.T) {
+	pending := outboundArrow("", true)
+	recovered := outboundArrow("sent", true)
+	if recovered == pending {
+		t.Fatalf("a gap-filled row renders identically to a pending one: %q", recovered)
+	}
+	if got := recovered; got != "[purple]<[green]-[-]" {
+		t.Errorf("recovered row = %q, want a purple delivery glyph and an untinted read glyph", got)
 	}
 }
 
@@ -870,5 +933,188 @@ func TestCollectReactable_AcceptsBothDirections(t *testing.T) {
 	}
 	if !have["own"] || !have["theirs"] {
 		t.Errorf("missing expected candidates: have=%v", have)
+	}
+}
+
+func TestRenderEntry_MirroredFlagSurvivesTheWire(t *testing.T) {
+
+	const mirroredRow = `{
+		"chat_id":"c1","direction":"out","kind":"text","msg_id":"m1",
+		"delivery_state":"sent","mirrored_from_sibling":true,
+		"body":{"text":"from my other device"}
+	}`
+	cp := &chatPage{}
+	got := cp.renderEntry(chatEntry{evJSON: []byte(mirroredRow), delivery: "sent"})
+	if !strings.Contains(got, "[purple]") {
+		t.Errorf("a mirrored row rendered without the sibling tint: %q", got)
+	}
+
+	const localRow = `{
+		"chat_id":"c1","direction":"out","kind":"text","msg_id":"m2",
+		"delivery_state":"sent",
+		"body":{"text":"from this device"}
+	}`
+	got = cp.renderEntry(chatEntry{evJSON: []byte(localRow), delivery: "sent"})
+	if strings.Contains(got, "[purple]") {
+		t.Errorf("a locally-witnessed row was tinted as mirrored: %q", got)
+	}
+}
+
+func TestFileArrow_MirroredTakesTheSecondGlyph(t *testing.T) {
+	cases := []struct {
+		state, want string
+	}{
+		{"", "[gray]<[purple]-[-]"},
+		{"enqueued", "[gray]<[purple]-[-]"},
+		{"sent", "[gray]<[purple]-[-]"},
+		{"delivered", "[green]<[purple]-[-]"},
+		{"read", "[green]<[purple]<[-]"},
+		{"failed", "[red]✗[purple]-[-]"},
+	}
+	for _, c := range cases {
+		t.Run(c.state, func(t *testing.T) {
+			if got := fileArrow("out", "ready", c.state, true); got != c.want {
+				t.Errorf("fileArrow(out, %q, mirrored) = %q, want %q", c.state, got, c.want)
+			}
+		})
+	}
+
+	for _, st := range []string{"ready", "downloading", "expired"} {
+		if plain, mirrored := fileArrow("in", st, "", false), fileArrow("in", st, "", true); plain != mirrored {
+			t.Errorf("inbound %q changed with the mirrored flag: %q vs %q", st, plain, mirrored)
+		}
+	}
+}
+
+func TestSetDeliveryState_RefusesWhatTheDaemonRefuses(t *testing.T) {
+	cases := []struct {
+		cur, report string
+		want        bool
+	}{
+
+		{"", "enqueued", true},
+		{"", "sent", true},
+		{"", "failed", true},
+
+		{"enqueued", "enqueued", false},
+		{"enqueued", "sent", true},
+		{"enqueued", "failed", true},
+
+		{"sent", "enqueued", false},
+		{"sent", "sent", false},
+
+		{"sent", "failed", true},
+
+		{"delivered", "enqueued", false},
+
+		{"delivered", "sent", false},
+
+		{"delivered", "failed", false},
+
+		{"read", "enqueued", false},
+		{"read", "sent", false},
+		{"read", "delivered", false},
+		{"read", "failed", false},
+
+		{"failed", "sent", false},
+		{"failed", "failed", false},
+
+		{"sent", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.cur+"/"+c.report, func(t *testing.T) {
+			cp := newChatPage("chat-abc", "peer-bob", "bob", 0)
+			raw, _ := json.Marshal(map[string]any{
+				"recv_seq":       1,
+				"chat_id":        "chat-abc",
+				"direction":      "out",
+				"kind":           "text",
+				"display_ts":     1700000000,
+				"envelope_id":    "env-1",
+				"msg_id":         "mid-1",
+				"delivery_state": c.cur,
+				"body":           map[string]any{"text": "hi"},
+			})
+			cp.appendEvent(raw)
+			if got := cp.entries[0].delivery; got != c.cur {
+				t.Fatalf("seed delivery = %q, want %q", got, c.cur)
+			}
+			if got := cp.setDeliveryState("env-1", c.report); got != c.want {
+				t.Errorf("setDeliveryState(%q over %q) = %v, want %v", c.report, c.cur, got, c.want)
+			}
+			want := c.cur
+			if c.want {
+				want = c.report
+			}
+			if got := cp.entries[0].delivery; got != want {
+				t.Errorf("row holds %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSetDeliveryState_UntrackedEnvelope(t *testing.T) {
+	cp := newChatPage("chat-abc", "peer-bob", "bob", 0)
+	if cp.setDeliveryState("env-nobody-knows", "sent") {
+		t.Errorf("setDeliveryState accepted a report for an envelope this chat does not hold")
+	}
+}
+
+func TestRenderEventJSON_CallAnsweredElsewhere(t *testing.T) {
+	cp := newChatPage("chat-abc", "peer-bob", "bob", 0)
+	b, _ := json.Marshal(map[string]any{
+		"recv_seq":   1,
+		"chat_id":    "chat-abc",
+		"direction":  "in",
+		"kind":       "call_summary",
+		"display_ts": 1700000000,
+		"msg_id":     "mid-call",
+		"body": map[string]any{
+			"call_id":    "c1",
+			"direction":  "in",
+			"outcome":    "answered_elsewhere",
+			"modalities": []string{"audio"},
+		},
+	})
+	got := cp.renderEventJSON(b, "->")
+	if !strings.Contains(got, "answered on another device") || strings.Contains(got, "missed") {
+		t.Fatalf("render = %q, want \"answered on another device\" and no \"missed\"", got)
+	}
+	if !strings.Contains(got, StyleCallSummaryOK) {
+		t.Fatalf("render = %q, want the OK accent", got)
+	}
+}
+
+func TestRenderEventJSON_CallNoAnswerIsNotFailed(t *testing.T) {
+	cp := newChatPage("chat-abc", "peer-bob", "bob", 0)
+	mk := func(reason string) json.RawMessage {
+		b, _ := json.Marshal(map[string]any{
+			"recv_seq":   1,
+			"chat_id":    "chat-abc",
+			"direction":  "out",
+			"kind":       "call_summary",
+			"display_ts": 1700000000,
+			"msg_id":     "mid-call",
+			"body": map[string]any{
+				"call_id":     "c1",
+				"direction":   "out",
+				"outcome":     "failed",
+				"modalities":  []string{"audio"},
+				"fail_reason": reason,
+			},
+		})
+		return b
+	}
+	got := cp.renderEventJSON(mk("no_answer"), "<-")
+	if !strings.Contains(got, "no answer") || strings.Contains(got, "failed") {
+		t.Fatalf("no_answer render = %q, want \"no answer\" and no \"failed\"", got)
+	}
+
+	if !strings.Contains(got, StyleCallSummaryNeutral+"* ") || strings.Contains(got, StyleCallSummaryBad) {
+		t.Fatalf("no_answer render = %q, want the grey accent, not red", got)
+	}
+	got = cp.renderEventJSON(mk("send_failed: x"), "<-")
+	if !strings.Contains(got, "failed") || !strings.Contains(got, StyleCallSummaryBad+"* ") {
+		t.Fatalf("send_failed render = %q, want \"failed\" in red", got)
 	}
 }

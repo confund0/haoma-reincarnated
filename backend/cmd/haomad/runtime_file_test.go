@@ -121,3 +121,42 @@ func TestRemoveRuntimeFile_MissingFileSwallows(t *testing.T) {
 func TestRemoveRuntimeFile_EmptyPathNoOp(t *testing.T) {
 	removeRuntimeFile("")
 }
+
+func TestRuntimeInfoForNamesTheTor(t *testing.T) {
+	now := time.Unix(100, 0)
+	own := runtimeInfoFor(config{manageTor: "/usr/bin/tor", torDataDir: "/r/tor"}, "127.0.0.1:1", now)
+	if own.ManageTor != "/usr/bin/tor" || own.TorDataDir != "/r/tor" {
+		t.Fatalf("own tor: %+v", own)
+	}
+	sys := runtimeInfoFor(config{torDataDir: "/ignored"}, "127.0.0.1:1", now)
+	if sys.ManageTor != "" || sys.TorDataDir != "" {
+		t.Fatalf("system tor: %+v", sys)
+	}
+	if own.PID != os.Getpid() || own.APIAddr != "127.0.0.1:1" || !own.StartedAt.Equal(now) {
+		t.Fatalf("identity fields: %+v", own)
+	}
+
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		info    RuntimeInfo
+		present bool
+	}{
+		{"own", own, true},
+		{"system", sys, false},
+	} {
+		path := filepath.Join(dir, tc.name+".json")
+		if err := writeRuntimeFile(path, tc.info); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{`"manage_tor"`, `"tor_data_dir"`} {
+			if strings.Contains(string(raw), key) != tc.present {
+				t.Fatalf("%s: key %s present = %v in %s", tc.name, key, !tc.present, raw)
+			}
+		}
+	}
+}

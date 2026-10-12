@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dgraph-io/badger/v4"
+
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/events"
@@ -442,5 +444,212 @@ func TestState_IsTerminal(t *testing.T) {
 		if got != want {
 			t.Errorf("Status %q IsTerminal = %v, want %v", st, got, want)
 		}
+	}
+}
+
+func seedFanout(t *testing.T, mgr *calls.Manager, callID string) {
+	t.Helper()
+	s := calls.State{
+		CallID:     callID,
+		ChatID:     testChatID,
+		PeerID:     "dev-a",
+		Direction:  calls.DirOut,
+		Status:     calls.StatusOffered,
+		Modalities: []string{"audio"},
+		StartedAt:  100,
+		Targets:    []string{"dev-a", "dev-b", "dev-c"},
+	}
+	if err := mgr.PutState(s); err != nil {
+		t.Fatalf("PutState: %v", err)
+	}
+}
+
+func TestClaimAnswer_ExactlyOneWinsUnderRace(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		mgr := newManager(t)
+		seedFanout(t, mgr, "race")
+		devs := []string{"dev-a", "dev-b", "dev-c"}
+		type result struct {
+			dev string
+			won bool
+			err error
+		}
+		out := make(chan result, len(devs))
+		start := make(chan struct{})
+		for _, d := range devs {
+			go func(d string) {
+				<-start
+				_, won, err := mgr.ClaimAnswer("race", d)
+				out <- result{d, won, err}
+			}(d)
+		}
+		close(start)
+		winner := ""
+		for range devs {
+			r := <-out
+			if r.err != nil {
+				t.Fatalf("round %d: ClaimAnswer(%s): %v", round, r.dev, r.err)
+			}
+			if r.won {
+				if winner != "" {
+					t.Fatalf("round %d: %s and %s both won", round, winner, r.dev)
+				}
+				winner = r.dev
+			}
+		}
+		if winner == "" {
+			t.Fatalf("round %d: nobody won", round)
+		}
+		got, err := mgr.GetState("race")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.AnsweredBy != winner {
+			t.Fatalf("round %d: row answered by %q, winner was %q", round, got.AnsweredBy, winner)
+		}
+	}
+}
+
+func TestClaimAnswer_RefusesNonTargetAndClosedCall(t *testing.T) {
+	mgr := newManager(t)
+	seedFanout(t, mgr, "c1")
+	if _, won, err := mgr.ClaimAnswer("c1", "dev-eve"); err != nil || won {
+		t.Fatalf("non-target: won=%v err=%v, want a refusal", won, err)
+	}
+	if _, err := mgr.Transition("c1", calls.StatusEnded, "", 200); err != nil {
+		t.Fatal(err)
+	}
+	if _, won, err := mgr.ClaimAnswer("c1", "dev-a"); err != nil || won {
+		t.Fatalf("ended call: won=%v err=%v, want a refusal", won, err)
+	}
+}
+
+func TestMarkStopped_RingingShrinks(t *testing.T) {
+	mgr := newManager(t)
+	seedFanout(t, mgr, "c2")
+	s, err := mgr.MarkStopped("c2", "dev-b", "dev-eve", "dev-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Stopped) != 1 || s.Stopped[0] != "dev-b" {
+		t.Fatalf("stopped = %v, want [dev-b]", s.Stopped)
+	}
+	if r := s.Ringing(); len(r) != 2 || r[0] != "dev-a" || r[1] != "dev-c" {
+		t.Fatalf("ringing = %v, want [dev-a dev-c]", r)
+	}
+	if r := s.RingingExcept("dev-a"); len(r) != 1 || r[0] != "dev-c" {
+		t.Fatalf("ringing except dev-a = %v, want [dev-c]", r)
+	}
+}
+
+func TestCallTargets_LegacyRowFallsBackToPeer(t *testing.T) {
+	s := calls.State{PeerID: "dev-a", Direction: calls.DirOut}
+	if !s.IsTarget("dev-a") || s.IsTarget("dev-b") || s.IsTarget("") {
+		t.Fatalf("legacy row targets wrong: %v", s.CallTargets())
+	}
+	if s.MediaPeer() != "dev-a" {
+		t.Fatalf("media peer = %q, want dev-a", s.MediaPeer())
+	}
+	s.AnsweredBy = "dev-b"
+	if s.MediaPeer() != "dev-b" || s.Ringing() != nil {
+		t.Fatalf("answered row: media %q ringing %v", s.MediaPeer(), s.Ringing())
+	}
+}
+
+func conflictTimes(t *testing.T, mgr *calls.Manager, n int) func() int {
+	t.Helper()
+	caused := 0
+	restore := calls.SetBeforeCommitForTest(func(callID string) {
+		if n >= 0 && caused >= n {
+			return
+		}
+		caused++
+		s, err := mgr.GetState(callID)
+		if err != nil {
+			t.Errorf("conflict write: %v", err)
+			return
+		}
+		if err := mgr.PutState(s); err != nil {
+			t.Errorf("conflict write: %v", err)
+		}
+	})
+	t.Cleanup(restore)
+	return func() int { return caused }
+}
+
+func TestTransition_RetriesOnConflict(t *testing.T) {
+	mgr := newManager(t)
+	seedFanout(t, mgr, "c3")
+	caused := conflictTimes(t, mgr, 2)
+	got, err := mgr.Transition("c3", calls.StatusEnded, "", 200)
+	if err != nil {
+		t.Fatalf("Transition after 2 conflicts: %v", err)
+	}
+	if got.Status != calls.StatusEnded || caused() != 2 {
+		t.Fatalf("status %s after %d conflicts, want ended after 2", got.Status, caused())
+	}
+	if s, _ := mgr.GetState("c3"); s.Status != calls.StatusEnded {
+		t.Fatalf("stored status = %s, want ended", s.Status)
+	}
+}
+
+func TestClaimAnswer_RetriesOnConflict(t *testing.T) {
+	mgr := newManager(t)
+	seedFanout(t, mgr, "c4")
+	conflictTimes(t, mgr, 2)
+	if _, won, err := mgr.ClaimAnswer("c4", "dev-b"); err != nil || !won {
+		t.Fatalf("ClaimAnswer after 2 conflicts: won=%v err=%v", won, err)
+	}
+	if s, _ := mgr.GetState("c4"); s.AnsweredBy != "dev-b" {
+		t.Fatalf("answered by %q, want dev-b", s.AnsweredBy)
+	}
+}
+
+func TestTransition_ConflictEveryTimeIsReported(t *testing.T) {
+	mgr := newManager(t)
+	seedFanout(t, mgr, "c5")
+	caused := conflictTimes(t, mgr, -1)
+	if _, err := mgr.Transition("c5", calls.StatusEnded, "", 200); !errors.Is(err, badger.ErrConflict) {
+		t.Fatalf("err = %v, want badger.ErrConflict", err)
+	}
+	if caused() != calls.UpdateRetries {
+		t.Fatalf("tried %d times, want %d", caused(), calls.UpdateRetries)
+	}
+}
+
+func TestFailUnanswered_LosesToAClaimInBetween(t *testing.T) {
+	mgr := newManager(t)
+	seedFanout(t, mgr, "c6")
+	claimed := false
+	inHook := false
+	restore := calls.SetBeforeCommitForTest(func(callID string) {
+		if claimed || inHook {
+			return
+		}
+		inHook = true
+		if _, won, err := mgr.ClaimAnswer(callID, "dev-b"); err != nil || !won {
+			t.Errorf("claim in between: won=%v err=%v", won, err)
+		}
+		inHook = false
+		claimed = true
+	})
+	t.Cleanup(restore)
+
+	_, err := mgr.FailUnanswered("c6", calls.FailReasonNoAnswer, 200)
+	if !errors.Is(err, calls.ErrIllegalTransition) {
+		t.Fatalf("err = %v, want ErrIllegalTransition (answered)", err)
+	}
+	s, _ := mgr.GetState("c6")
+	if s.Status != calls.StatusOffered || s.AnsweredBy != "dev-b" {
+		t.Fatalf("row = %s answered by %q, want offered, answered by dev-b", s.Status, s.AnsweredBy)
+	}
+}
+
+func TestFailUnanswered_FailsAnUnansweredCall(t *testing.T) {
+	mgr := newManager(t)
+	seedFanout(t, mgr, "c7")
+	s, err := mgr.FailUnanswered("c7", calls.FailReasonNoAnswer, 200)
+	if err != nil || s.Status != calls.StatusFailed || s.FailReason != calls.FailReasonNoAnswer || s.EndedAt != 200 {
+		t.Fatalf("row = %+v err=%v, want failed (no_answer) at 200", s, err)
 	}
 }

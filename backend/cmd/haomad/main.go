@@ -27,10 +27,10 @@ func main() {
 	apiAddr := flag.String("api-addr", "127.0.0.1:7890", "local API listen address (use :0 for ephemeral; the chosen address is published on the stdout ready line)")
 	tokenFile := flag.String("token-file", "", "bearer-token file for the local API (default <store>/haomad-token); 0600 perms enforced; ignored under --secrets-stdin (token comes from the vault)")
 	certDir := flag.String("cert-dir", "", "directory holding the API listener's TLS cert.pem + cert.key (default same as --store); minted on first run; haoma reads cert.pem from here for cert pinning")
-	passphraseFile := flag.String("passphrase-file", "", "file containing the store passphrase (preferred over $HAOMA_PASSPHRASE); 0600 perms enforced; see ADR-035")
-	torPasswordFile := flag.String("tor-password-file", "", "file containing the tor control-port password (preferred over $HAOMA_TOR_PASSWORD); 0600 perms enforced; see ADR-035")
-	secretsStdin := flag.Bool("secrets-stdin", false, "read the secrets bundle (ADR-036) as a single JSON blob from stdin, EOF-terminated; mutually exclusive with --passphrase-file/--tor-password-file/--token-file")
-	runtimeFile := flag.String("runtime-file", "", "path to runtime metadata file (ADR-036): atomically written after the API listener binds, removed on graceful shutdown; consumed by haoma-text supervisor for attach-vs-spawn. Empty = skip both.")
+	passphraseFile := flag.String("passphrase-file", "", "file containing the store passphrase (preferred over $HAOMA_PASSPHRASE); 0600 perms enforced")
+	torPasswordFile := flag.String("tor-password-file", "", "file containing the system tor's control-port password (preferred over $HAOMA_TOR_PASSWORD); 0600 perms enforced. Not used under --manage-tor, whose tor is reached by its cookie")
+	secretsStdin := flag.Bool("secrets-stdin", false, "read the secrets bundle as a single JSON blob from stdin, EOF-terminated; mutually exclusive with --passphrase-file/--tor-password-file/--token-file")
+	runtimeFile := flag.String("runtime-file", "", "path to runtime metadata file: atomically written after the API listener binds, removed on graceful shutdown; consumed by haoma-text supervisor for attach-vs-spawn. Empty = skip both.")
 	torControl := flag.String("tor-control", "127.0.0.1:9051", "tor control-port address (ignored under --manage-tor; the spawned tor's auto-allocated control port is used instead)")
 	torSocks := flag.String("tor-socks", "127.0.0.1:9050", "tor SOCKS5 address for outbound peer traffic (ignored under --manage-tor)")
 	manageTor := flag.String("manage-tor", "", "path to a tor binary; when set, haomad spawns and supervises tor itself with auto-allocated control + SOCKS ports (Android / no-system-tor environments). On graceful shutdown the spawned tor is SIGTERM'd then SIGKILL'd.")
@@ -39,6 +39,7 @@ func main() {
 	logLevel := flag.String("log-level", "warn", "log level: debug|info|warn|error")
 	logFile := flag.String("log-file", "", "log destination: empty = silent (production), \"-\" = stderr (dev), else a file path (created with 0600)")
 	logFormat := flag.String("log-format", "text", "log format: text|json")
+	logFileMode := flag.String("log-file-mode", "", "mode of the log file, kept across rotation: 0600 (default), 0640 or 0660")
 	logMaxBytes := flag.Int64("log-max-bytes", 0, "rotate the log file when it would exceed this size (0 = 4 MiB default); ignored when --log-file is empty or \"-\"")
 	flag.Parse()
 
@@ -55,14 +56,20 @@ func main() {
 		*storeDir = filepath.Join(*cfgDir, backendSubdir)
 	}
 
-	sec, err := loadSecrets(*secretsStdin, *passphraseFile, *torPasswordFile, *tokenFile)
+	sec, err := loadSecrets(*secretsStdin, *manageTor != "", *passphraseFile, *torPasswordFile, *tokenFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "haomad: secrets: %v\n", err)
 		os.Exit(2)
 	}
 
+	logMode, errMode := logging.ParseFileMode(*logFileMode)
+	if errMode != nil {
+		fmt.Fprintf(os.Stderr, "haomad: logging: %v\n", errMode)
+		os.Exit(2)
+	}
 	logger, closeLog, errLog := logging.New(logging.Config{
 		Level: *logLevel, File: *logFile, Format: *logFormat, Service: "haomad", MaxBytes: *logMaxBytes,
+		FileMode: logMode,
 	})
 	if errLog != nil {
 		fmt.Fprintf(os.Stderr, "haomad: logging: %v\n", errLog)
@@ -93,6 +100,7 @@ func main() {
 
 	cfg := config{
 		storeDir:      *storeDir,
+		dataRoot:      *cfgDir,
 		secrets:       sec,
 		apiAddr:       *apiAddr,
 		tokenFile:     resolvedTokenFile,
@@ -104,13 +112,16 @@ func main() {
 		torDataDir:    resolvedTorDataDir,
 		onionVirtPort: *onionVirtPort,
 	}
-	if err := run(ctx, cfg); err != nil {
-		slog.Error("fatal", slog.Any("err", err))
+	runErr := run(ctx, cfg)
+
+	awaitErase()
+	if runErr != nil {
+		slog.Error("fatal", slog.Any("err", runErr))
 		os.Exit(1)
 	}
 }
 
-func loadSecrets(useStdin bool, passphraseFile, torPasswordFile, tokenFile string) (secrets.Secrets, error) {
+func loadSecrets(useStdin, manageTor bool, passphraseFile, torPasswordFile, tokenFile string) (secrets.Secrets, error) {
 	if useStdin {
 		if passphraseFile != "" || torPasswordFile != "" || tokenFile != "" {
 			return secrets.Secrets{}, fmt.Errorf("--secrets-stdin is mutually exclusive with --passphrase-file/--tor-password-file/--token-file")
@@ -127,6 +138,12 @@ func loadSecrets(useStdin bool, passphraseFile, torPasswordFile, tokenFile strin
 	pass, err := loadFromFileOrEnv(passphraseFile, "--passphrase-file", "HAOMA_PASSPHRASE")
 	if err != nil {
 		return secrets.Secrets{}, fmt.Errorf("passphrase: %w", err)
+	}
+	if manageTor {
+		if torPasswordFile != "" {
+			return secrets.Secrets{}, fmt.Errorf("--tor-password-file is for a system tor; the tor started by --manage-tor is reached by its cookie")
+		}
+		return secrets.Secrets{HaomadStorePassphrase: pass}, nil
 	}
 	tor, err := loadFromFileOrEnv(torPasswordFile, "--tor-password-file", "HAOMA_TOR_PASSWORD")
 	if err != nil {

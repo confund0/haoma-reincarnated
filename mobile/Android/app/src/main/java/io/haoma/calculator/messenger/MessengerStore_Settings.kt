@@ -5,8 +5,10 @@ import io.haoma.calculator.core.ipc.Frame
 import io.haoma.calculator.core.ipc.FrameType
 import io.haoma.calculator.log.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 
@@ -24,6 +26,9 @@ fun MessengerStore.pushSettingsSync() {
         notificationsOnLock = snap.optBoolean("notifications_on_lock", false),
         notifyPersistUntilOpen = snap.optBoolean("notify_persist_until_open", false),
         notifyDeepLink = snap.optBoolean("notify_deep_link", false),
+        
+        
+        showFailedDestroyAttempts = snap.optBoolean("show_failed_destroy_attempts", false),
         threatProfile = snap.optString("threat_profile", ""),
         panicAction = snap.optString("panic_action", ""),
         
@@ -48,6 +53,9 @@ fun MessengerStore.pushSettingsSync() {
 
 internal fun MessengerStore.refreshVaultDerivedState(session: io.haoma.calculator.core.VaultSession) {
     policyUpdater(IdlePolicy.fromJson(session.snapshot()))
+    
+    
+    loadSaysPassphraseIsDefault(session)
     setPassphraseIsDefault(session.isPassphraseDefault())
     reconcileShareTarget(session)
 }
@@ -99,7 +107,7 @@ fun MessengerStore.setSelfNick(nick: String) {
                 appendStatus("nick error: ${err?.message ?: "?"}", level = StatusLevel.WARN)
                 return@launch
             }
-            appendStatus("nick → $trimmed")
+            
         } catch (t: Throwable) {
             appendStatus("nick failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
         }
@@ -155,6 +163,7 @@ fun MessengerStore.loadNotificationSettings(): NotificationSettings? {
         noisy = snap.optBoolean("notify_noisy", false),
         persistUntilOpen = snap.optBoolean("notify_persist_until_open", false),
         deepLink = snap.optBoolean("notify_deep_link", false),
+        showFailedDestroyAttempts = snap.optBoolean("show_failed_destroy_attempts", false),
     )
 }
 
@@ -169,6 +178,7 @@ suspend fun MessengerStore.saveNotificationSettings(settings: NotificationSettin
         p.put("notify_noisy", settings.noisy)
         p.put("notify_persist_until_open", settings.persistUntilOpen)
         p.put("notify_deep_link", settings.deepLink)
+        p.put("show_failed_destroy_attempts", settings.showFailedDestroyAttempts)
     }
 
 
@@ -182,24 +192,52 @@ fun MessengerStore.loadChatDefaults(): ChatDefaultsSettings? {
 }
 
 
+fun MessengerStore.chatDefaultsKnown(): Boolean = _health.value.chatDefaultsKnown
+
+
 suspend fun MessengerStore.saveChatDefaults(settings: ChatDefaultsSettings): Result<Unit> {
-    val c = ipc ?: return Result.failure(IllegalStateException("daemon not connected"))
+    val frame = Frame(
+        type = FrameType.SetChatDefaults,
+        payload = SetChatDefaultsRequest(settings.retentionSeconds, settings.sendReceipts).toJson(),
+    )
+    if (!sendFrame(frame)) return Result.failure(IllegalStateException(CHAT_DEFAULTS_NOT_CONNECTED))
     return try {
-        val reply = c.request(
-            type = FrameType.SetChatDefaults,
-            payload = SetChatDefaultsRequest(settings.retentionSeconds, settings.sendReceipts).toJson(),
-        )
-        if (reply.type == FrameType.Error) {
-            val err = reply.payload?.let(ErrorPayload::fromJson)
-            Result.failure(IllegalStateException(err?.message ?: "chat defaults save rejected"))
+        val landed = withTimeoutOrNull(CHAT_DEFAULTS_WAIT_MS) {
+            health.first { it.chatDefaultsKnown && it.matches(settings) }
+        }
+        if (landed == null) {
+            Logger.w("messenger", "chat defaults not confirmed within ${CHAT_DEFAULTS_WAIT_MS}ms")
+            Result.failure(IllegalStateException(CHAT_DEFAULTS_NOT_SAVED))
         } else {
             appendStatus("chat defaults saved")
             Result.success(Unit)
         }
     } catch (t: Throwable) {
-        Result.failure(t)
+        Logger.w("messenger", "chat defaults save failed: ${t.message ?: "?"}")
+        Result.failure(IllegalStateException(CHAT_DEFAULTS_NOT_SAVED))
     }
 }
+
+
+internal fun MessengerStore.sendFrame(frame: Frame): Boolean {
+    frameSender?.let { return it(frame) }
+    val c = ipc ?: return false
+    c.send(frame)
+    return true
+}
+
+
+private fun SystemHealth.matches(want: ChatDefaultsSettings): Boolean =
+    defaultRetentionSec == want.retentionSeconds && defaultSendReceipts == want.sendReceipts
+
+
+private const val CHAT_DEFAULTS_WAIT_MS = 2_000L
+
+
+const val CHAT_DEFAULTS_NOT_CONNECTED =
+    "Not saved. Haoma is not running yet. Open it and try again."
+const val CHAT_DEFAULTS_NOT_SAVED =
+    "Not saved. The setting is unchanged. Check Haoma is running, then try again."
 
 
 fun MessengerStore.loadTorSettings(): TorSettings? {
@@ -301,38 +339,101 @@ suspend fun MessengerStore.saveLock(settings: LockSettings, clearThreatProfile: 
     }
 
 
-suspend fun MessengerStore.applyThreatPreset(presetId: String): Result<Unit> {
+suspend fun MessengerStore.applyThreatPreset(presetId: String): Result<String> {
     val bundle = THREAT_PRESET_BUNDLES[presetId]
         ?: return Result.failure(IllegalArgumentException("unknown preset: $presetId"))
     val result = resealVault("apply-preset", "threat preset applied: $presetId") { p ->
         p.put("threat_profile", presetId)
+
+        p.put("show_login_form", bundle.showLoginForm)
+        p.put("say_passphrase_is_default", bundle.sayPassphraseIsDefault)
+
         p.put("idle_action", bundle.idleAction)
         p.put("idle_timeout_seconds", bundle.idleTimeoutSeconds)
         p.put("pin_validity_sec", bundle.pinValiditySec)
         p.put("panic_action", bundle.panicAction)
-        
-        
-        p.put("share_target_enabled", false)
+
+        p.put("notify_shell_enabled", bundle.notifyShellEnabled)
+        p.put("notify_show_sender", bundle.notifyShowSender)
+        p.put("notify_show_body", bundle.notifyShowBody)
+        p.put("notify_disguise_enabled", bundle.notifyDisguiseEnabled)
+        p.put("notify_noisy", bundle.notifyNoisy)
+        p.put("notify_persist_until_open", bundle.notifyPersistUntilOpen)
+        p.put("notify_deep_link", bundle.notifyDeepLink)
+        p.put("notifications_on_lock", bundle.notificationsOnLock)
+
+        p.put("share_target_enabled", bundle.shareTargetEnabled)
+        p.put("show_failed_destroy_attempts", bundle.showFailedDestroyAttempts)
     }
-    
-    
-    if (result.isSuccess) {
-        unlockKeysStore?.let { store ->
-            val current = store.load()
-            if (current.bypassKey.isNotEmpty()) {
-                val cleared = current.copy(bypassKey = "")
-                store.save(cleared)
-                revealKeysUpdater(cleared)
-            }
-        }
-    }
-    return result
+    result.exceptionOrNull()?.let { return Result.failure(it) }
+
+    Logger.d(
+        "messenger",
+        "preset $presetId vault cells written: show_login_form=${bundle.showLoginForm} " +
+            "say_passphrase_is_default=${bundle.sayPassphraseIsDefault} " +
+            "idle=${bundle.idleAction}@${bundle.idleTimeoutSeconds} " +
+            "pin_validity=${bundle.pinValiditySec} panic=${bundle.panicAction} " +
+            "notify_shell=${bundle.notifyShellEnabled} sender=${bundle.notifyShowSender} " +
+            "body=${bundle.notifyShowBody} disguise=${bundle.notifyDisguiseEnabled} " +
+            "noisy=${bundle.notifyNoisy} persist=${bundle.notifyPersistUntilOpen} " +
+            "deep_link=${bundle.notifyDeepLink} on_lock=${bundle.notificationsOnLock} " +
+            "share_target=${bundle.shareTargetEnabled} " +
+            "failed_destroy=${bundle.showFailedDestroyAttempts}",
+    )
+
+    applyPresetBypassSlot(bundle)
+    return Result.success(applyPresetRetention(bundle))
 }
 
 
-fun MessengerStore.loadCurrentPin(): String? {
-    val session = vaultSessionProvider() ?: return null
-    return session.snapshot().optString("pin", "")
+private fun MessengerStore.applyPresetBypassSlot(bundle: ThreatPresetBundle) {
+    if (bundle.bypassSlotEnabled) {
+        Logger.d("messenger", "preset bypass slot stays on — key left as the person set it")
+        return
+    }
+    val store = unlockKeysStore ?: return
+    val current = store.load()
+    if (current.bypassKey.isEmpty()) return
+    val cleared = current.copy(bypassKey = "")
+    store.save(cleared)
+    revealKeysUpdater(cleared)
+    Logger.d("messenger", "preset bypass slot turned off — key cleared")
+}
+
+
+const val RETENTION_NOTE_REFUSED = "How long messages are kept: not saved."
+const val RETENTION_NOTE_UNKNOWN = "How long messages are kept: try again soon."
+
+
+private suspend fun MessengerStore.applyPresetRetention(bundle: ThreatPresetBundle): String {
+    if (!chatDefaultsKnown()) {
+        Logger.w("messenger", "preset retention default not sent — chat defaults not known yet")
+        appendStatus(
+            "how long messages are kept was not changed — this device does not know the current setting yet",
+            level = StatusLevel.WARN,
+        )
+        return RETENTION_NOTE_UNKNOWN
+    }
+    val receipts = _health.value.defaultSendReceipts
+    Logger.d(
+        "messenger",
+        "preset retention default sent: ${bundle.defaultRetentionSec}s receipts=$receipts",
+    )
+    val sent = saveChatDefaults(
+        ChatDefaultsSettings(
+            retentionSeconds = bundle.defaultRetentionSec,
+            sendReceipts = receipts,
+        ),
+    )
+    val failure = sent.exceptionOrNull()
+    if (failure != null) {
+        Logger.w("messenger", "preset retention default refused: ${failure.message ?: "?"}")
+        return RETENTION_NOTE_REFUSED
+    }
+    val label = io.haoma.calculator.messenger.chat.retentionLevels[
+        io.haoma.calculator.messenger.chat.retentionOptionIndex(bundle.defaultRetentionSec),
+    ].label
+    return "How long messages are kept: $label."
 }
 
 
@@ -426,6 +527,9 @@ data class NotificationSettings(
     
     val persistUntilOpen: Boolean,
     val deepLink: Boolean,
+    
+    
+    val showFailedDestroyAttempts: Boolean,
 )
 
 
@@ -450,10 +554,34 @@ data class LockSettings(
 
 
 data class ThreatPresetBundle(
+    
+    
+    val showLoginForm: Boolean,
+    val sayPassphraseIsDefault: Boolean,
+    val bypassSlotEnabled: Boolean,
+
+    
     val idleAction: String,
     val idleTimeoutSeconds: Int,
     val pinValiditySec: Int,
     val panicAction: String,
+
+    
+    val defaultRetentionSec: Long,
+
+    
+    val notifyShellEnabled: Boolean,
+    val notifyShowSender: Boolean,
+    val notifyShowBody: Boolean,
+    val notifyDisguiseEnabled: Boolean,
+    val notifyNoisy: Boolean,
+    val notifyPersistUntilOpen: Boolean,
+    val notifyDeepLink: Boolean,
+    val notificationsOnLock: Boolean,
+
+    
+    val shareTargetEnabled: Boolean,
+    val showFailedDestroyAttempts: Boolean,
 )
 
 
@@ -468,17 +596,114 @@ data class UnlockKeySettings(
     val bypassKey: String,
 )
 
+
+const val TIER_NOBODY = "nobody"
+const val TIER_DOMESTIC = "domestic"
+const val TIER_POWER = "power"
+const val TIER_FORCE = "force"
+
+
+private const val RETENTION_FOUR_WEEKS = 28L * 24 * 3600
+private const val RETENTION_ONE_WEEK = 7L * 24 * 3600
+private const val RETENTION_ONE_DAY = 24L * 3600
+private const val RETENTION_ONE_HOUR = 3600L
+
+
 internal val THREAT_PRESET_BUNDLES: Map<String, ThreatPresetBundle> = mapOf(
-    "domestic" to ThreatPresetBundle(
+    TIER_NOBODY to ThreatPresetBundle(
+        showLoginForm = false,
+        sayPassphraseIsDefault = false,
+        bypassSlotEnabled = true,
+
+        idleAction = "soft-lock",
+        idleTimeoutSeconds = 900,
+        pinValiditySec = 0,
+        panicAction = "safe-lock",
+
+        defaultRetentionSec = RETENTION_FOUR_WEEKS,
+
+        notifyShellEnabled = true,
+        notifyShowSender = true,
+        notifyShowBody = false,
+        notifyDisguiseEnabled = false,
+        notifyNoisy = true,
+        notifyPersistUntilOpen = true,
+        notifyDeepLink = true,
+        notificationsOnLock = true,
+
+        shareTargetEnabled = true,
+        showFailedDestroyAttempts = true,
+    ),
+    TIER_DOMESTIC to ThreatPresetBundle(
+        showLoginForm = true,
+        sayPassphraseIsDefault = true,
+        bypassSlotEnabled = true,
+
         idleAction = "soft-lock",
         idleTimeoutSeconds = 300,
         pinValiditySec = 86400,
         panicAction = "safe-lock",
+
+        defaultRetentionSec = RETENTION_ONE_WEEK,
+
+        notifyShellEnabled = true,
+        notifyShowSender = false,
+        notifyShowBody = false,
+        notifyDisguiseEnabled = true,
+        notifyNoisy = false,
+        notifyPersistUntilOpen = true,
+        notifyDeepLink = false,
+        notificationsOnLock = true,
+
+        shareTargetEnabled = false,
+        showFailedDestroyAttempts = false,
     ),
-    "privacy" to ThreatPresetBundle(
-        idleAction = "soft-lock",
+    TIER_POWER to ThreatPresetBundle(
+        showLoginForm = true,
+        sayPassphraseIsDefault = true,
+        bypassSlotEnabled = false,
+
+        idleAction = "safe-lock",
         idleTimeoutSeconds = 60,
         pinValiditySec = 300,
         panicAction = "hard-lock",
+
+        defaultRetentionSec = RETENTION_ONE_DAY,
+
+        notifyShellEnabled = true,
+        notifyShowSender = false,
+        notifyShowBody = false,
+        notifyDisguiseEnabled = true,
+        notifyNoisy = false,
+        notifyPersistUntilOpen = false,
+        notifyDeepLink = false,
+        notificationsOnLock = false,
+
+        shareTargetEnabled = false,
+        showFailedDestroyAttempts = false,
+    ),
+    TIER_FORCE to ThreatPresetBundle(
+        showLoginForm = true,
+        sayPassphraseIsDefault = true,
+        bypassSlotEnabled = false,
+
+        idleAction = "hard-lock",
+        idleTimeoutSeconds = 30,
+        pinValiditySec = 0,
+        panicAction = "self-destruct",
+
+        defaultRetentionSec = RETENTION_ONE_HOUR,
+
+        notifyShellEnabled = false,
+        notifyShowSender = false,
+        notifyShowBody = false,
+        notifyDisguiseEnabled = true,
+        notifyNoisy = false,
+        notifyPersistUntilOpen = false,
+        notifyDeepLink = false,
+        notificationsOnLock = false,
+
+        shareTargetEnabled = false,
+        showFailedDestroyAttempts = false,
     ),
 )

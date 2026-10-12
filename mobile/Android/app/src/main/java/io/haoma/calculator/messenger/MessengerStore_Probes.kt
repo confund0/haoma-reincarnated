@@ -87,34 +87,7 @@ private fun MessengerStore.peerIdForChat(chatId: String): String? {
 private const val RECOVER_LOG_TAG = "MessengerStore.TorRecover"
 
 
-fun MessengerStore.torRecover(mode: String) {
-    when (mode) {
-        "newnym" -> torRecoverNewnym()
-        "reset"  -> torRecoverReset()
-        else     -> Logger.w(RECOVER_LOG_TAG, "ignoring unknown mode: $mode")
-    }
-}
-
-private fun MessengerStore.torRecoverNewnym() {
-    scope.launch {
-        val c = ipc ?: run {
-            Logger.d(RECOVER_LOG_TAG, "newnym skipped — ipc not connected yet")
-            return@launch
-        }
-        Logger.d(RECOVER_LOG_TAG, "newnym dispatch")
-        try {
-            c.request(
-                type = FrameType.TorRecover,
-                payload = TorRecoverRequest("newnym").toJson(),
-            )
-            Logger.d(RECOVER_LOG_TAG, "newnym accepted")
-        } catch (t: Throwable) {
-            Logger.w(RECOVER_LOG_TAG, "newnym failed: ${t.message ?: "?"}")
-        }
-    }
-}
-
-private fun MessengerStore.torRecoverReset() {
+fun MessengerStore.resetTor() {
     val ctx = appContext ?: run {
         Logger.w(RECOVER_LOG_TAG, "reset skipped — no appContext on store")
         return
@@ -138,6 +111,37 @@ private fun MessengerStore.torRecoverReset() {
             HaomaCoreService.restartDaemons(ctx)
         } catch (t: Throwable) {
             Logger.w(RECOVER_LOG_TAG, "reset failed: ${t.message ?: "?"}")
+        }
+    }
+}
+
+
+private const val NETWORK_LOG_TAG = "MessengerStore.Network"
+
+
+fun MessengerStore.reportNetworkChanged() {
+    scope.launch {
+        val c = ipc ?: run {
+            Logger.d(NETWORK_LOG_TAG, "network change not reported: ipc not connected")
+            return@launch
+        }
+        try {
+            val reply = c.request(
+                type = FrameType.NetworkChanged,
+                payload = org.json.JSONObject(),
+            )
+            if (reply.type == FrameType.NetworkChangeHandled) {
+                val p = reply.payload
+                Logger.i(
+                    NETWORK_LOG_TAG,
+                    "network change reported: dropped=${p?.optBoolean("dropped")} " +
+                        "rows=${p?.optInt("rows")} fetches=${p?.optInt("fetches")}",
+                )
+            } else {
+                Logger.w(NETWORK_LOG_TAG, "network change refused: ${reply.type}")
+            }
+        } catch (t: Throwable) {
+            Logger.w(NETWORK_LOG_TAG, "network change not reported: ${t.message ?: "?"}")
         }
     }
 }

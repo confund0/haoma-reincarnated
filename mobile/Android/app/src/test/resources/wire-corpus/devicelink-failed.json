@@ -1,0 +1,8 @@
+{
+  "type": "devicelink.failed",
+  "payload": {
+    "handle_id": "8e40c7b12df9463a05e8b1c73fa0d629",
+    "reason": "joiner_not_empty",
+    "detail": "this device holds 2 contacts"
+  }
+}

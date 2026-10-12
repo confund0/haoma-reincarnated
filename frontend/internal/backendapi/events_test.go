@@ -1,13 +1,16 @@
 package backendapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -186,15 +189,16 @@ func TestEvents_CtxCancelStops(t *testing.T) {
 	var gotErr error
 	var wg sync.WaitGroup
 	wg.Add(1)
-	got := 0
+
+	var got atomic.Int64
 	go func() {
 		defer wg.Done()
-		gotErr = parseSSE(ctx, pr, EventsOpts{OnEvent: func(Notification) { got++ }})
+		gotErr = parseSSE(ctx, pr, EventsOpts{OnEvent: func(Notification) { got.Add(1) }})
 	}()
 
 	time.Sleep(30 * time.Millisecond)
-	if got != 1 {
-		t.Errorf("expected one frame decoded before cancel; got %d", got)
+	if n := got.Load(); n != 1 {
+		t.Errorf("expected one frame decoded before cancel; got %d", n)
 	}
 	cancel()
 
@@ -320,4 +324,116 @@ func (w *blockingWriter) Write(p []byte) (int, error) {
 func (w *blockingWriter) Close() error {
 	w.once.Do(func() { close(w.closed); close(w.ch) })
 	return nil
+}
+
+func TestEvents_DestroyInstructionReachesItsCallback(t *testing.T) {
+	raw := "" +
+		"event: device.destroy\n" +
+		`data: {"reason":"the other device commanded it"}` + "\n" +
+		"\n"
+
+	var got []DestroyDeviceInstruction
+	var generic []Notification
+	err := parseSSE(context.Background(), strings.NewReader(raw), EventsOpts{
+		OnEvent:         func(n Notification) { generic = append(generic, n) },
+		OnDestroyDevice: func(d DestroyDeviceInstruction) { got = append(got, d) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("the instruction fired %d times, want 1", len(got))
+	}
+	if got[0].Reason != "the other device commanded it" {
+		t.Errorf("reason = %q", got[0].Reason)
+	}
+	if len(generic) != 0 {
+		t.Errorf("it also reached the generic callback %d times", len(generic))
+	}
+}
+
+func TestEvents_DestroyInstructionSurvivesABadBody(t *testing.T) {
+	raw := "" +
+		"event: device.destroy\n" +
+		"data: not json\n" +
+		"\n"
+
+	fired := 0
+	err := parseSSE(context.Background(), strings.NewReader(raw), EventsOpts{
+		OnDestroyDevice: func(DestroyDeviceInstruction) { fired++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fired != 1 {
+		t.Fatalf("the instruction fired %d times on an unreadable body, want 1", fired)
+	}
+}
+
+func TestEvents_DestroyInstructionCarriesTheEraseIDIntoTheLog(t *testing.T) {
+	raw := "" +
+		"event: device.destroy\n" +
+		`data: {"reason":"the other device commanded it","erase_id":"9f2c1d"}` + "\n" +
+		"\n"
+
+	var buf syncBuffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+
+	var got []DestroyDeviceInstruction
+	err := parseSSE(context.Background(), strings.NewReader(raw), EventsOpts{
+		OnDestroyDevice: func(d DestroyDeviceInstruction) { got = append(got, d) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("the instruction fired %d times, want 1", len(got))
+	}
+	if got[0].EraseID != "9f2c1d" {
+		t.Errorf("erase id = %q, want %q", got[0].EraseID, "9f2c1d")
+	}
+	if got[0].Reason != "the other device commanded it" {
+		t.Errorf("reason = %q", got[0].Reason)
+	}
+
+	line := buf.String()
+	if !strings.Contains(line, "erase_id=9f2c1d") ||
+		!strings.Contains(line, "the daemon says this device is being erased") {
+		t.Fatalf("this process wrote no line naming the erase id:\n%s", line)
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestEvents_FileFetchStateCarriesTheReason(t *testing.T) {
+	raw := "" +
+		"event: file.fetch-state-changed\n" +
+		`data: {"msg_id":"m1","state":"failed_permanent","last_error":"peer 404 (token unknown)","reason":"blob_gone","at":1}` + "\n" +
+		"\n"
+	var got []FileFetchEvent
+	if err := parseSSE(context.Background(), strings.NewReader(raw), EventsOpts{
+		OnFileFetchState: func(ev FileFetchEvent) { got = append(got, ev) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Reason != FetchFailBlobGone {
+		t.Fatalf("decoded %+v, want one event with reason %q", got, FetchFailBlobGone)
+	}
 }

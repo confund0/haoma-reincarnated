@@ -81,6 +81,22 @@ object FrameType {
     const val ChatUnreadChanged = "chat.unread-changed"
     const val PeerLastSeenChanged = "peer.last-seen-changed"
     const val PresenceChanged = "presence_changed"
+    
+    
+    const val ChatPresenceChanged = "chat_presence_changed"
+
+    
+    const val ListInheritedContacts = "list_inherited_contacts"
+    const val InheritedContactsListed = "inherited_contacts_listed"
+    const val InheritedContactsChanged = "inherited_contacts.changed"
+
+    
+    const val InvitationOffer = "invitation_offer"
+    const val InvitationOffered = "invitation_offered"
+    const val InvitationAccept = "invitation_accept"
+    const val InvitationAccepted = "invitation_accepted"
+    const val InvitationsList = "invitations_list"
+    const val InvitationsListed = "invitations_listed"
 
     
     const val EnsureChat = "ensure_chat"
@@ -113,6 +129,8 @@ object FrameType {
     const val SendEdit = "send_edit"
     const val EditSent = "edit_sent"
     const val SendDelete = "send_delete"
+    const val RetryFiles = "retry_files"
+    const val RetryFilesResult = "retry_files_result"
     const val DeleteSent = "delete_sent"
     const val SendReaction = "send_reaction"
     const val ReactionSent = "reaction_sent"
@@ -138,6 +156,44 @@ object FrameType {
     const val PeerPaired = "pair.completed"
 
     
+    const val DeviceLinkOffer = "devicelink_offer"
+    const val DeviceLinkStarted = "devicelink_started"
+    const val DeviceLinkAccept = "devicelink_accept"
+    const val DeviceLinkAccepted = "devicelink_accepted"
+    const val DeviceLinkCancel = "devicelink_cancel"
+    const val DeviceLinkCancelled = "devicelink_cancelled"
+    const val DeviceLinksList = "devicelinks_list"
+    const val DeviceLinksListed = "devicelinks_listed"
+    const val DeviceLinkProbe = "devicelink.probe"
+    const val DeviceLinkCompleted = "devicelink.completed"
+    const val DeviceLinkFailed = "devicelink.failed"
+
+    
+    const val DeviceSync = "devicesync"
+    const val DeviceSyncSent = "devicesync_sent"
+    const val DeviceSyncFinished = "devicesync.finished"
+
+    
+    const val GetDestroyPin = "get_destroy_pin"
+    const val DestroyPinListed = "destroy_pin_listed"
+    const val SetDestroyPin = "set_destroy_pin"
+    const val DestroyPinSet = "destroy_pin_set"
+    const val VerifyDestroyPin = "verify_destroy_pin"
+    const val DestroyPinVerified = "destroy_pin_verified"
+    const val UnlinkDevice = "unlink_device"
+    const val DeviceUnlinked = "device_unlinked"
+    const val DestroyDevice = "destroy_device"
+    const val DestroyAttemptsSeen = "destroy_attempts_seen"
+
+    
+    const val StopDestroyWaiting = "stop_destroy_waiting"
+    const val DestroyWaitingStopped = "destroy_waiting_stopped"
+
+    
+    const val WipeDevice = "wipe_device"
+    const val DeviceWiping = "device_wiping"
+
+    
     const val NewCircuitForPeer = "new_circuit_for_peer"
     const val NewCircuitClosed = "new_circuit_closed"
 
@@ -150,8 +206,8 @@ object FrameType {
     const val ExternalReachChanged = "health.external-reach-changed"
 
     
-    const val TorRecover = "tor_recover"
-    const val TorRecovered = "tor_recovered"
+    const val NetworkChanged = "network_changed"
+    const val NetworkChangeHandled = "network_change_handled"
 
     
     const val RotateBegin = "rotate_begin"

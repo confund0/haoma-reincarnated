@@ -25,14 +25,15 @@ func main() {
 	flag.StringVar(&cfg.backendAddr, "backend-addr", "", "haomad local API URL (e.g. https://127.0.0.1:8731); disables backend relay if empty")
 	flag.StringVar(&cfg.haomadTokenFile, "haomad-token-file", "", "path to haomad's bearer-token file (default <cfg-dir>/backend/haomad-token); 0600 perms enforced; ignored under --secrets-stdin (token comes from the vault)")
 	flag.StringVar(&cfg.haomadCertFile, "haomad-cert-file", "", "path to haomad's TLS cert.pem for cert pinning (default <cfg-dir>/backend/cert.pem); world-readable")
-	flag.StringVar(&cfg.passphraseFile, "passphrase-file", "", "file containing the store passphrase (preferred over $HAOMA_FRONTEND_PASSPHRASE); 0600 perms enforced; see ADR-035")
+	flag.StringVar(&cfg.passphraseFile, "passphrase-file", "", "file containing the store passphrase (preferred over $HAOMA_FRONTEND_PASSPHRASE); 0600 perms enforced")
 	flag.StringVar(&cfg.passphraseEnv, "passphrase-env", "HAOMA_FRONTEND_PASSPHRASE", "env var holding the store passphrase (fallback when --passphrase-file is unset)")
-	flag.BoolVar(&cfg.secretsStdin, "secrets-stdin", false, "read the secrets bundle (ADR-036) as a single JSON blob from stdin, EOF-terminated; mutually exclusive with --passphrase-file/--passphrase-env/--haomad-token-file")
+	flag.BoolVar(&cfg.secretsStdin, "secrets-stdin", false, "read the secrets bundle as a single JSON blob from stdin, EOF-terminated; mutually exclusive with --passphrase-file/--passphrase-env/--haomad-token-file")
 	flag.StringVar(&cfg.streamerDir, "streamer-dir", "", "directory containing haoma-mic / haoma-spk binaries (overrides $HAOMA_STREAMER_DIR; default: dir of haoma binary, then $PATH)")
 	flag.BoolVar(&cfg.streamerTrace, "streamer-trace", false, "spawn streamers with --trace (per-frame stdout events for call debugging)")
 	flag.StringVar(&cfg.logLevel, "log-level", "warn", "log level: debug|info|warn|error")
 	flag.StringVar(&cfg.logFile, "log-file", "", "log destination: empty = silent (production), \"-\" = stderr (dev), else a file path (created with 0600)")
 	flag.StringVar(&cfg.logFormat, "log-format", "text", "log format: text|json")
+	flag.StringVar(&cfg.logFileMode, "log-file-mode", "", "mode of the log file, kept across rotation: 0600 (default), 0640 or 0660")
 	flag.Int64Var(&cfg.logMaxBytes, "log-max-bytes", 0, "rotate the log file when it would exceed this size (0 = 4 MiB default); ignored when --log-file is empty or \"-\"")
 	flag.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	flag.Parse()
@@ -49,8 +50,14 @@ func main() {
 	}
 	cfg.secrets = sec
 
+	logMode, err := logging.ParseFileMode(cfg.logFileMode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "haoma: logging: %v\n", err)
+		os.Exit(2)
+	}
 	logger, closeLog, err := logging.New(logging.Config{
 		Level: cfg.logLevel, File: cfg.logFile, Format: cfg.logFormat, Service: "haoma", MaxBytes: cfg.logMaxBytes,
+		FileMode: logMode,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "haoma: logging: %v\n", err)
@@ -84,6 +91,7 @@ type config struct {
 	logFile         string
 	logFormat       string
 	logMaxBytes     int64
+	logFileMode     string
 	showVersion     bool
 
 	secrets secrets.Secrets

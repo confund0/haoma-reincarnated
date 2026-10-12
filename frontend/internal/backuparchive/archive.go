@@ -23,6 +23,8 @@ var excludedSuffixes = []string{
 	".pid",
 	".sock",
 	".lock",
+	".stderr",
+	".stderr.prev",
 }
 
 var excludedBasenames = []string{
@@ -30,10 +32,54 @@ var excludedBasenames = []string{
 	"haomad.runtime.json",
 }
 
-var includedTopLevelDirs = []string{
+var carriedFiles = []string{
+	"disguise.enc",
+	"calc-help.txt",
+}
+
+var carriedDirs = []string{
 	"backend",
 	"frontend",
 	"textUI",
+}
+
+func IsCarried(name string, isDir bool) bool {
+	if isExcluded(name) {
+		return false
+	}
+	if isDir {
+		for _, d := range carriedDirs {
+			if name == d {
+				return true
+			}
+		}
+		return false
+	}
+	if isVaultFile(name) {
+		return true
+	}
+	for _, f := range carriedFiles {
+		if name == f {
+			return true
+		}
+	}
+	return false
+}
+
+func isVaultFile(name string) bool {
+	if name == "vault.enc" {
+		return true
+	}
+	n, ok := strings.CutPrefix(name, "vault.enc.")
+	if !ok || n == "" {
+		return false
+	}
+	for _, c := range n {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func isExcluded(name string) bool {
@@ -111,24 +157,8 @@ func topLevelEntries(cfgDir string) ([]string, error) {
 	}
 	var keep []string
 	for _, d := range all {
-		name := d.Name()
-		switch {
-		case name == "vault.enc" || strings.HasPrefix(name, "vault.enc."):
-
-			if !isExcluded(name) {
-				keep = append(keep, name)
-			}
-		case name == "disguise.enc":
-			keep = append(keep, name)
-		default:
-			if d.IsDir() {
-				for _, top := range includedTopLevelDirs {
-					if name == top {
-						keep = append(keep, name)
-						break
-					}
-				}
-			}
+		if IsCarried(d.Name(), d.IsDir()) {
+			keep = append(keep, d.Name())
 		}
 	}
 	sort.Strings(keep)

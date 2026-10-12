@@ -1,0 +1,23 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4194,
+      "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+      "direction": "out",
+      "kind": "text",
+      "display_ts": 1754903120,
+      "sender_ts": 1754903120,
+      "recv_ts": 1754903120,
+      "sender_seq": 614,
+      "envelope_id": "94d2c60b7e185af3026d9b41c73e50a8",
+      "envelope_ids": [
+        "94d2c60b7e185af3026d9b41c73e50a8"
+      ],
+      "msg_id": "2c74a91f8b035d6ea19c04f72b8d6531",
+      "delivery_state": "sent",
+      "expire_seconds": 604800,
+      "deleted_at": 1754903180
+    }
+  }
+}

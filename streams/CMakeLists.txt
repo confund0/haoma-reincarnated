@@ -25,8 +25,8 @@ add_compile_options(-Wall -Wextra)
 # Note: -Wpedantic is intentionally off — our LOG_*() macros use the GNU
 # `, ##__VA_ARGS__` extension (no portable C++17 alternative; __VA_OPT__ is C++20).
 
-# Exactly one platform audio impl is compiled per build (ADR-040 multiplatform shape).
-# Calls-1c only fully wires Linux/PipeWire; the other branches are stubs.
+# Exactly one platform audio impl is compiled per build.
+# Only Linux/PipeWire is fully wired here; the other branches are stubs.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(STREAMS_AUDIO_IMPL "platform/audio_pipewire.cpp")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
@@ -40,15 +40,15 @@ else()
 endif()
 message(STATUS "streams: audio backend = ${STREAMS_AUDIO_IMPL}")
 
-# Same shape for video capture (V-1.5: cam owns its sensor). Linux uses
-# a Y4M file-source dev backend; Android uses NdkCamera. Real V4L2
-# capture lands in V-4 (post-beta).
+# Same shape for video capture (cam owns its sensor). Linux uses a Y4M
+# file-source dev backend; Android uses NdkCamera. Real V4L2 capture
+# is future work.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(STREAMS_VIDEO_IMPL "platform/video_y4m.cpp")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
   set(STREAMS_VIDEO_IMPL "platform/video_android.cpp")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
-  set(STREAMS_VIDEO_IMPL "platform/video_y4m.cpp")  # Y4M stub until V-4 lands real backends
+  set(STREAMS_VIDEO_IMPL "platform/video_y4m.cpp")  # Y4M stub until real backends exist
 else()
   message(FATAL_ERROR "streams: unsupported platform ${CMAKE_SYSTEM_NAME}")
 endif()

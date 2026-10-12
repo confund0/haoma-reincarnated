@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"haoma/internal/peers"
 	"haoma/internal/eventbus"
 	"haoma/internal/ids"
 	"haoma/internal/outbox"
+	"haoma/internal/peers"
 	"haoma/internal/store"
 	"haoma/internal/xport"
 )
@@ -472,7 +472,7 @@ func TestAPI_Send_HappyPath(t *testing.T) {
 		t.Errorf("outbox envelope fails HMAC verify: %v", err)
 	}
 	if row.Envelope.From != inv.MyOnionAddr {
-		t.Errorf("envelope.From = %q, want %q (peer.MyOnionAddr per ADR-043)", row.Envelope.From, inv.MyOnionAddr)
+		t.Errorf("envelope.From = %q, want %q (peer.MyOnionAddr)", row.Envelope.From, inv.MyOnionAddr)
 	}
 	wantDest := "http://alice-onion-56chars-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy.onion"
 	if row.Dest != wantDest {

@@ -3,7 +3,7 @@
 Builds the native libraries the call streamers (`haoma-mic`,
 `haoma-spk`, `haoma-cam`, `haoma-vid`) link against — **libopus**
 (Opus audio codec), **libsodium** (ChaCha20-Poly1305 AEAD), and
-**libvpx** (VP8 video codec; V-1 of M-CALLS-VIDEO) — as static
+**libvpx** (VP8 video codec) — as static
 archives for Android arm64-v8a.
 
 ## Output shape
@@ -16,8 +16,7 @@ archives for Android arm64-v8a.
   `include/vpx/*` — matching headers.
 
 These are **link-time only**. They are NOT runtime artifacts and do
-NOT go in `jniLibs/`. The C++ streamers consume them via CMake in
-chunk A.2 of M-CALLS-A.
+NOT go in `jniLibs/`. The C++ streamers consume them via CMake.
 
 The committed archives' SHA-256 is recorded in `streams-prebuilt.lock`
 (committed alongside the binaries). CI verifies it via
@@ -43,12 +42,14 @@ satisfies both recipes.
 
 - `~/sdk/android/ndk/r29/` — NDK r29, revision `29.0.14206865`
   (shared with `mobile/tor-build/`).
-- alpsec bubble at `/usr/local/lib/alpsec/bubble.sh` (build runs
-  inside the Debian chroot for native-glibc autotools + clang).
-- Inside chroot: `gcc make pkg-config build-essential autoconf
+- A glibc Linux host (tested on Debian) for native autotools + clang.
+- Packages: `gcc make pkg-config build-essential autoconf
   automake libtool git python3`.
+- Today `make android-streams` and `make streams-deps` stop unless the
+  maintainer's build sandbox is installed. Running them on a plain
+  glibc host is open work.
 
-## Linux host build deps (sibling concern — building `streams/` on the host)
+## Linux host build deps (building `streams/` on the host)
 
 The Android cross-compile above stages the libs into `prebuilt/`. The
 host-side Linux build of the same streamers (used for dev + tests,

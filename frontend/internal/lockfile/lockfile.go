@@ -14,11 +14,19 @@ type Lock struct {
 }
 
 func Acquire(path string) (*Lock, error) {
+	return acquire(path, flockExclusiveNB)
+}
+
+func AcquireBlocking(path string) (*Lock, error) {
+	return acquire(path, flockExclusive)
+}
+
+func acquire(path string, lock func(*os.File) error) (*Lock, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("lockfile: open %q: %w", path, err)
 	}
-	if err := flockExclusiveNB(f); err != nil {
+	if err := lock(f); err != nil {
 		_ = f.Close()
 		if errors.Is(err, errInUseSyscall) {
 			return nil, fmt.Errorf("%w: %s", ErrInUse, path)
@@ -42,4 +50,8 @@ func (l *Lock) Path() string {
 		return ""
 	}
 	return l.path
+}
+
+func TryLockDir(path string) (*Lock, error) {
+	return tryLockDir(path)
 }

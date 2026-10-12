@@ -28,7 +28,7 @@ const (
 	fileMode os.FileMode = 0o600
 )
 
-const MaxBlobBytes = 11 * 1024 * 1024
+const MaxBlobBytes = 13 * 1024 * 1024
 
 const TokenByteLen = 32
 
@@ -51,6 +51,8 @@ type Manager struct {
 	rootDir string
 
 	mu sync.Mutex
+
+	fetchLocks keyedLocks
 }
 
 func NewManager(st *store.Store, dataDir string) (*Manager, error) {

@@ -37,6 +37,8 @@ func main() {
 	noReady := flag.Bool("no-ready", false, "")
 	ignoreExit := flag.Bool("ignore-exit", false, "")
 	emitError := flag.Bool("emit-error", false, "")
+	exit4OnTerm := flag.Bool("exit4-on-term", false, "")
+	exit4AfterReady := flag.Bool("exit4-after-ready", false, "")
 	keyFile := flag.String("keyfile", "", "")
 	readyRawUnix := flag.String("ready-raw-unix", "", "")
 	port := flag.Int("port", 0, "")
@@ -81,11 +83,20 @@ func main() {
 		}
 	}
 
+	if *exit4AfterReady {
+		os.Exit(4)
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
 		<-sigCh
+		if *exit4OnTerm {
+			// What a real streamer does when a SIGTERM cuts its wait
+			// for a connection short.
+			os.Exit(4)
+		}
 		if !*ignoreExit {
 			os.Exit(0)
 		}
@@ -99,7 +110,7 @@ func main() {
 		if line != "" {
 			line = strings.TrimRight(line, "\r\n")
 			fmt.Fprintf(os.Stderr, "stub: cmd %s\n", line)
-			if !*ignoreExit && strings.Contains(line, "\"exit\"") {
+			if !*ignoreExit && !*exit4OnTerm && strings.Contains(line, "\"exit\"") {
 				return
 			}
 		}
@@ -468,7 +479,7 @@ func TestTeardown_EscalatesPastIgnoreExit(t *testing.T) {
 		t.Errorf("teardown elapsed %v — too fast, didn't escalate", elapsed)
 	}
 	if elapsed > 6*time.Second {
-		t.Errorf("teardown elapsed %v — kill ladder ran past budget", elapsed)
+		t.Errorf("teardown elapsed %v — kill ladder ran past the teardown timeout", elapsed)
 	}
 }
 
@@ -636,5 +647,51 @@ func TestDeriveStreamKey_RejectsBadInputs(t *testing.T) {
 	}
 	if _, err := streamers.DeriveStreamKey(bytes.Repeat([]byte{0}, 32), ""); err == nil {
 		t.Errorf("empty stream-id accepted")
+	}
+}
+
+func wrapStub(t *testing.T, stub string, flags string) string {
+	t.Helper()
+	wrapper := filepath.Join(t.TempDir(), "wrap.sh")
+	src := fmt.Sprintf("#!/bin/sh\nexec %s %s \"$@\"\n", stub, flags)
+	if err := os.WriteFile(wrapper, []byte(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return wrapper
+}
+
+func TestTeardown_Exit4AfterStopIsClean(t *testing.T) {
+	wrapper := wrapStub(t, buildStub(t), "--exit4-on-term")
+	mgr, err := streamers.New(streamers.Config{Logger: discardLogger(), MicPath: wrapper, SpkPath: wrapper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := mgr.SpawnMic(ctx, "call4", 33333, bytes.Repeat([]byte{1}, 32), "mic"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Teardown("call4"); err != nil {
+		t.Fatalf("Teardown after a stop that ended in exit 4: %v, want nil", err)
+	}
+}
+
+func TestTeardown_Exit4WithoutStopIsReported(t *testing.T) {
+	wrapper := wrapStub(t, buildStub(t), "--exit4-after-ready")
+	mgr, err := streamers.New(streamers.Config{Logger: discardLogger(), MicPath: wrapper, SpkPath: wrapper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := mgr.SpawnMic(ctx, "call5", 33334, bytes.Repeat([]byte{1}, 32), "mic"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	err = mgr.Teardown("call5")
+	if err == nil || !strings.Contains(err.Error(), "exit status 4") {
+		t.Fatalf("Teardown = %v, want an error naming exit status 4", err)
 	}
 }

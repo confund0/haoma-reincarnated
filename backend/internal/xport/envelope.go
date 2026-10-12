@@ -22,6 +22,14 @@ const (
 	KindStatus   = "status"
 	KindSentAck  = "sent_ack"
 	KindPresence = "presence"
+
+	KindDestroyVerify = "destroy_verify"
+
+	KindDestroyVerifyAck = "destroy_verify_ack"
+
+	KindDestroy = "destroy"
+
+	KindDestroyReceipt = "destroy_receipt"
 )
 
 const (

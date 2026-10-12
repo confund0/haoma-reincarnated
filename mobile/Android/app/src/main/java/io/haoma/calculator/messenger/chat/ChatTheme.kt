@@ -13,11 +13,17 @@ internal object ChatPalette {
     val Accent = Color(0xFFFABD2F)             
     val Ok = Color(0xFF5FCC1A)                 
     val Bad = Color(0xFFFF6B6B)                
+
+    
+    val Mirrored = Color(0xFFB16286)
     val DecryptFailedBg = Color(0xFF3F1F1F)    
     
     
     val CallSummaryOk = Color(0xFF98971A)
     val CallSummaryBad = Color(0xFFFF6B6B)     
+    
+    
+    val CallSummaryNeutral = Color(0xFF8A8A8A)
     
     
     val OnionRotationOk = Color(0xFFB16286)

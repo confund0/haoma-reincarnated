@@ -65,6 +65,10 @@ func (a *App) cmdCall() {
 }
 
 func (a *App) cmdVideoCall() {
+	if !videoCallsSupported {
+		a.log("[red]/vidcall[white] " + videoUnavailableMessage)
+		return
+	}
 	front, _ := a.pages.GetFrontPage()
 	if !strings.HasPrefix(front, "chat:") {
 		a.log("[red]/vidcall[white] must be used inside a chat window")
@@ -264,7 +268,10 @@ func (a *App) applyCallStateChange(call ipc.CallEntry) {
 		case "ended":
 			a.dismissRingerModal(call.CallID)
 
-			if hadPrior && prior.Status == "ringing" {
+			if call.FailReason == "answered_elsewhere" {
+
+				a.log("[gray]call from %s answered on another device[white]", label)
+			} else if hadPrior && prior.Status == "ringing" {
 				a.log("[red]missed call[white] from %s", label)
 			} else {
 				a.log("[gray]call from %s ended[white]", label)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -363,5 +365,38 @@ func TestAPI_ProxyServe_RequiresJSONContentType(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnsupportedMediaType {
 		t.Fatalf("status=%d, want 415", resp.StatusCode)
+	}
+}
+
+func TestProxyFetch_RefusedTowardsTheDeviceBeingRemoved(t *testing.T) {
+	d := newProxyTestDaemon(t)
+	removed := addRemovablePeer(t, d, "removed0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+	peerURL := "http://" + removed.KnownAddresses[0] + ".onion"
+
+	if _, err := d.beginUnlink(removed.ID); err != nil {
+		t.Fatalf("beginUnlink: %v", err)
+	}
+
+	body, err := json.Marshal(proxyFetchRequest{
+		Token: "tok-fetch", Modality: "audio", PeerURL: peerURL, LocalPort: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/proxy/fetch", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	d.handleProxyFetch(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: the removal is not what refused it — body %s",
+			rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), errUnlinkPeerRemoved.Error()) {
+		t.Fatalf("the refusal does not name the removal: %s", rec.Body.String())
+	}
+	if d.proxy.Has("tok-fetch") {
+		t.Fatal("the pull was registered anyway")
 	}
 }

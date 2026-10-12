@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -45,6 +46,11 @@ type LastSeenObservation struct {
 	LastPassiveAt int64  `json:"last_passive_at"`
 }
 
+type UnreachableObservation struct {
+	PeerID      string `json:"peer_id"`
+	Unreachable bool   `json:"unreachable"`
+}
+
 type PairOnionProbe struct {
 	HandleID string `json:"handle_id"`
 	Attempt  int    `json:"attempt"`
@@ -60,12 +66,21 @@ type FileFetchEvent struct {
 	BytesReceived int64  `json:"bytes_received,omitempty"`
 	TotalBytes    int64  `json:"total_bytes,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
-	At            int64  `json:"at"`
+
+	Reason string `json:"reason,omitempty"`
+	At     int64  `json:"at"`
 }
+
+const (
+	FetchFailBlobGone = "blob_gone"
+
+	FetchFailIntegrity = "integrity"
+
+	FetchFailLimit = "limit"
+)
 
 type PeerSelfReachEvent struct {
 	PeerID string `json:"peer_id"`
-	Onion  string `json:"onion,omitempty"`
 	Ok     bool   `json:"ok"`
 	At     int64  `json:"at"`
 }
@@ -76,17 +91,25 @@ type ExternalReachEvent struct {
 	At             int64  `json:"at"`
 }
 
+type DestroyDeviceInstruction struct {
+	Reason  string `json:"reason"`
+	EraseID string `json:"erase_id"`
+}
+
 type EventsOpts struct {
 	OnEvent             func(Notification)
 	OnDelivery          func(DeliveryStatus)
 	OnInbox             func(InboxEntry)
 	OnPresence          func(PresenceObservation)
 	OnLastSeen          func(LastSeenObservation)
+	OnUnreachable       func(UnreachableObservation)
 	OnPairOnionProbe    func(PairOnionProbe)
 	OnFileFetchState    func(FileFetchEvent)
 	OnFileFetchProgress func(FileFetchEvent)
 	OnPeerSelfReach     func(PeerSelfReachEvent)
 	OnExternalReach     func(ExternalReachEvent)
+
+	OnDestroyDevice func(DestroyDeviceInstruction)
 
 	OnReady func()
 }
@@ -102,7 +125,7 @@ func (c *Client) Events(ctx context.Context, opts EventsOpts) error {
 	streamClient := *c.http
 	streamClient.Timeout = 0
 
-	resp, err := streamClient.Do(req)
+	resp, err := doRequest(&streamClient, req)
 	if err != nil {
 		return fmt.Errorf("backendapi: events request: %w", err)
 	}
@@ -179,6 +202,15 @@ func parseSSE(ctx context.Context, r io.Reader, opts EventsOpts) error {
 				return
 			}
 			opts.OnLastSeen(ls)
+		case "peer.unreachable-changed":
+			if opts.OnUnreachable == nil {
+				return
+			}
+			var o UnreachableObservation
+			if err := json.Unmarshal([]byte(data.String()), &o); err != nil {
+				return
+			}
+			opts.OnUnreachable(o)
 		case "pair.onion-probe":
 			if opts.OnPairOnionProbe == nil {
 				return
@@ -224,6 +256,19 @@ func parseSSE(ctx context.Context, r io.Reader, opts EventsOpts) error {
 				return
 			}
 			opts.OnExternalReach(ev)
+		case "device.destroy":
+			if opts.OnDestroyDevice == nil {
+				return
+			}
+
+			var ev DestroyDeviceInstruction
+			_ = json.Unmarshal([]byte(data.String()), &ev)
+
+			slog.Info("destroy: the daemon says this device is being erased",
+				slog.String("reason", ev.Reason),
+				slog.String("erase_id", ev.EraseID),
+			)
+			opts.OnDestroyDevice(ev)
 		}
 	}
 

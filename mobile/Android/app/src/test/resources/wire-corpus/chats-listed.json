@@ -1,0 +1,95 @@
+{
+  "type": "chats_listed",
+  "id": "c-3",
+  "payload": {
+    "chats": [
+      {
+        "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+        "kind": "direct",
+        "peer_id": "a41c7e59d0b3486fa2e15c9037bd48e6",
+        "fingerprint": "05a7d3b81f0c46e29d75b3ea18f40c6d92b5710e83fa2c4d67b019e5a83cf2d41b",
+        "label": "Mara from the ferry",
+        "retention_ttl": 604800,
+        "nick_override": "kestrel at sea",
+        "members": [
+          "a41c7e59d0b3486fa2e15c9037bd48e6",
+          "c95f28d17a604b3e81ca6d0f452937ab"
+        ],
+        "created_at": 1754099200,
+        "last_activity_at": 1754902874,
+        "unread_count": 2,
+        "last_read_at": 1754902930,
+        "last_timer_change_ts": 1754880000,
+        "accepting": true,
+        "sending": true,
+        "chatty": "available",
+        "effective": "available"
+      },
+      {
+        "chat_id": "1d84b0f7c25e49a3b6d70f1c8a34e5b9",
+        "kind": "direct",
+        "fingerprint": "05c1e84f27b30a95d6e1483fbc70a2d59e63817f04ab52c9d381e7f6a04b3c95e2",
+        "label": "toma",
+        "retention_ttl": 86400,
+        "disable_read_receipts": true,
+        "notifications_muted": true,
+        "created_at": 1753812440,
+        "last_activity_at": 1754812440,
+        "last_read_at": 1754812500,
+        "chatty": "busy",
+        "effective": "busy"
+      },
+      {
+        "chat_id": "3a6f0c85b91d47e2a05c8f3d6b21947c",
+        "kind": "group",
+        "group_name": "harbour crew",
+        "group_alias": "the crew",
+        "label": "the crew",
+        "retention_ttl": 0,
+        "members": [
+          "a41c7e59d0b3486fa2e15c9037bd48e6",
+          "e0b7419c53d84a26bf9d1e7038c5a2f4"
+        ],
+        "created_at": 1753500000,
+        "last_activity_at": 1754890000,
+        "unread_count": 7
+      },
+      {
+        "chat_id": "3b9e5d07a1c84f26b0d3e7a9c15f8d42",
+        "kind": "direct",
+        "peer_id": "e0b7419c53d84a26bf9d1e7038c5a2f4",
+        "label": "joined a moment ago",
+        "retention_ttl": 0,
+        "members": [
+          "e0b7419c53d84a26bf9d1e7038c5a2f4"
+        ],
+        "created_at": 1754903000,
+        "waiting_for_session": true
+      },
+      {
+        "chat_id": "c60a2f8e4b1d47a3958e0d6b2f7c1a93",
+        "kind": "direct",
+        "peer_id": "c95f28d17a604b3e81ca6d0f452937ab",
+        "label": "invited a moment ago",
+        "retention_ttl": 0,
+        "members": [
+          "c95f28d17a604b3e81ca6d0f452937ab"
+        ],
+        "created_at": 1754903100,
+        "waiting_for_contact": true
+      },
+      {
+        "chat_id": "5e17c3a9d08b4f62a4c9e1b70d3f8a56",
+        "kind": "direct",
+        "peer_id": "a41c7e59d0b3486fa2e15c9037bd48e6",
+        "label": "started",
+        "retention_ttl": 0,
+        "members": [
+          "a41c7e59d0b3486fa2e15c9037bd48e6"
+        ],
+        "created_at": 1754903200,
+        "chat_started_at": 1754903217
+      }
+    ]
+  }
+}

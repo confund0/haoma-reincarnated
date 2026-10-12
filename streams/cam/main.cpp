@@ -1,24 +1,3 @@
-// haoma-cam — captures from the platform camera, encodes to VP8,
-// AEAD-seals each compressed frame with ChaCha20-Poly1305, writes
-// framed bytes to a single localhost client. ALSO binds a second
-// localhost listener that emits the raw I420 captured frames (no
-// encode/AEAD) so the host UI can render a zero-latency local
-// self-preview without a decode round-trip. V-1.5.
-//
-// stdin layout (mirrors mic/spk):
-//   first 32 bytes  = ChaCha20-Poly1305 key
-//   bytes 33..      = JSON-line control commands (mute/unmute/bitrate/stats/exit)
-//
-// Capture: owned in-binary via VideoCapture abstraction (mirrors mic's
-// audio_backend). Linux dev backend = Y4M file source set via
-// --y4m-source. Android backend = NdkCamera.
-//
-// stdout: JSON-line events. The first one is
-//   {"type":"ready","raw_unix":"<name>"}
-// where <name> is the AF_UNIX abstract-namespace listener for raw I420.
-// Data plane = the localhost TCP socket bound on --port (encrypted
-// VP8 frames to haomad). Raw I420 plane = the AF_UNIX listener named
-// "haoma-cam-<stream_id>-<pid>" (abstract namespace, no fs entry).
 
 #include "../common/framing.h"
 #include "../common/socket.h"
@@ -129,7 +108,7 @@ bool parse_args(int argc, char** argv, Args& a) {
 std::atomic<bool> g_done{false};
 void on_signal(int) { g_done.store(true); }
 
-}  // namespace
+}  
 
 int main(int argc, char** argv) {
   set_log_tag("haoma-cam");
@@ -163,20 +142,20 @@ int main(int argc, char** argv) {
   cfg.g_w               = (unsigned int)a.width;
   cfg.g_h               = (unsigned int)a.height;
   cfg.g_timebase.num    = 1;
-  cfg.g_timebase.den    = 1000000;  // pts in microseconds
+  cfg.g_timebase.den    = 1000000;  
   cfg.rc_target_bitrate = (unsigned int)a.bitrate_kbps;
   cfg.rc_end_usage      = VPX_CBR;
-  cfg.g_lag_in_frames   = 0;        // no lookahead → realtime
+  cfg.g_lag_in_frames   = 0;        
   cfg.kf_mode           = VPX_KF_AUTO;
   cfg.kf_min_dist       = 0;
-  cfg.kf_max_dist       = 30;       // ~2 s @ 15 fps
+  cfg.kf_max_dist       = 30;       
   cfg.g_error_resilient = 1;
   cfg.g_threads         = 1;
   if (vpx_codec_enc_init(&enc_ctx, iface, &cfg, 0) != VPX_CODEC_OK) {
     LOG_ERR("vpx_codec_enc_init: %s", vpx_codec_error(&enc_ctx));
     return 2;
   }
-  vpx_codec_control(&enc_ctx, VP8E_SET_CPUUSED, 8);  // max speed (quality ↓)
+  vpx_codec_control(&enc_ctx, VP8E_SET_CPUUSED, 8);  
   vpx_codec_control(&enc_ctx, VP8E_SET_NOISE_SENSITIVITY, 0);
 
   int lfd = listen_local(a.port);
@@ -197,7 +176,6 @@ int main(int argc, char** argv) {
 
   emit_ready(raw_unix_name);
 
-  // Sealed-side client (haomad). Blocks until haomad dials in.
   int cfd = accept_one(lfd);
   if (cfd < 0) {
     ::close(raw_lfd);
@@ -206,9 +184,6 @@ int main(int argc, char** argv) {
   }
   LOG_INFO("sealed client connected");
 
-  // Encode / control / stats state. Shared between the source path
-  // (write-mode capture callback OR read-mode raw reader) and the ctrl
-  // + stats threads.
   Stats              stats;
   std::atomic<bool>  trace{a.trace};
   std::atomic<bool>  stats_req{false};
@@ -221,32 +196,17 @@ int main(int argc, char** argv) {
   const size_t   frame_bytes       = (size_t)a.width * (size_t)a.height * 3 / 2;
   const uint64_t frame_duration_us = 1000000ULL / (uint64_t)a.fps;
 
-  // Raw-side client state. raw_cfd is the accepted fd in both modes —
-  // write-mode uses it as the tap target, read-mode publishes it for
-  // the cleanup shutdown wake. raw_write_failed is write-mode-only;
-  // the encode_and_ship tap is gated on !input_from_raw upstream.
   std::atomic<int>  raw_cfd{-1};
   std::atomic<bool> raw_write_failed{false};
 
   std::vector<uint8_t> cipher(MAX_PAYLOAD_LEN);
 
-  // encode_and_ship_i420 runs the VP8 encode + AEAD seal + sealed-side
-  // write for one I420 frame. In write-mode it also taps the raw side
-  // (host UI self-preview); in read-mode the raw side IS the input, so
-  // fanning frames back at the writer would just loop. Returns false
-  // when the sealed peer has hung up — caller should stop pumping.
   auto encode_and_ship_i420 = [&](const uint8_t* i420, uint64_t pts_ns) -> bool {
     if (write_failed.load()) return false;
 
     stats.frames_in.fetch_add(1);
 
     if (!a.input_from_raw) {
-      // Raw-port tap (zero-latency self-preview path). Wire shape per
-      // frame is `8 BE pts_ns | I420 bytes`. Blocking write_all-style
-      // pair: brief renderer-side backpressure beats a sendmsg
-      // short-write desync, which would misalign the consumer's
-      // per-frame read loop for the rest of the call (see vid's
-      // matching change — that's where the symptom actually surfaced).
       int rfd = raw_cfd.load();
       if (rfd >= 0 && !raw_write_failed.load()) {
         uint8_t pts_be[8];
@@ -332,15 +292,6 @@ int main(int argc, char** argv) {
     return true;
   };
 
-  // Raw-side thread. Two roles:
-  //   write-mode (default)      — accept ONE UI consumer, set raw_cfd,
-  //                               exit; the capture callback then fans
-  //                               I420 frames at the consumer.
-  //   read-mode (--input-from-raw) — accept ONE app producer, loop
-  //                               reading `8 BE pts | I420` per frame
-  //                               and driving encode_and_ship_i420
-  //                               directly. No in-binary capture is
-  //                               opened in this mode.
   std::thread raw_th([&]() {
     int fd = accept_one(raw_lfd);
     if (fd < 0) {
@@ -351,17 +302,10 @@ int main(int argc, char** argv) {
              raw_unix_name.c_str(), a.input_from_raw ? "read" : "write");
 
     if (!a.input_from_raw) {
-      // Blocking writes — see encode_and_ship_i420 for the rationale.
       raw_cfd.store(fd);
       return;
     }
 
-    // Read-mode: this thread IS the capture loop. Tear the streamer
-    // down on EOF / short read so the orchestrator's teardown path
-    // doesn't have to distinguish "writer hung up" from "we crashed".
-    // Publish fd into raw_cfd so the main cleanup can shutdown() it to
-    // wake a blocked read on the way out (the encode path's tap is
-    // input-from-raw-gated, so this slot has no other consumer here).
     raw_cfd.store(fd);
     std::vector<uint8_t> i420(frame_bytes);
     uint8_t pts_be[8];
@@ -380,9 +324,6 @@ int main(int argc, char** argv) {
       uint64_t pts_ns = haoma::streams::r_be64(pts_be);
       if (!encode_and_ship_i420(i420.data(), pts_ns)) break;
     }
-    // Leave the fd open + leave raw_cfd populated; main's cleanup is
-    // the sole closer (mirrors write-mode). g_done wakes main from the
-    // 100ms usleep poll.
     g_done.store(true);
   });
 
@@ -403,9 +344,6 @@ int main(int argc, char** argv) {
       return 5;
     }
 
-    // Shared origin with mic: steady_clock::time_since_epoch in ns,
-    // backed by CLOCK_MONOTONIC on Linux + Android. Lets the receiver
-    // align video against audio on a single sender timeline.
     bool ok = cap->open(a.width, a.height, a.fps, [&](const uint8_t* i420) {
       uint64_t pts_ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -453,10 +391,6 @@ int main(int argc, char** argv) {
   ::shutdown(cfd, SHUT_RDWR);
   ::close(cfd);
 
-  // Wake the raw thread if it's still blocked on accept (or, in
-  // read-mode, blocked on read of a long-idle client), and tear the
-  // raw client down. shutdown() on the listening fd interrupts a
-  // blocked accept(); shutdown() on raw_cfd interrupts a blocked read.
   ::shutdown(raw_lfd, SHUT_RDWR);
   int rfd = raw_cfd.load();
   if (rfd >= 0) ::shutdown(rfd, SHUT_RDWR);

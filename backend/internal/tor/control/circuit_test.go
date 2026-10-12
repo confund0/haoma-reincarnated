@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -83,14 +84,14 @@ func TestCloseCircuit_WireAndOK(t *testing.T) {
 	}
 }
 
-func TestCloseCircuit_UnknownCircuitTreatedAsSuccess(t *testing.T) {
+func TestCloseCircuit_UnknownCircuitIsErrUnknownCircuit(t *testing.T) {
 	c := mockTor(t, func(s net.Conn) {
 		readLine(t, s)
 		s.Write([]byte("552 Unknown circuit \"99\"\r\n"))
 	})
 	defer c.Close()
-	if err := c.CloseCircuit("99"); err != nil {
-		t.Errorf("err = %v, want nil", err)
+	if err := c.CloseCircuit("99"); !errors.Is(err, ErrUnknownCircuit) {
+		t.Errorf("err = %v, want ErrUnknownCircuit", err)
 	}
 }
 

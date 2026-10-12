@@ -2,9 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -19,8 +21,9 @@ const (
 	settingsDomainProfile  = "profile"
 	settingsDomainDefaults = "defaults"
 	settingsDomainFiles    = "files"
-	settingsDomainLock     = "lock"
+	settingsDomainSecurity = "security"
 	settingsDomainTor      = "tor"
+	settingsDomainLinked   = "linked-devices"
 	settingsDomainNotifs   = "notifications"
 	settingsDomainAdv      = "advanced"
 )
@@ -29,8 +32,9 @@ var settingsDomainsOrder = []string{
 	settingsDomainProfile,
 	settingsDomainDefaults,
 	settingsDomainFiles,
-	settingsDomainLock,
+	settingsDomainSecurity,
 	settingsDomainTor,
+	settingsDomainLinked,
 	settingsDomainNotifs,
 	settingsDomainAdv,
 }
@@ -39,8 +43,9 @@ var settingsDomainLabels = map[string]string{
 	settingsDomainProfile:  "Profile",
 	settingsDomainDefaults: "Chat defaults",
 	settingsDomainFiles:    "Files",
-	settingsDomainLock:     "Lock",
+	settingsDomainSecurity: "Security",
 	settingsDomainTor:      "Tor",
+	settingsDomainLinked:   "Linked devices",
 	settingsDomainNotifs:   "Notifications",
 	settingsDomainAdv:      "Advanced",
 }
@@ -69,16 +74,32 @@ type settingsPage struct {
 	initialRetention uint64
 	initialReceipts  bool
 
+	retentionNote string
+
+	retentionWant    uint64
+	retentionPending bool
+
+	lockNoteTV *tview.TextView
+
 	dirty map[string]bool
 
 	saveHandlers map[string]func() error
 
 	activePage string
+
+	linked linkedDevicesState
+
+	linkedShape string
+
+	wipeNote *tview.TextView
+
+	liveMu sync.Mutex
+	live   linkLiveWidgets
 }
 
 func (a *App) cmdSettings() {
 	if a.VaultCtl == nil {
-		a.log("[red]/settings unavailable[white] — no vault controller (legacy --addr flow)")
+		a.log(StyleLinkBad + "/settings unavailable" + StyleLinkBody + " — this session has no vault open, so there are no settings to read. Restart haoma-text.")
 		return
 	}
 	a.winMu.Lock()
@@ -99,9 +120,14 @@ func (a *App) cmdSettings() {
 	a.pages.AddPage(pageNameSettings, sp.grid, true, false)
 	a.switchTo(pageNameSettings)
 	a.app.SetFocus(sp.list)
+
+	a.refreshLinkedDevicesState(sp)
 }
 
 func (a *App) closeSettings() {
+
+	a.stopVerifyMarker()
+
 	a.winMu.Lock()
 	if a.settings == nil {
 		a.winMu.Unlock()
@@ -207,8 +233,14 @@ func newSettingsPage(a *App, initial ipc.Settings, initialNick string, initialRe
 		activePage:       settingsDomainsOrder[0],
 	}
 
+	for _, p := range a.peers {
+		sp.linked.peerIDs = append(sp.linked.peerIDs, p.ID)
+	}
+
 	sp.list = tview.NewList().ShowSecondaryText(false)
 	sp.list.SetBorder(true).SetTitle(" domains ")
+
+	sp.list.SetBorderPadding(1, 0, 1, 1)
 	for _, key := range settingsDomainsOrder {
 		sp.list.AddItem(settingsDomainLabels[key], "", 0, nil)
 	}
@@ -223,8 +255,12 @@ func newSettingsPage(a *App, initial ipc.Settings, initialNick string, initialRe
 			return
 		}
 		key := settingsDomainsOrder[idx]
+		left := sp.activePage
 		sp.activePage = key
 		sp.forms.SwitchToPage(key)
+		if left == settingsDomainLinked && key != settingsDomainLinked {
+			a.leaveLinkedDevicesDomain(sp)
+		}
 		if form := sp.formForDomain(key); form != nil {
 			a.app.SetFocus(form)
 		}
@@ -235,8 +271,12 @@ func newSettingsPage(a *App, initial ipc.Settings, initialNick string, initialRe
 			return
 		}
 		key := settingsDomainsOrder[idx]
+		left := sp.activePage
 		sp.activePage = key
 		sp.forms.SwitchToPage(key)
+		if left == settingsDomainLinked && key != settingsDomainLinked {
+			a.leaveLinkedDevicesDomain(sp)
+		}
 	})
 	sp.list.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 
@@ -251,8 +291,9 @@ func newSettingsPage(a *App, initial ipc.Settings, initialNick string, initialRe
 	sp.forms.AddPage(settingsDomainProfile, buildProfileForm(a, sp), true, true)
 	sp.forms.AddPage(settingsDomainDefaults, buildDefaultsForm(a, sp), true, false)
 	sp.forms.AddPage(settingsDomainFiles, buildFilesForm(a, sp), true, false)
-	sp.forms.AddPage(settingsDomainLock, buildLockForm(a, sp), true, false)
+	sp.forms.AddPage(settingsDomainSecurity, buildSecurityForm(a, sp), true, false)
 	sp.forms.AddPage(settingsDomainTor, buildTorForm(a, sp), true, false)
+	sp.forms.AddPage(settingsDomainLinked, buildLinkedDevicesForm(a, sp), true, false)
 	sp.forms.AddPage(settingsDomainNotifs, buildNotificationsForm(a, sp), true, false)
 	sp.forms.AddPage(settingsDomainAdv, buildAdvancedForm(a, sp), true, false)
 
@@ -266,8 +307,8 @@ func newSettingsPage(a *App, initial ipc.Settings, initialNick string, initialRe
 }
 
 func (sp *settingsPage) formForDomain(key string) tview.Primitive {
-	_, prim := sp.forms.GetFrontPage()
-	if sp.activePage == key {
+	name, prim := sp.forms.GetFrontPage()
+	if name == key && sp.activePage == key {
 		return prim
 	}
 	return nil
@@ -297,10 +338,12 @@ func (sp *settingsPage) rebuildForm(a *App, key string) {
 		prim = buildDefaultsForm(a, sp)
 	case settingsDomainFiles:
 		prim = buildFilesForm(a, sp)
-	case settingsDomainLock:
-		prim = buildLockForm(a, sp)
+	case settingsDomainSecurity:
+		prim = buildSecurityForm(a, sp)
 	case settingsDomainTor:
 		prim = buildTorForm(a, sp)
+	case settingsDomainLinked:
+		prim = buildLinkedDevicesForm(a, sp)
 	case settingsDomainNotifs:
 		prim = buildNotificationsForm(a, sp)
 	case settingsDomainAdv:
@@ -308,10 +351,15 @@ func (sp *settingsPage) rebuildForm(a *App, key string) {
 	default:
 		return
 	}
+
+	takeFocus := sp.activePage == key && sp.forms.HasFocus()
+
 	sp.forms.RemovePage(key)
 	sp.forms.AddPage(key, prim, true, sp.activePage == key)
 	sp.markClean(key)
-	a.app.SetFocus(sp.list)
+	if takeFocus {
+		a.app.SetFocus(prim)
+	}
 }
 
 func (sp *settingsPage) returnToList(a *App) {
@@ -343,10 +391,15 @@ func buildProfileForm(a *App, sp *settingsPage) *tview.Form {
 				a.renderError(f)
 				return
 			}
-			a.log("[green]nick[white] → %s", nick)
+
+			a.app.QueueUpdateDraw(func() {
+				if !a.settingsPageIsOpen(sp) {
+					return
+				}
+				sp.initialNick = nick
+				sp.markClean(settingsDomainProfile)
+			})
 		})
-		sp.initialNick = nick
-		sp.markClean(settingsDomainProfile)
 		return nil
 	}
 	sp.registerSave(settingsDomainProfile, save)
@@ -357,7 +410,11 @@ func buildProfileForm(a *App, sp *settingsPage) *tview.Form {
 		}
 		sp.returnToList(a)
 	})
-	form.AddButton("Cancel", func() { sp.rebuildForm(a, settingsDomainProfile) })
+
+	form.AddButton("Cancel", func() {
+		sp.rebuildForm(a, settingsDomainProfile)
+		sp.returnToList(a)
+	})
 	form.SetCancelFunc(func() { sp.returnToList(a) })
 	return form
 }
@@ -393,10 +450,15 @@ func buildDefaultsForm(a *App, sp *settingsPage) *tview.Form {
 				return
 			}
 			a.log("[green]chat defaults saved[white]")
+			a.app.QueueUpdateDraw(func() {
+				if !a.settingsPageIsOpen(sp) {
+					return
+				}
+				sp.initialRetention = ttl
+				sp.initialReceipts = receipts
+				sp.markClean(settingsDomainDefaults)
+			})
 		})
-		sp.initialRetention = ttl
-		sp.initialReceipts = receipts
-		sp.markClean(settingsDomainDefaults)
 		return nil
 	}
 	sp.registerSave(settingsDomainDefaults, save)
@@ -407,7 +469,10 @@ func buildDefaultsForm(a *App, sp *settingsPage) *tview.Form {
 		}
 		sp.returnToList(a)
 	})
-	form.AddButton("Cancel", func() { sp.rebuildForm(a, settingsDomainDefaults) })
+	form.AddButton("Cancel", func() {
+		sp.rebuildForm(a, settingsDomainDefaults)
+		sp.returnToList(a)
+	})
 	form.SetCancelFunc(func() { sp.returnToList(a) })
 	return form
 }
@@ -471,37 +536,49 @@ func buildFilesForm(a *App, sp *settingsPage) *tview.Form {
 		}
 		sp.returnToList(a)
 	})
-	form.AddButton("Cancel", func() { sp.rebuildForm(a, settingsDomainFiles) })
+	form.AddButton("Cancel", func() {
+		sp.rebuildForm(a, settingsDomainFiles)
+		sp.returnToList(a)
+	})
 	form.SetCancelFunc(func() { sp.returnToList(a) })
 	return form
 }
 
-func buildLockForm(a *App, sp *settingsPage) tview.Primitive {
-	const (
-		labelUnset    = "(unset)"
-		labelDomestic = "Domestic"
-		labelPrivacy  = "Privacy"
-	)
+func buildSecurityForm(a *App, sp *settingsPage) tview.Primitive {
 
 	statusTV := tview.NewTextView().
-		SetText("Threat model: " + threatModelStatusLine(sp.initial))
+		SetText(threatAnswerStatusPrefix + threatModelStatusLine(sp.initial))
 	bundleTV := tview.NewTextView().
-		SetDynamicColors(true).
-		SetText(threatPresetBundleSummary())
+		SetDynamicColors(true)
+
+	noteTV := tview.NewTextView().SetDynamicColors(true)
+	noteLines := make([]string, 0, 2)
+	if driftNote := threatModelDriftNote(sp.initial); driftNote != "" {
+		noteLines = append(noteLines, driftNote)
+	}
+	if sp.retentionNote != "" {
+		noteLines = append(noteLines, sp.retentionNote)
+	}
+	noteTV.SetText(strings.Join(noteLines, "\n"))
+	sp.lockNoteTV = noteTV
 
 	formA := tview.NewForm()
-	presetOptions := []string{labelUnset, labelDomestic, labelPrivacy}
-	presetIdx := 0
-	switch sp.initial.ThreatProfile {
-	case vault.PresetDomestic:
-		presetIdx = 1
-	case vault.PresetPrivacy:
-		presetIdx = 2
+	presetOptions := make([]string, 0, len(threatTierOrder))
+	for _, t := range threatTierOrder {
+		presetOptions = append(presetOptions, t.answer)
 	}
-	presetDD := tview.NewDropDown().SetLabel("Preset").SetOptions(presetOptions, nil)
+	presetIdx := threatTierIndex(sp.initial.ThreatProfile)
+	presetDD := tview.NewDropDown().SetLabel(threatPickerQuestion).SetOptions(presetOptions, nil)
 	formA.AddFormItem(presetDD)
 	presetDD.SetCurrentOption(presetIdx)
-	presetDD.SetSelectedFunc(func(_ string, _ int) { sp.markDirty(settingsDomainLock) })
+
+	bundleTV.SetText(threatAnswerSummary(threatTierOrder[presetIdx].token))
+	presetDD.SetSelectedFunc(func(_ string, idx int) {
+		sp.markDirty(settingsDomainSecurity)
+		if idx >= 0 && idx < len(threatTierOrder) {
+			bundleTV.SetText(threatAnswerSummary(threatTierOrder[idx].token))
+		}
+	})
 
 	formB := tview.NewForm()
 	idleOptions := []string{"safe-lock", "soft-lock", "hard-lock"}
@@ -515,12 +592,12 @@ func buildLockForm(a *App, sp *settingsPage) tview.Primitive {
 	idleDD := tview.NewDropDown().SetLabel("Idle action").SetOptions(idleOptions, nil)
 	formB.AddFormItem(idleDD)
 	idleDD.SetCurrentOption(idleIdx)
-	idleDD.SetSelectedFunc(func(_ string, _ int) { sp.markDirty(settingsDomainLock) })
+	idleDD.SetSelectedFunc(func(_ string, _ int) { sp.markDirty(settingsDomainSecurity) })
 	formB.AddInputField("Idle timeout (seconds)", strconv.Itoa(sp.initial.IdleTimeoutSeconds), 8, nil, func(_ string) {
-		sp.markDirty(settingsDomainLock)
+		sp.markDirty(settingsDomainSecurity)
 	})
 	formB.AddInputField("PIN validity (seconds, 0 = no escalation)", strconv.Itoa(sp.initial.PinValiditySec), 8, nil, func(_ string) {
-		sp.markDirty(settingsDomainLock)
+		sp.markDirty(settingsDomainSecurity)
 	})
 	panicOptions := []string{"(disabled — /panic = /quit)", "safe-lock", "hard-lock", "self-destruct"}
 	panicIdx := 0
@@ -538,43 +615,40 @@ func buildLockForm(a *App, sp *settingsPage) tview.Primitive {
 	panicDD := tview.NewDropDown().SetLabel("Panic action").SetOptions(panicOptions, nil)
 	formB.AddFormItem(panicDD)
 	panicDD.SetCurrentOption(panicIdx)
-	panicDD.SetSelectedFunc(func(_ string, _ int) { sp.markDirty(settingsDomainLock) })
+	panicDD.SetSelectedFunc(func(_ string, _ int) { sp.markDirty(settingsDomainSecurity) })
 
 	formD := tview.NewForm()
 
-	formA.AddButton("Apply preset…", func() {
+	formA.AddButton(threatAnswerApplyButton, func() {
 		idx, label := presetDD.GetCurrentOption()
-		var preset string
-		switch idx {
-		case 1:
-			preset = vault.PresetDomestic
-		case 2:
-			preset = vault.PresetPrivacy
-		default:
-			preset = ""
+		preset := ""
+		if idx >= 0 && idx < len(threatTierOrder) {
+			preset = threatTierOrder[idx].token
 		}
 		if preset == "" {
 			if err := a.VaultCtl.SetThreatProfile(""); err != nil {
-				a.log("[red]apply preset[white] %v", err)
+				a.log("[red]apply answer[white] %v", err)
 				return
 			}
-			sp.initial = a.VaultCtl.Settings()
-			sp.markClean(settingsDomainLock)
+
+			sp.retentionNote = ""
+			sp.retentionPending = false
 			a.pushSettingsSync()
-			a.log("[green]threat preset cleared[white]")
-			sp.rebuildForm(a, settingsDomainLock)
+			a.log("[green]answer cleared[white] — the settings stay as they are")
+			a.refreshBundleForms(sp, sp.initialRetention)
 			return
 		}
 		a.confirmApplyThreatPreset(label, func() {
 			if err := a.VaultCtl.ApplyThreatPreset(preset); err != nil {
-				a.log("[red]apply preset[white] %v", err)
+				a.log("[red]apply answer[white] %v", err)
 				return
 			}
-			sp.initial = a.VaultCtl.Settings()
-			sp.markClean(settingsDomainLock)
 			a.pushSettingsSync()
-			a.log("[green]threat preset[white] → %s", label)
-			sp.rebuildForm(a, settingsDomainLock)
+
+			a.log("[green]answer applied[white] — %s. This device's settings changed.", label)
+
+			a.sendPresetRetention(sp, preset)
+			a.refreshBundleForms(sp, vault.ThreatPresetBundles[preset].DefaultRetentionSec)
 		})
 	})
 
@@ -582,6 +656,9 @@ func buildLockForm(a *App, sp *settingsPage) tview.Primitive {
 	formB.AddButton("Change passphrase…", func() { a.showSettingsChangePassModal(sp) })
 
 	save := func() error {
+		if err := retiredAnswerRefusal(sp.initial.ThreatProfile); err != nil {
+			return err
+		}
 		_, idleAction := idleDD.GetCurrentOption()
 		idleTimeoutStr := formB.GetFormItemByLabel("Idle timeout (seconds)").(*tview.InputField).GetText()
 		pinValidityStr := formB.GetFormItemByLabel("PIN validity (seconds, 0 = no escalation)").(*tview.InputField).GetText()
@@ -601,7 +678,7 @@ func buildLockForm(a *App, sp *settingsPage) tview.Primitive {
 		if presetIdx, _ := presetDD.GetCurrentOption(); presetIdx == 0 && sp.initial.ThreatProfile != "" {
 			clearPreset = true
 		}
-		if err := a.VaultCtl.Mutate("lock", func(p *vault.Payload) error {
+		if err := a.VaultCtl.Mutate("security", func(p *vault.Payload) error {
 			p.IdleAction = idleAction
 			p.IdleTimeoutSeconds = idleTimeout
 			p.PinValiditySec = pinValidity
@@ -614,28 +691,33 @@ func buildLockForm(a *App, sp *settingsPage) tview.Primitive {
 			return err
 		}
 		sp.initial = a.VaultCtl.Settings()
-		sp.markClean(settingsDomainLock)
+		sp.markClean(settingsDomainSecurity)
 		a.pushSettingsSync()
-		a.log("[green]lock saved[white]")
+		a.log("[green]security saved[white]")
 		return nil
 	}
-	sp.registerSave(settingsDomainLock, save)
+	sp.registerSave(settingsDomainSecurity, save)
 	formD.AddButton("Save", func() {
 		if err := save(); err != nil {
-			a.log("[red]save lock[white] %v", err)
+			a.log("[red]save security[white] %v", err)
 			return
 		}
-		sp.rebuildForm(a, settingsDomainLock)
+		sp.rebuildForm(a, settingsDomainSecurity)
+		sp.returnToList(a)
 	})
-	formD.AddButton("Cancel", func() { sp.rebuildForm(a, settingsDomainLock) })
+	formD.AddButton("Cancel", func() {
+		sp.rebuildForm(a, settingsDomainSecurity)
+		sp.returnToList(a)
+	})
 
 	flex := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(statusTV, 1, 0, false).
 		AddItem(formA, 5, 0, true).
-		AddItem(bundleTV, 4, 0, false).
-		AddItem(formB, 11, 0, false).
+		AddItem(bundleTV, 5, 0, false).
+		AddItem(noteTV, len(noteLines), 0, false).
+		AddItem(formB, 0, 1, false).
 		AddItem(formD, 3, 0, false)
-	flex.SetBorder(true).SetTitle(" lock + threat model ")
+	flex.SetBorder(true).SetTitle(" security ")
 
 	subForms := []*tview.Form{formA, formB, formD}
 	order := make([]tview.Primitive, 0, 16)
@@ -679,44 +761,213 @@ func buildLockForm(a *App, sp *settingsPage) tview.Primitive {
 	return flex
 }
 
+const threatPickerQuestion = vault.ThreatPickerQuestion
+
+const (
+	threatAnswerStatusPrefix = "Your answer: "
+	threatAnswerApplyButton  = "Apply answer…"
+)
+
+var threatTierOrder = []struct {
+	answer string
+	line   string
+	token  string
+}{
+	{"(not picked yet)", "", ""},
+	{"No one", "nobody else uses this device", vault.PresetNobody},
+	{"People at home", "somebody here picks it up and looks", vault.PresetDomestic},
+	{"People with power", "they can dig, but cannot make you open it", vault.PresetPower},
+	{"People with force", "they can make you unlock it", vault.PresetForce},
+}
+
+func threatTierIndex(token string) int {
+	for i, t := range threatTierOrder {
+		if t.token == token && token != "" {
+			return i
+		}
+	}
+	return 0
+}
+
+func threatTierAnswer(token string) string {
+	return threatTierOrder[threatTierIndex(token)].answer
+}
+
 func threatModelStatusLine(s ipc.Settings) string {
-	switch s.ThreatProfile {
-	case "":
-		return "Custom (no preset selected)"
-	case vault.PresetActivist:
-		return "Activist (preset not yet wired)"
+	if s.ThreatProfile == "" {
+		return "not picked yet"
+	}
+	if _, ok := vault.ThreatPresetBundles[s.ThreatProfile]; !ok {
+		return s.ThreatProfile + " — a retired answer"
+	}
+	return threatTierAnswer(s.ThreatProfile)
+}
+
+func retiredAnswerRefusal(profile string) error {
+	if profile == "" {
+		return nil
+	}
+	if _, ok := vault.ThreatPresetBundles[profile]; ok {
+		return nil
+	}
+	return fmt.Errorf("this device holds a retired answer (%s) — pick an answer above and press %s first",
+		profile, threatAnswerApplyButton)
+}
+
+func threatModelDriftNote(s ipc.Settings) string {
+	if s.ThreatProfile == "" {
+		return ""
 	}
 	bundle, ok := vault.ThreatPresetBundles[s.ThreatProfile]
 	if !ok {
-		return s.ThreatProfile + " (no bundle)"
+		return StyleAnswerGone + "No settings can be saved until you answer again." + StyleReset
 	}
-	label := strings.ToUpper(s.ThreatProfile[:1]) + s.ThreatProfile[1:]
-	if s.IdleAction == bundle.IdleAction &&
+	same := s.IdleAction == bundle.IdleAction &&
 		s.IdleTimeoutSeconds == bundle.IdleTimeoutSeconds &&
 		s.PinValiditySec == bundle.PinValiditySec &&
-		s.PanicAction == bundle.PanicAction {
-		return label
+		s.PanicAction == bundle.PanicAction &&
+		s.NotifyShellEnabled == bundle.NotifyShellEnabled &&
+		s.NotifyShowSender == bundle.NotifyShowSender &&
+		s.NotifyShowBody == bundle.NotifyShowBody &&
+		s.NotificationsOnLock == bundle.NotificationsOnLock &&
+		s.NotifyPersistUntilOpen == bundle.NotifyPersistUntilOpen &&
+		s.NotifyDeepLink == bundle.NotifyDeepLink &&
+		s.ShowFailedDestroyAttempts == bundle.ShowFailedDestroyAttempts
+	if same {
+		return ""
 	}
-	return label + "-modified"
+	return "Some settings changed since this was applied."
+}
+
+var settingsBundleDomains = []string{
+	settingsDomainSecurity,
+	settingsDomainNotifs,
+	settingsDomainDefaults,
+}
+
+func (a *App) refreshBundleForms(sp *settingsPage, retentionSec uint64) {
+	sp.initial = a.VaultCtl.Settings()
+	sp.initialRetention = retentionSec
+	a.winMu.Lock()
+	sp.initialReceipts = a.defaultSendReceipts
+	a.winMu.Unlock()
+	for _, key := range settingsBundleDomains {
+		sp.rebuildForm(a, key)
+	}
+
+	sp.returnToList(a)
+}
+
+const (
+	retentionNoteWaiting = "How long messages are kept: saving."
+	retentionNoteRefused = "How long messages are kept: not saved."
+	retentionNoteUnknown = "How long messages are kept: try again soon."
+)
+
+func (a *App) sendPresetRetention(sp *settingsPage, preset string) {
+	bundle, ok := vault.ThreatPresetBundles[preset]
+	if !ok {
+		return
+	}
+	a.winMu.Lock()
+	receipts := a.defaultSendReceipts
+	known := a.chatDefaultsKnown
+	a.winMu.Unlock()
+	if !known {
+
+		sp.retentionPending = false
+		sp.retentionNote = retentionNoteUnknown
+		slog.Warn("tui: preset retention default not sent — chat defaults not known yet",
+			slog.String("preset", preset))
+		a.log("[red]how long messages are kept was not changed[white] — this device does not know the current setting yet")
+		return
+	}
+	sp.retentionWant = bundle.DefaultRetentionSec
+	sp.retentionPending = true
+	sp.retentionNote = retentionNoteWaiting
+	slog.Debug("tui: preset retention default sent",
+		slog.String("preset", preset),
+		slog.Uint64("retention_sec", bundle.DefaultRetentionSec))
+	a.sendRequest(ipc.FrameSetChatDefaults, ipc.SetChatDefaultsRequest{
+		RetentionSec: bundle.DefaultRetentionSec,
+		SendReceipts: receipts,
+	}, func(f ipc.Frame) {
+		if f.Type != ipc.FrameError {
+			return
+		}
+		a.renderError(f)
+		a.app.QueueUpdateDraw(func() {
+			if !a.settingsPageIsOpen(sp) || !sp.retentionPending {
+				return
+			}
+			sp.retentionPending = false
+			sp.retentionNote = retentionNoteRefused
+
+			sp.writeLockNote(a)
+		})
+	})
+}
+
+func (a *App) confirmPresetRetention(sec uint64) {
+	a.app.QueueUpdateDraw(func() {
+		a.winMu.Lock()
+		sp := a.settings
+		a.winMu.Unlock()
+		if sp == nil || !sp.retentionPending || sp.retentionWant != sec {
+			return
+		}
+		sp.retentionPending = false
+		sp.retentionNote = "How long messages are kept: " + retentionSummaryWord(sec) + "."
+		sp.writeLockNote(a)
+	})
+}
+
+func (sp *settingsPage) writeLockNote(a *App) {
+	if sp.lockNoteTV == nil {
+		return
+	}
+	lines := make([]string, 0, 2)
+	if driftNote := threatModelDriftNote(sp.initial); driftNote != "" {
+		lines = append(lines, driftNote)
+	}
+	if sp.retentionNote != "" {
+		lines = append(lines, sp.retentionNote)
+	}
+	sp.lockNoteTV.SetText(strings.Join(lines, "\n"))
+}
+
+func (a *App) settingsPageIsOpen(sp *settingsPage) bool {
+	a.winMu.Lock()
+	defer a.winMu.Unlock()
+	return a.settings != nil && a.settings == sp
 }
 
 func buildTorForm(a *App, sp *settingsPage) *tview.Form {
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(" tor ")
 
-	status := "not set — pairing will fail until configured"
-	severity := "warn"
-	source := "tor.password.unset"
-	if sp.initial.HasTorPassword {
-		status = "configured"
-		severity = "info"
-		source = "tor.password.set"
-	}
+	status, severity, source := torPasswordStatus(a.SystemTor, sp.initial.HasTorPassword)
 	form.AddTextView("Tor control-port password", renderAdvisory(severity, source, status), 0, 1, true, false)
 	form.AddButton("Change Tor password…", func() { a.showSettingsTorPasswordModal(sp) })
-	form.AddButton("Cancel", func() { sp.rebuildForm(a, settingsDomainTor) })
+	form.AddButton("Cancel", func() {
+		sp.rebuildForm(a, settingsDomainTor)
+		sp.returnToList(a)
+	})
 	form.SetCancelFunc(func() { sp.returnToList(a) })
 	return form
+}
+
+func torPasswordStatus(systemTor, hasPassword bool) (status, severity, source string) {
+	switch {
+	case !systemTor && hasPassword:
+		return "set, and not used: haomad runs its own tor, which needs no password. It is used with --system-tor only", "info", "tor.password.unused"
+	case !systemTor:
+		return "not needed: haomad runs its own tor, which needs no password. It is used with --system-tor only", "info", "tor.password.unused"
+	case hasPassword:
+		return "configured", "info", "tor.password.set"
+	default:
+		return "not set — the system tor must accept its cookie, or haomad cannot reach it", "warn", "tor.password.unset"
+	}
 }
 
 func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
@@ -748,6 +999,11 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 		sp.markDirty(settingsDomainNotifs)
 	})
 	form.AddFormItem(deepLinkBox)
+
+	destroyAttemptsBox := newBracketCheckbox("Show failed destroy attempts", sp.initial.ShowFailedDestroyAttempts, func(_ bool) {
+		sp.markDirty(settingsDomainNotifs)
+	})
+	form.AddFormItem(destroyAttemptsBox)
 	form.AddTextView("Privacy posture",
 		renderAdvisory("info", "settings.notifs.privacy",
 			"With both Show toggles off, banners read \"Haoma: New message\" — safest under physical inspection."),
@@ -760,6 +1016,7 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 		onLock := onLockBox.Checked()
 		persist := persistBox.Checked()
 		deepLink := deepLinkBox.Checked()
+		destroyAttempts := destroyAttemptsBox.Checked()
 		if err := a.VaultCtl.Mutate("notifications", func(p *vault.Payload) error {
 			p.NotifyShellEnabled = shell
 			p.NotifyShowSender = showSender
@@ -767,6 +1024,7 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 			p.NotificationsOnLock = onLock
 			p.NotifyPersistUntilOpen = persist
 			p.NotifyDeepLink = deepLink
+			p.ShowFailedDestroyAttempts = destroyAttempts
 			return nil
 		}); err != nil {
 			return err
@@ -777,6 +1035,7 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 		sp.initial.NotificationsOnLock = onLock
 		sp.initial.NotifyPersistUntilOpen = persist
 		sp.initial.NotifyDeepLink = deepLink
+		sp.initial.ShowFailedDestroyAttempts = destroyAttempts
 		sp.markClean(settingsDomainNotifs)
 		a.pushSettingsSync()
 		a.log("[green]notifications saved[white]")
@@ -790,7 +1049,10 @@ func buildNotificationsForm(a *App, sp *settingsPage) *tview.Form {
 		}
 		sp.returnToList(a)
 	})
-	form.AddButton("Cancel", func() { sp.rebuildForm(a, settingsDomainNotifs) })
+	form.AddButton("Cancel", func() {
+		sp.rebuildForm(a, settingsDomainNotifs)
+		sp.returnToList(a)
+	})
 	form.SetCancelFunc(func() { sp.returnToList(a) })
 	return form
 }
@@ -803,8 +1065,10 @@ func buildAdvancedForm(a *App, sp *settingsPage) tview.Primitive {
 	body := tview.NewTextView().
 		SetDynamicColors(true).
 		SetText("[gray]Security warnings:[-]\n\n" + warnings)
+
 	flex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(body, 0, 1, true)
+		AddItem(body, 0, 1, false).
+		AddItem(buildWipeDeviceBlock(a, sp), wipeBlockRows, 0, true)
 	flex.SetBorder(true).SetTitle(" advanced ")
 	flex.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 
@@ -817,23 +1081,37 @@ func buildAdvancedForm(a *App, sp *settingsPage) tview.Primitive {
 	return flex
 }
 
-func threatPresetBundleSummary() string {
-	d := vault.ThreatPresetBundles[vault.PresetDomestic]
-	p := vault.ThreatPresetBundles[vault.PresetPrivacy]
-	return fmt.Sprintf(
-		"[yellow]Bundled defaults[-]\n"+
-			"  Domestic — idle %s @ %ds, PIN valid %ds, panic %s\n"+
-			"  Privacy  — idle %s @ %ds, PIN valid %ds, panic %s\n"+
-			"  [gray]Activist — coming when the data-destruction primitives ship[-]",
-		d.IdleAction, d.IdleTimeoutSeconds, d.PinValiditySec, d.PanicAction,
-		p.IdleAction, p.IdleTimeoutSeconds, p.PinValiditySec, p.PanicAction,
-	)
+func threatAnswerSummary(token string) string {
+	if token == "" {
+		return StyleAnswerHint + "Pick an answer to see what it sets." + StyleReset
+	}
+	b, ok := vault.ThreatPresetBundles[token]
+	if !ok {
+		return StyleAnswerGone + token + " is a retired answer." + StyleReset + "\nPick one of the four below."
+	}
+	return fmt.Sprintf(StyleAnswerHeading+"The %q answer sets"+StyleReset+"\n  idle: %s after %ds\n  PIN valid: %s\n  panic: %s\n  messages kept: %s",
+		threatTierAnswer(token),
+		b.IdleAction, b.IdleTimeoutSeconds,
+		pinValiditySummaryWord(b.PinValiditySec),
+		b.PanicAction,
+		retentionSummaryWord(b.DefaultRetentionSec))
+}
+
+func pinValiditySummaryWord(sec int) string {
+	if sec == 0 {
+		return "until restart"
+	}
+	return strconv.Itoa(sec) + "s"
+}
+
+func retentionSummaryWord(sec uint64) string {
+	return retentionLabel(uint32(sec))
 }
 
 func (a *App) confirmApplyThreatPreset(label string, onApply func()) {
 	const pageName = "settings-threat-preset-confirm"
 	modal := tview.NewModal().
-		SetText(fmt.Sprintf("Apply %s preset?\n\nYour current Lock + Panic settings will be overwritten.", label)).
+		SetText(fmt.Sprintf("Answer \"%s\"?\n\nThis writes the lock, panic, notification and message-keeping settings for that answer. You can change any of them again afterwards.", label)).
 		AddButtons([]string{"Apply", "Cancel"}).
 		SetDoneFunc(func(_ int, btn string) {
 			a.pages.RemovePage(pageName)
@@ -902,7 +1180,7 @@ func (a *App) showSettingsTorPasswordModal(sp *settingsPage) {
 	form.SetBorder(true).SetTitle(" change Tor password ")
 
 	const passwordLabel = "Password"
-	form.AddTextView("", "New Tor control-port password (blank to clear):", 0, 1, true, false)
+	form.AddTextView("", "New control-port password of the system tor (blank to clear):", 0, 1, true, false)
 	form.AddPasswordField(passwordLabel, "", 40, '*', nil)
 	dismiss := func() {
 		a.pages.RemovePage(pageName)
@@ -918,9 +1196,15 @@ func (a *App) showSettingsTorPasswordModal(sp *settingsPage) {
 			return
 		}
 
-		a.sendRequest(ipc.FrameSetTorPassword, ipc.SetTorPasswordRequest{Password: pwd}, nil)
+		if a.SystemTor {
+			a.sendRequest(ipc.FrameSetTorPassword, ipc.SetTorPasswordRequest{Password: pwd}, nil)
+		}
 		a.pushSettingsSync()
-		a.log("[green]tor password updated[white]")
+		if a.SystemTor {
+			a.log("[green]tor password updated[white]")
+		} else {
+			a.log(StyleNoticeOK + "tor password saved" + StyleReset + " — used with --system-tor only; haomad runs its own tor now")
+		}
 		dismiss()
 	})
 	form.AddButton("Cancel", dismiss)
@@ -935,4 +1219,38 @@ func wrapInModal(a *App, pageName string, prim tview.Primitive, width, height in
 		AddItem(prim, 1, 1, 1, 1, 0, 0, true)
 	a.pages.AddPage(pageName, grid, true, true)
 	a.app.SetFocus(prim)
+}
+
+func (sp *settingsPage) selectDomainRow(key string) {
+	for i, k := range settingsDomainsOrder {
+		if k == key {
+			sp.list.SetCurrentItem(i)
+			return
+		}
+	}
+}
+
+func (a *App) leaveLinkedDevicesDomain(sp *settingsPage) {
+	a.stopVerifyMarker()
+	sp.linked.verifyNote = ""
+	sp.linked.busy = false
+	sp.linked.busyLabel = ""
+	sp.linked.risksAcked = false
+	if a.linkFlow() != nil {
+		a.redrawLinkedDevicesPage()
+		return
+	}
+	a.rebuildLinkedDevicesPage()
+}
+
+func (sp *settingsPage) setLive(w linkLiveWidgets) {
+	sp.liveMu.Lock()
+	defer sp.liveMu.Unlock()
+	sp.live = w
+}
+
+func (sp *settingsPage) liveWidgets() linkLiveWidgets {
+	sp.liveMu.Lock()
+	defer sp.liveMu.Unlock()
+	return sp.live
 }

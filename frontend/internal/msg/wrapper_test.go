@@ -13,7 +13,7 @@ import (
 const testMsgID = "0123456789abcdef0123456789abcdef"
 
 func TestBuildText_RoundTrip(t *testing.T) {
-	w, err := msg.BuildText(7, 1742643890, testMsgID, "hello world", 0, "", "", nil)
+	w, err := msg.BuildText(7, 1742643890, testMsgID, "hello world", 0, "", "", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestBuildText_RoundTrip(t *testing.T) {
 }
 
 func TestBuildText_CarriesExpireSeconds(t *testing.T) {
-	w, err := msg.BuildText(1, 1, testMsgID, "t", 60, "", "", nil)
+	w, err := msg.BuildText(1, 1, testMsgID, "t", 60, "", "", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestBuildText_CarriesExpireSeconds(t *testing.T) {
 
 func TestBuildText_CarriesReplyTo(t *testing.T) {
 	rt := &msg.ReplyTo{MsgID: "abc123", Text: "the original message"}
-	w, err := msg.BuildText(1, 1, testMsgID, "reply!", 0, "", "", rt)
+	w, err := msg.BuildText(1, 1, testMsgID, "reply!", 0, "", "", rt, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,14 +82,14 @@ func TestBuildText_CarriesReplyTo(t *testing.T) {
 }
 
 func TestBuildText_RejectsReplyToMissingMsgID(t *testing.T) {
-	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", &msg.ReplyTo{MsgID: "", Text: "x"})
+	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", &msg.ReplyTo{MsgID: "", Text: "x"}, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildText_OmitsReplyToWhenNil(t *testing.T) {
-	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil)
+	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,21 +115,21 @@ func TestNewID_Length(t *testing.T) {
 }
 
 func TestBuildText_RejectsZeroSeq(t *testing.T) {
-	_, err := msg.BuildText(0, 1, testMsgID, "hi", 0, "", "", nil)
+	_, err := msg.BuildText(0, 1, testMsgID, "hi", 0, "", "", nil, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildText_RejectsZeroTs(t *testing.T) {
-	_, err := msg.BuildText(1, 0, testMsgID, "hi", 0, "", "", nil)
+	_, err := msg.BuildText(1, 0, testMsgID, "hi", 0, "", "", nil, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildText_RejectsEmptyMsgID(t *testing.T) {
-	_, err := msg.BuildText(1, 1, "", "hi", 0, "", "", nil)
+	_, err := msg.BuildText(1, 1, "", "hi", 0, "", "", nil, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
@@ -498,7 +498,7 @@ func TestRead_RejectsEmptyTargets(t *testing.T) {
 
 func TestBuildText_CarriesPresenceState(t *testing.T) {
 	for _, state := range []string{msg.PresenceAvailable, msg.PresenceAway, msg.PresenceBusy} {
-		w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, state, "", nil)
+		w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, state, "", nil, 0)
 		if err != nil {
 			t.Fatalf("state=%q: %v", state, err)
 		}
@@ -515,7 +515,7 @@ func TestBuildText_CarriesPresenceState(t *testing.T) {
 }
 
 func TestBuildText_EmptyPresenceState_OmitsField(t *testing.T) {
-	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil)
+	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestBuildText_EmptyPresenceState_OmitsField(t *testing.T) {
 }
 
 func TestBuildText_RejectsUnknownPresenceState(t *testing.T) {
-	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "lurking", "", nil)
+	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "lurking", "", nil, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
@@ -590,7 +590,7 @@ func TestBuildRead_RejectsUnknownPresenceState(t *testing.T) {
 
 func TestBuildPresence_RoundTrip(t *testing.T) {
 	for _, state := range []string{msg.PresenceAvailable, msg.PresenceAway, msg.PresenceBusy} {
-		w, err := msg.BuildPresence(7, 1742643940, testMsgID, state, 0)
+		w, err := msg.BuildPresence(7, 1742643940, testMsgID, state, 0, 0, 0)
 		if err != nil {
 			t.Fatalf("Build state=%q: %v", state, err)
 		}
@@ -616,18 +616,18 @@ func TestBuildPresence_RoundTrip(t *testing.T) {
 }
 
 func TestBuildPresence_RejectsUnknownState(t *testing.T) {
-	_, err := msg.BuildPresence(1, 1, testMsgID, "lurking", 0)
+	_, err := msg.BuildPresence(1, 1, testMsgID, "lurking", 0, 0, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
-	_, err = msg.BuildPresence(1, 1, testMsgID, "", 0)
+	_, err = msg.BuildPresence(1, 1, testMsgID, "", 0, 0, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("empty state err = %v, want ErrMissingField", err)
 	}
 }
 
 func TestBuildPresence_RejectsZeroSeq(t *testing.T) {
-	_, err := msg.BuildPresence(0, 1, testMsgID, msg.PresenceAvailable, 0)
+	_, err := msg.BuildPresence(0, 1, testMsgID, msg.PresenceAvailable, 0, 0, 0)
 	if !errors.Is(err, msg.ErrMissingField) {
 		t.Fatalf("err = %v, want ErrMissingField", err)
 	}
@@ -964,7 +964,29 @@ func TestBuildCallReject_AllowsEmptyReason(t *testing.T) {
 }
 
 func TestBuildCallEnd_RoundTrip(t *testing.T) {
-	w, err := msg.BuildCallEnd(4, 1, testMsgID, testCallID, 0)
+	w, err := msg.BuildCallEnd(4, 1, testMsgID, testCallID, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	if strings.Contains(string(w.Body), "reason") {
+		t.Errorf("an ordinary end carries a reason field: %s", w.Body)
+	}
+	got, _ := msg.Unmarshal(raw)
+	body, err := got.CallEnd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.CallID != testCallID {
+		t.Errorf("call_id = %q, want %q", body.CallID, testCallID)
+	}
+	if body.Reason != "" {
+		t.Errorf("reason = %q, want empty", body.Reason)
+	}
+}
+
+func TestBuildCallEnd_CarriesAnsweredElsewhere(t *testing.T) {
+	w, err := msg.BuildCallEnd(4, 1, testMsgID, testCallID, msg.CallEndAnsweredElsewhere, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -974,8 +996,8 @@ func TestBuildCallEnd_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body.CallID != testCallID {
-		t.Errorf("call_id = %q, want %q", body.CallID, testCallID)
+	if body.Reason != msg.CallEndAnsweredElsewhere {
+		t.Errorf("reason = %q, want %q", body.Reason, msg.CallEndAnsweredElsewhere)
 	}
 }
 
@@ -1160,5 +1182,164 @@ func TestRotateRequest_RejectsWrongKind(t *testing.T) {
 	w := &msg.Wrapper{V: msg.Version, Seq: 1, Ts: 1, MsgID: testMsgID, Kind: msg.KindText, Body: json.RawMessage(`{}`)}
 	if _, err := w.RotateRequest(); err == nil || !strings.Contains(err.Error(), "not \"rotate_request\"") {
 		t.Fatalf("err = %v, want kind-mismatch error", err)
+	}
+}
+
+func TestBuildText_CarriesDeviceCount(t *testing.T) {
+	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	got, _ := msg.Unmarshal(raw)
+	body, err := got.Text()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.DeviceCount != 1 {
+		t.Errorf("DeviceCount = %d, want 1", body.DeviceCount)
+	}
+}
+
+func TestBuildText_ZeroDeviceCount_OmitsField(t *testing.T) {
+	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	if strings.Contains(string(raw), "device_count") {
+		t.Errorf("a count of zero must not reach the wire, raw = %s", raw)
+	}
+	got, _ := msg.Unmarshal(raw)
+	body, _ := got.Text()
+	if body.DeviceCount != 0 {
+		t.Errorf("decoded DeviceCount = %d, want 0", body.DeviceCount)
+	}
+}
+
+func TestBuildText_RejectsNegativeDeviceCount(t *testing.T) {
+	_, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil, -1)
+	if !errors.Is(err, msg.ErrMissingField) {
+		t.Fatalf("err = %v, want ErrMissingField", err)
+	}
+}
+
+func TestBuildPresence_CarriesDeviceCount(t *testing.T) {
+	w, err := msg.BuildPresence(1, 1, testMsgID, msg.PresenceAvailable, 0, 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	got, _ := msg.Unmarshal(raw)
+	body, err := got.Presence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.DeviceCount != 2 {
+		t.Errorf("DeviceCount = %d, want 2", body.DeviceCount)
+	}
+	if body.State != msg.PresenceAvailable {
+		t.Errorf("State = %q, want %q", body.State, msg.PresenceAvailable)
+	}
+}
+
+func TestBuildPresence_ZeroDeviceCount_OmitsField(t *testing.T) {
+	w, err := msg.BuildPresence(1, 1, testMsgID, msg.PresenceAvailable, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	if strings.Contains(string(raw), "device_count") {
+		t.Errorf("a count of zero must not reach the wire, raw = %s", raw)
+	}
+}
+
+func TestBuildPresence_RejectsNegativeDeviceCount(t *testing.T) {
+	_, err := msg.BuildPresence(1, 1, testMsgID, msg.PresenceAvailable, 0, -3, 0)
+	if !errors.Is(err, msg.ErrMissingField) {
+		t.Fatalf("err = %v, want ErrMissingField", err)
+	}
+}
+
+func TestBuildPresence_CarriesUnlinkedAt(t *testing.T) {
+	const unlinkedAt = 1_790_000_000
+	w, err := msg.BuildPresence(1, unlinkedAt+1, testMsgID, msg.PresenceAvailable, 0, 1, unlinkedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	got, _ := msg.Unmarshal(raw)
+	body, err := got.Presence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.UnlinkedAt != unlinkedAt {
+		t.Errorf("UnlinkedAt = %d, want %d", body.UnlinkedAt, unlinkedAt)
+	}
+	if body.DeviceCount != 1 {
+		t.Errorf("DeviceCount = %d, want 1: an older contact reads only the count", body.DeviceCount)
+	}
+}
+
+func TestBuildPresence_ZeroUnlinkedAt_OmitsField(t *testing.T) {
+	w, err := msg.BuildPresence(1, 1, testMsgID, msg.PresenceAvailable, 0, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := msg.Marshal(w)
+	if strings.Contains(string(raw), "unlinked_at") {
+		t.Errorf("a presence that is not the notice must not carry the field, raw = %s", raw)
+	}
+}
+
+func TestBuildPresence_RejectsNegativeUnlinkedAt(t *testing.T) {
+	_, err := msg.BuildPresence(1, 1, testMsgID, msg.PresenceAvailable, 0, 1, -1)
+	if !errors.Is(err, msg.ErrMissingField) {
+		t.Fatalf("err = %v, want ErrMissingField", err)
+	}
+}
+
+func TestBuilders_SetTheUnlinkNoticeMarker(t *testing.T) {
+	text, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb, err := text.Text()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tb.SendsUnlinkNotice {
+		t.Errorf("a text carries no unlink-notice marker: %s", text.Body)
+	}
+	pres, err := msg.BuildPresence(1, 1, testMsgID, msg.PresenceAvailable, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, err := pres.Presence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pb.SendsUnlinkNotice {
+		t.Errorf("a presence carries no unlink-notice marker: %s", pres.Body)
+	}
+}
+
+func TestBodyDecode_DropsUnknownField(t *testing.T) {
+	w, err := msg.BuildText(1, 1, testMsgID, "hi", 0, "", "", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Body = []byte(`{"text":"hi","device_count":1,"a_field_from_the_future":"x"}`)
+	raw, _ := msg.Marshal(w)
+	got, err := msg.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("an unknown body field must not fail the decode: %v", err)
+	}
+	body, err := got.Text()
+	if err != nil {
+		t.Fatalf("an unknown body field must not fail the body decode: %v", err)
+	}
+	if body.Text != "hi" || body.DeviceCount != 1 {
+		t.Errorf("body = %+v, want text hi and count 1", body)
 	}
 }

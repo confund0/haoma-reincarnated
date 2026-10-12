@@ -10,14 +10,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"haoma-frontend/internal/backuparchive"
 	"haoma-frontend/internal/disguise"
+	"haoma-frontend/internal/lockfile"
 	"haoma-frontend/internal/paths"
 	"haoma-frontend/internal/vault"
 )
@@ -33,7 +31,21 @@ const (
 	maxPatternSize = 256
 
 	disguiseSidecarMissingExit = 2
+
+	commitNotAppliedExit = 3
+
+	commitBrokenExit = 4
+
+	commitStoreInUseExit = 5
+
+	commitNoBundleExit = 6
+
+	restorePendingExit = 7
+
+	notEmptyExit = 8
 )
+
+var errRestorePending = errors.New("refusing to open or mint a vault")
 
 func main() {
 	cfgDir := flag.String("cfg-dir", "", "data root anchoring vault.enc; required")
@@ -44,10 +56,11 @@ func main() {
 	disguiseVerify := flag.Bool("disguise-verify", false, "verify disguise.enc decrypts under stdin-pattern (exit 0=match, 1=mismatch, 2=missing)")
 	disguiseRekey := flag.Bool("disguise-rekey", false, "rekey disguise.enc: stdin line 1 = old pattern, rest = new pattern")
 	archiveWrite := flag.String("archive-write", "", "write a full-cfg-dir tar archive to this path; CALLER must quiesce haomad + haoma first")
-	archiveRestore := flag.String("archive-restore", "", "restore a full-cfg-dir tar archive from this path; moves existing cfg-dir contents to <cfg-dir>/.pre-restore-<ts>/")
 	archiveStage := flag.String("archive-stage", "", "extract a backup archive into <cfg-dir>/.staging-<ts>/ without touching the live cfg-dir; stdout = staging path")
 	archiveCommit := flag.String("archive-commit", "", "verify <staging-path>/vault.enc unseals under stdin passphrase, then atomically swap staged contents into <cfg-dir>")
 	archiveDiscard := flag.String("archive-discard", "", "remove <staging-path>; abandons a previously-staged restore")
+	checkEmpty := flag.Bool("check-empty", false, "exit 0 when a restore may run onto this device, 8 when it is not empty")
+	cleanLeftovers := flag.Bool("clean-restore-leftovers", false, "delete the .staging-* dirs of unfinished staged restores and the .pre-restore-* dirs of earlier builds")
 	flag.Parse()
 
 	exit, err := run(*cfgDir, runFlags{
@@ -58,10 +71,11 @@ func main() {
 		disguiseVerify: *disguiseVerify,
 		disguiseRekey:  *disguiseRekey,
 		archiveWrite:   *archiveWrite,
-		archiveRestore: *archiveRestore,
 		archiveStage:   *archiveStage,
 		archiveCommit:  *archiveCommit,
 		archiveDiscard: *archiveDiscard,
+		checkEmpty:     *checkEmpty,
+		cleanLeftovers: *cleanLeftovers,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "haoma-vault:", err)
@@ -79,22 +93,28 @@ type runFlags struct {
 	disguiseVerify bool
 	disguiseRekey  bool
 	archiveWrite   string
-	archiveRestore string
 	archiveStage   string
 	archiveCommit  string
 	archiveDiscard string
+	checkEmpty     bool
+	cleanLeftovers bool
 }
 
 func run(cfgDir string, f runFlags) (int, error) {
+
+	early := 1
+	if f.archiveCommit != "" {
+		early = commitNotAppliedExit
+	}
 	if cfgDir == "" {
-		return 1, errors.New("--cfg-dir is required")
+		return early, errors.New("--cfg-dir is required")
 	}
 	root, err := paths.RootFromFlag(cfgDir)
 	if err != nil {
-		return 1, fmt.Errorf("resolve cfg-dir: %w", err)
+		return early, fmt.Errorf("resolve cfg-dir: %w", err)
 	}
 	if _, err := paths.BootstrapAt(root); err != nil {
-		return 1, fmt.Errorf("bootstrap %s: %w", root, err)
+		return early, fmt.Errorf("bootstrap %s: %w", root, err)
 	}
 	vaultPath := filepath.Join(root, vaultFileName)
 	lockPath := filepath.Join(root, lockFileName)
@@ -122,9 +142,6 @@ func run(cfgDir string, f runFlags) (int, error) {
 	if f.archiveWrite != "" {
 		modes++
 	}
-	if f.archiveRestore != "" {
-		modes++
-	}
 	if f.archiveStage != "" {
 		modes++
 	}
@@ -134,8 +151,24 @@ func run(cfgDir string, f runFlags) (int, error) {
 	if f.archiveDiscard != "" {
 		modes++
 	}
+	if f.checkEmpty {
+		modes++
+	}
+	if f.cleanLeftovers {
+		modes++
+	}
 	if modes > 1 {
-		return 1, errors.New("-w / --list-backups / --restore / --disguise-* / --archive-* are mutually exclusive")
+		return early, errors.New("-w / --list-backups / --restore / --disguise-* / --archive-* are mutually exclusive")
+	}
+
+	if !f.listBackups && !f.disguiseInit && !f.disguiseVerify && !f.disguiseRekey {
+		pending, err := backuparchive.PendingCommit(root)
+		if err != nil {
+			return restorePendingExit, err
+		}
+		if pending != nil {
+			return restorePendingExit, errors.New(pending.Message(root))
+		}
 	}
 
 	switch {
@@ -153,17 +186,43 @@ func run(cfgDir string, f runFlags) (int, error) {
 		return wrap(runDisguiseRekey(disguisePath))
 	case f.archiveWrite != "":
 		return wrap(runArchiveWrite(root, f.archiveWrite))
-	case f.archiveRestore != "":
-		return wrap(runArchiveRestore(root, f.archiveRestore))
 	case f.archiveStage != "":
+
+		lk, err := acquireVaultLock(lockPath)
+		if err != nil {
+			return 1, err
+		}
+		defer releaseVaultLock(lk)
+		if exit, err := checkDeviceEmpty(root); exit != 0 {
+			return exit, err
+		}
 		return wrap(runArchiveStage(root, f.archiveStage))
 	case f.archiveCommit != "":
-		return wrap(runArchiveCommit(root, f.archiveCommit))
+		return runArchiveCommit(root, lockPath, f.archiveCommit)
 	case f.archiveDiscard != "":
 		return wrap(runArchiveDiscard(root, f.archiveDiscard))
+	case f.checkEmpty:
+		return checkDeviceEmpty(root)
+	case f.cleanLeftovers:
+		return runCleanRestoreLeftovers(root, lockPath)
 	default:
-		return wrap(runRead(vaultPath))
+		err := runRead(vaultPath)
+		if errors.Is(err, errRestorePending) {
+			return restorePendingExit, err
+		}
+		return wrap(err)
 	}
+}
+
+func checkDeviceEmpty(root string) (int, error) {
+	empty, err := backuparchive.DeviceIsEmpty(root)
+	if err != nil {
+		return 1, fmt.Errorf("check the device is empty: %w", err)
+	}
+	if !empty {
+		return notEmptyExit, fmt.Errorf("%w: %s", backuparchive.ErrDeviceNotEmpty, backuparchive.NotEmptyMessage)
+	}
+	return 0, nil
 }
 
 func wrap(err error) (int, error) {
@@ -220,8 +279,8 @@ func runWrite(vaultPath, lockPath string) error {
 		return errors.New("write mode requires a non-empty passphrase on stdin line 1")
 	}
 	fmt.Fprintf(os.Stderr,
-		"haoma-vault: -w enter pass_len=%d payload_bytes=%d\n",
-		len(pass), len(payloadJSON),
+		"haoma-vault: -w enter payload_bytes=%d\n",
+		len(payloadJSON),
 	)
 
 	dec := json.NewDecoder(bytes.NewReader(payloadJSON))
@@ -237,11 +296,11 @@ func runWrite(vaultPath, lockPath string) error {
 		return fmt.Errorf("validate: %w", err)
 	}
 
-	lockFd, err := acquireFlock(lockPath)
+	lk, err := acquireVaultLock(lockPath)
 	if err != nil {
 		return err
 	}
-	defer releaseFlock(lockFd)
+	defer releaseVaultLock(lk)
 
 	params, hadVault, err := peekParams(vaultPath)
 	if err != nil {
@@ -283,11 +342,11 @@ func runRestore(vaultPath, lockPath string, n int) error {
 	if n < 1 || n > vault.MaxBackups {
 		return fmt.Errorf("--restore=%d out of range [1, %d]", n, vault.MaxBackups)
 	}
-	lockFd, err := acquireFlock(lockPath)
+	lk, err := acquireVaultLock(lockPath)
 	if err != nil {
 		return err
 	}
-	defer releaseFlock(lockFd)
+	defer releaseVaultLock(lk)
 
 	if err := vault.RestoreFromBackup(vaultPath, n); err != nil {
 		return err
@@ -396,6 +455,25 @@ func readPassphrase(r io.Reader) ([]byte, error) {
 	return bytes.TrimRight(raw, "\r\n\t "), nil
 }
 
+func readCommitPassphrases(r io.Reader) ([][]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, maxPassphraseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read stdin: %w", err)
+	}
+	if len(raw) > maxPassphraseSize {
+		return nil, fmt.Errorf("stdin exceeds %d bytes", maxPassphraseSize)
+	}
+	lineCut := bytes.TrimRight(raw, "\r\n")
+	allCut := bytes.TrimRight(raw, "\r\n\t ")
+	if len(allCut) == 0 {
+		return nil, errors.New("archive-commit requires a non-empty passphrase on stdin")
+	}
+	if bytes.Equal(lineCut, allCut) {
+		return [][]byte{lineCut}, nil
+	}
+	return [][]byte{lineCut, allCut}, nil
+}
+
 func readWriteStdin(r io.Reader) (passphrase []byte, payload []byte, err error) {
 	br := bufio.NewReader(io.LimitReader(r, maxPassphraseSize+maxPayloadSize+2))
 	passLine, err := br.ReadBytes('\n')
@@ -429,24 +507,17 @@ func peekParams(path string) (vault.KDFParams, bool, error) {
 	return params, true, nil
 }
 
-func acquireFlock(lockPath string) (int, error) {
-	fd, err := unix.Open(lockPath, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC, 0o600)
+func acquireVaultLock(lockPath string) (*lockfile.Lock, error) {
+	lk, err := lockfile.AcquireBlocking(lockPath)
 	if err != nil {
-		return -1, fmt.Errorf("open lock %s: %w", lockPath, err)
+		return nil, fmt.Errorf("acquire vault lock: %w", err)
 	}
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		_ = unix.Close(fd)
-		return -1, fmt.Errorf("flock %s: %w", lockPath, err)
-	}
-	return fd, nil
+	return lk, nil
 }
 
-func releaseFlock(lockFd int) {
-	if err := unix.Flock(lockFd, unix.LOCK_UN); err != nil {
-		fmt.Fprintln(os.Stderr, "haoma-vault: flock unlock:", err)
-	}
-	if err := unix.Close(lockFd); err != nil {
-		fmt.Fprintln(os.Stderr, "haoma-vault: close lock fd:", err)
+func releaseVaultLock(lk *lockfile.Lock) {
+	if err := lk.Release(); err != nil {
+		fmt.Fprintln(os.Stderr, "haoma-vault: release lock:", err)
 	}
 }
 
@@ -465,75 +536,6 @@ func runArchiveWrite(cfgDir, destPath string) error {
 	fmt.Fprintf(os.Stderr, "haoma-vault: archive-write ok dest=%s files=%d bytes=%d\n",
 		abs, files, byteCount)
 	return nil
-}
-
-func runArchiveRestore(cfgDir, srcPath string) error {
-	if srcPath == "" {
-		return errors.New("--archive-restore requires a source path")
-	}
-	srcAbs, err := filepath.Abs(srcPath)
-	if err != nil {
-		return fmt.Errorf("resolve src: %w", err)
-	}
-	if _, err := os.Stat(srcAbs); err != nil {
-		return fmt.Errorf("source archive: %w", err)
-	}
-	preRestoreDir, err := moveAsideExisting(cfgDir)
-	if err != nil {
-		return fmt.Errorf("move-aside existing cfg-dir: %w", err)
-	}
-	if preRestoreDir != "" {
-		fmt.Fprintf(os.Stderr, "haoma-vault: archive-restore moved existing state to %s\n", preRestoreDir)
-	}
-	files, byteCount, err := backuparchive.Extract(srcAbs, cfgDir)
-	if err != nil {
-		return fmt.Errorf("archive extract: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "haoma-vault: archive-restore ok src=%s files=%d bytes=%d\n",
-		srcAbs, files, byteCount)
-	return nil
-}
-
-func moveAsideExisting(cfgDir string) (string, error) {
-	entries, err := os.ReadDir(cfgDir)
-	if err != nil {
-		return "", fmt.Errorf("read cfg-dir: %w", err)
-	}
-	var movable []string
-	for _, d := range entries {
-		name := d.Name()
-		switch {
-		case name == "vault.enc" || strings.HasPrefix(name, "vault.enc."):
-			movable = append(movable, name)
-		case name == "disguise.enc":
-			movable = append(movable, name)
-		case d.IsDir() && (name == "backend" || name == "frontend" || name == "textUI"):
-			movable = append(movable, name)
-		}
-	}
-	if len(movable) == 0 {
-		return "", nil
-	}
-	preName := ".pre-restore-" + time.Now().UTC().Format("20060102-150405")
-	preDir := filepath.Join(cfgDir, preName)
-
-	for i := 1; ; i++ {
-		if _, err := os.Stat(preDir); errors.Is(err, os.ErrNotExist) {
-			break
-		}
-		preDir = filepath.Join(cfgDir, fmt.Sprintf("%s-%d", preName, i))
-	}
-	if err := os.MkdirAll(preDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir %s: %w", preDir, err)
-	}
-	for _, name := range movable {
-		src := filepath.Join(cfgDir, name)
-		dst := filepath.Join(preDir, name)
-		if err := os.Rename(src, dst); err != nil {
-			return "", fmt.Errorf("move %s: %w", name, err)
-		}
-	}
-	return preDir, nil
 }
 
 func runArchiveStage(cfgDir, archivePath string) error {
@@ -573,69 +575,84 @@ func runArchiveStage(cfgDir, archivePath string) error {
 	return nil
 }
 
-func runArchiveCommit(cfgDir, stagingPath string) error {
+func runArchiveCommit(cfgDir, lockPath, stagingPath string) (int, error) {
 	if stagingPath == "" {
-		return errors.New("--archive-commit requires a staging path")
+		return commitNotAppliedExit, errors.New("--archive-commit requires a staging path")
 	}
 	stagingAbs, err := validateStagingPath(cfgDir, stagingPath)
 	if err != nil {
-		return err
+		return commitNotAppliedExit, err
 	}
-	pass, err := readPassphrase(os.Stdin)
+	candidates, err := readCommitPassphrases(os.Stdin)
 	if err != nil {
-		return err
-	}
-	if len(pass) == 0 {
-		return errors.New("archive-commit requires a non-empty passphrase on stdin")
+		return commitNotAppliedExit, err
 	}
 	stagedVault := filepath.Join(stagingAbs, vaultFileName)
 	if _, err := os.Stat(stagedVault); err != nil {
-		return fmt.Errorf("staged vault.enc: %w", err)
+		return commitNotAppliedExit, fmt.Errorf("staged vault.enc: %w", err)
 	}
 
-	payload, _, err := vault.Open(stagedVault, pass)
+	var payload vault.Payload
+	for _, pass := range candidates {
+		payload, _, err = vault.Open(stagedVault, pass)
+		if !errors.Is(err, vault.ErrUnseal) {
+			break
+		}
+	}
+	if errors.Is(err, vault.ErrUnseal) {
+		return 1, fmt.Errorf("open staged vault: %w", err)
+	}
 	if err != nil {
-		return fmt.Errorf("open staged vault: %w", err)
+		return commitNotAppliedExit, fmt.Errorf("open staged vault: %w", err)
 	}
-	preDir, err := moveAsideExisting(cfgDir)
-	if err != nil {
-		return fmt.Errorf("move-aside existing cfg-dir: %w", err)
-	}
-	if preDir != "" {
-		fmt.Fprintf(os.Stderr, "haoma-vault: archive-commit moved existing state to %s\n", preDir)
-	}
-	moved, err := moveStagedToCfgDir(stagingAbs, cfgDir)
-	if err != nil {
-		return fmt.Errorf("move staged: %w", err)
-	}
-
-	if err := os.Remove(stagingAbs); err != nil {
-		fmt.Fprintf(os.Stderr, "haoma-vault: archive-commit staging dir cleanup: %v\n", err)
-	}
-	fmt.Fprintf(os.Stderr, "haoma-vault: archive-commit ok staging=%s moved=%d\n",
-		stagingAbs, moved)
 
 	blob, err := payload.Secrets.Marshal()
 	if err != nil {
-		return fmt.Errorf("marshal secrets: %w", err)
-	}
-	if _, err := os.Stdout.Write(blob); err != nil {
-		return fmt.Errorf("write stdout: %w", err)
-	}
-	if _, err := os.Stdout.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("write stdout: %w", err)
+		return commitNotAppliedExit, fmt.Errorf("marshal secrets: %w", err)
 	}
 	full, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+		return commitNotAppliedExit, fmt.Errorf("marshal payload: %w", err)
 	}
-	if _, err := os.Stdout.Write(full); err != nil {
-		return fmt.Errorf("write stdout: %w", err)
+
+	lk, err := acquireVaultLock(lockPath)
+	if err != nil {
+		return commitNotAppliedExit, err
 	}
-	if _, err := os.Stdout.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("write stdout: %w", err)
+	res, err := backuparchive.Commit(cfgDir, stagingAbs)
+	releaseVaultLock(lk)
+	switch {
+	case errors.Is(err, backuparchive.ErrCommitBroken):
+		return commitBrokenExit, fmt.Errorf("archive-commit: %w", err)
+	case errors.Is(err, backuparchive.ErrDeviceNotEmpty):
+		return notEmptyExit, fmt.Errorf("%w: %s", backuparchive.ErrDeviceNotEmpty, backuparchive.NotEmptyMessage)
+	case errors.Is(err, backuparchive.ErrStoreInUse):
+		return commitStoreInUseExit, fmt.Errorf("archive-commit: haomad or haoma is still running; stop it first: %w", err)
+	case errors.Is(err, backuparchive.ErrCommitPending):
+		return restorePendingExit, fmt.Errorf("archive-commit: %w", err)
+	case err != nil:
+		return commitNotAppliedExit, fmt.Errorf("archive-commit: %w", err)
 	}
-	return nil
+	for _, name := range res.KeptLive {
+		fmt.Fprintf(os.Stderr, "haoma-vault: archive-commit kept the live %s: the backup has none\n", name)
+	}
+	if len(res.Skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "haoma-vault: archive-commit left out entries this build does not carry: %s\n",
+			strings.Join(res.Skipped, " "))
+	}
+
+	if err := os.RemoveAll(stagingAbs); err != nil {
+		fmt.Fprintf(os.Stderr, "haoma-vault: archive-commit staging dir cleanup: %v\n", err)
+	}
+	fmt.Fprintf(os.Stderr, "haoma-vault: archive-commit ok staging=%s moved=%d\n",
+		stagingAbs, res.Moved)
+
+	for _, line := range [][]byte{blob, full} {
+		if _, err := os.Stdout.Write(append(line, '\n')); err != nil {
+			return commitNoBundleExit, fmt.Errorf("archive-commit swapped, but stdout failed: %w", err)
+		}
+	}
+	return 0, nil
 }
 
 func runArchiveDiscard(cfgDir, stagingPath string) error {
@@ -651,6 +668,25 @@ func runArchiveDiscard(cfgDir, stagingPath string) error {
 	}
 	fmt.Fprintf(os.Stderr, "haoma-vault: archive-discard ok staging=%s\n", stagingAbs)
 	return nil
+}
+
+func runCleanRestoreLeftovers(cfgDir, lockPath string) (int, error) {
+	lk, err := acquireVaultLock(lockPath)
+	if err != nil {
+		return 1, err
+	}
+	gone, err := backuparchive.CleanRestoreLeftovers(cfgDir)
+	releaseVaultLock(lk)
+	for _, d := range gone {
+		fmt.Fprintf(os.Stderr, "haoma-vault: clean-restore-leftovers deleted %s bytes=%d\n", d.Name, d.Bytes)
+	}
+	switch {
+	case errors.Is(err, backuparchive.ErrCommitPending):
+		return restorePendingExit, fmt.Errorf("clean-restore-leftovers: %w", err)
+	case err != nil:
+		return 1, fmt.Errorf("clean-restore-leftovers: %w", err)
+	}
+	return 0, nil
 }
 
 func cleanStaleStagingDirs(cfgDir string) error {
@@ -705,43 +741,13 @@ func validateStagingPath(cfgDir, stagingPath string) (string, error) {
 	return abs, nil
 }
 
-func moveStagedToCfgDir(stagingDir, cfgDir string) (int, error) {
-	entries, err := os.ReadDir(stagingDir)
-	if err != nil {
-		return 0, fmt.Errorf("read staging: %w", err)
-	}
-	var rest []string
-	haveVault := false
-	for _, d := range entries {
-		if d.Name() == vaultFileName {
-			haveVault = true
-			continue
-		}
-		rest = append(rest, d.Name())
-	}
-	sort.Strings(rest)
-	moved := 0
-	for _, name := range rest {
-		src := filepath.Join(stagingDir, name)
-		dst := filepath.Join(cfgDir, name)
-		if err := os.Rename(src, dst); err != nil {
-			return moved, fmt.Errorf("move %s: %w", name, err)
-		}
-		moved++
-	}
-	if haveVault {
-		if err := os.Rename(
-			filepath.Join(stagingDir, vaultFileName),
-			filepath.Join(cfgDir, vaultFileName),
-		); err != nil {
-			return moved, fmt.Errorf("move vault.enc: %w", err)
-		}
-		moved++
-	}
-	return moved, nil
-}
-
 func openOrMint(vaultPath string, passphrase []byte) (vault.Payload, error) {
+	root := filepath.Dir(vaultPath)
+	if pending, err := backuparchive.PendingCommit(root); err != nil {
+		return vault.Payload{}, err
+	} else if pending != nil {
+		return vault.Payload{}, fmt.Errorf("%w: %s", errRestorePending, pending.Message(root))
+	}
 	_, statErr := os.Stat(vaultPath)
 	switch {
 	case statErr == nil:

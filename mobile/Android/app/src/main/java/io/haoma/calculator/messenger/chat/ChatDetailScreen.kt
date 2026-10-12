@@ -43,6 +43,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,7 +76,6 @@ fun ChatDetailScreen(
     val typography = remember(health.chatFontScale) { HaomaTypography(health.chatFontScale) }
     val cache by remember(chatId) { store.timelineFor(chatId) }.collectAsStateWithLifecycle()
     val chats by store.chats.collectAsStateWithLifecycle()
-    val presenceMap by store.presence.collectAsStateWithLifecycle()
     val activeCalls by store.activeCalls.collectAsStateWithLifecycle()
     val recordAudio by store.recordAudioGranted.collectAsStateWithLifecycle()
     val cameraGranted by store.cameraGranted.collectAsStateWithLifecycle()
@@ -83,12 +83,21 @@ fun ChatDetailScreen(
     val composeDraft = drafts[chatId] ?: ""
     val replyTargets by store.replyTargets.collectAsStateWithLifecycle()
     val replyTarget = replyTargets[chatId]
+    val pendingTexts by store.pendingTexts.collectAsStateWithLifecycle()
     val pendingAnchors by store.pendingAnchors.collectAsStateWithLifecycle()
     val anchor = pendingAnchors[chatId]
     val chatSearch by store.chatSearch.collectAsStateWithLifecycle()
     val searchState = chatSearch?.takeIf { it.chatId == chatId }
     val chat = chats.firstOrNull { it.chatId == chatId }
-    val presence = chat?.peerId?.let { presenceMap[it] }
+    
+    
+    val systemLine = chatSystemLine(chat)
+    val pendingHere = pendingTexts[chatId].orEmpty().filter { p ->
+        p.msgId.isEmpty() || cache.events.none { it.msgId == p.msgId }
+    }
+    
+    
+    val presence = chat?.let { chatPresence(it) }
     
     
     val callHere = activeCalls.values
@@ -266,12 +275,14 @@ fun ChatDetailScreen(
             }
         }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            if (cache.events.isEmpty()) {
-                EmptyChatHint(loading = cache.loading)
+            if (cache.events.isEmpty() && pendingHere.isEmpty()) {
+                EmptyChatHint(loading = cache.loading, systemLine = systemLine)
             } else {
                 MessageList(
                     chatId = chatId,
                     events = cache.events,
+                    pending = pendingHere,
+                    systemLine = systemLine,
                     reactionsByTarget = cache.reactionsByTarget,
                     anchor = anchor,
                     onAnchorConsumed = { seq -> store.consumeAnchor(chatId, seq) },
@@ -437,6 +448,10 @@ fun ChatDetailScreen(
                 }
                 actionTarget = null
             },
+            onRetryDownload = {
+                store.retryFailedFiles()
+                actionTarget = null
+            },
         )
     }
     reactPickerTarget?.let { target ->
@@ -533,6 +548,8 @@ private fun DeleteMessageDialog(
 private fun MessageList(
     chatId: String,
     events: List<TimelineEvent>,
+    pending: List<PendingText>,
+    systemLine: String?,
     reactionsByTarget: Map<String, Map<String, Reaction>>,
     anchor: AnchorState?,
     onAnchorConsumed: (Long) -> Unit,
@@ -551,8 +568,8 @@ private fun MessageList(
     }
     
     
-    LaunchedEffect(events.size) {
-        if (events.isNotEmpty() && anchor == null) state.scrollToItem(0)
+    LaunchedEffect(events.size, pending.size) {
+        if ((events.isNotEmpty() || pending.isNotEmpty()) && anchor == null) state.scrollToItem(0)
     }
     
     
@@ -571,7 +588,7 @@ private fun MessageList(
             scrolledSeq.value = a.seq
             
             
-            state.animateScrollToItem(idx)
+            state.animateScrollToItem(idx + pending.size)
             
             
             pulseEvents.emit(a.msgId)
@@ -604,6 +621,9 @@ private fun MessageList(
         ) {
             
             
+            items(items = pending.asReversed(), key = { "pending:${it.localId}" }) { p ->
+                PendingTextBubble(p)
+            }
             items(items = newestFirst, key = { rowKey(it) }) { ev ->
                 when (ev.kind) {
                     EventKind.TEXT, EventKind.FILE -> MessageBubble(
@@ -618,6 +638,10 @@ private fun MessageList(
                     )
                     else -> SystemBreadcrumb(event = ev)
                 }
+            }
+            
+            if (systemLine != null) {
+                item(key = "system-line") { ChatSystemLineRow(systemLine) }
             }
         }
         AnimatedVisibility(
@@ -667,16 +691,53 @@ private fun TimelineEvent.toFileActionTarget(): FileActionTarget {
     )
 }
 
+
 @Composable
-private fun EmptyChatHint(loading: Boolean) {
+private fun EmptyChatHint(loading: Boolean, systemLine: String?) {
     Box(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = if (loading) "Loading history…" else "No messages yet — say hi.",
+            text = when {
+                loading -> "Loading history…"
+                systemLine != null -> systemLine
+                else -> "No messages yet — say hi."
+            },
             color = ChatPalette.TextDim,
             fontSize = 14.sp,
         )
+    }
+}
+
+
+@Composable
+private fun ChatSystemLineRow(line: String) {
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = line,
+            color = ChatPalette.TextFaint,
+            fontFamily = FontFamily.Monospace,
+            fontSize = LocalHaomaTypography.current.breadcrumb,
+        )
+    }
+}
+
+
+@Composable
+private fun PendingTextBubble(p: PendingText) {
+    Column(horizontalAlignment = Alignment.End, modifier = Modifier.fillMaxWidth()) {
+        MessageBubble(event = p.asTimelineEvent())
+        if (p.isFailed) {
+            Text(
+                text = "Failed: ${p.failedReason}",
+                color = ChatPalette.Bad,
+                fontSize = LocalHaomaTypography.current.bubbleSmall,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+            )
+        }
     }
 }

@@ -7,8 +7,10 @@ import io.haoma.disguise.AppStateRepository
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 
 class UnlockManager(
@@ -19,6 +21,15 @@ class UnlockManager(
     
     
     private val passphraseDefaultSink: (Boolean) -> Unit = {},
+    
+    
+    private val restoredSink: () -> Unit = {},
+    
+    
+    private val restorePendingSink: () -> Unit = {},
+    
+    
+    private val stopDaemonsForRestore: suspend () -> Boolean = { stopServiceForRestore(app) },
 ) {
     sealed interface Outcome {
         data object Warmed : Outcome
@@ -31,6 +42,9 @@ class UnlockManager(
 
         
         data object WrongPassphrase : Outcome
+
+        
+        data class RestoreFailed(val message: String) : Outcome
     }
 
     private val inFlight = AtomicBoolean(false)
@@ -97,18 +111,63 @@ class UnlockManager(
         state.update(AppState.Locked.Hard)
     }
 
+    
     private suspend fun tryCommitAndSpawn(passphrase: ByteArray, stagingPath: String): Outcome {
-        val unsealed = try {
-            VaultHelper.archiveCommit(app, stagingPath, passphrase)
+        val attempt = try {
+            commitStoppingDaemons(
+                commit = { VaultHelper.archiveCommit(app, stagingPath, passphrase) },
+                stopDaemons = stopDaemonsForRestore,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
             
             
             Logger.w("unlock", "archive-commit failed: ${t.message}")
-            return Outcome.WrongPassphrase
+            restoredSink()
+            return Outcome.RestoreFailed(RESTORE_UNKNOWN)
         }
-        return finishUnseal(passphrase, unsealed)
+        val result = when (attempt) {
+            RestoreAttempt.StopFailed -> {
+                Logger.w("unlock", "restore not applied: the service did not stop")
+                return Outcome.RestoreFailed(RESTORE_NOT_APPLIED)
+            }
+            is RestoreAttempt.Done -> attempt.result
+        }
+        return when (result) {
+            is VaultHelper.CommitResult.Swapped -> {
+                restoredSink()
+                finishUnseal(passphrase, result.unsealed)
+            }
+            VaultHelper.CommitResult.SwappedNoBundle -> {
+                
+                Logger.w("unlock", "archive-commit swapped, but sent no bundle; unsealing the restored vault")
+                restoredSink()
+                tryUnsealAndSpawn(passphrase, isDefault = false)
+            }
+            VaultHelper.CommitResult.WrongPassphrase -> Outcome.WrongPassphrase
+            VaultHelper.CommitResult.NotApplied -> {
+                Logger.w("unlock", "archive-commit: not applied; see haoma-vault.log")
+                Outcome.RestoreFailed(RESTORE_NOT_APPLIED)
+            }
+            VaultHelper.CommitResult.StoreInUse -> {
+                Logger.w("unlock", "archive-commit: a daemon still has its store open after the stop; see haoma-vault.log")
+                Outcome.RestoreFailed(RESTORE_STORE_IN_USE)
+            }
+            VaultHelper.CommitResult.Pending -> {
+                restorePendingSink()
+                Outcome.RestoreFailed(RESTORE_PENDING)
+            }
+            VaultHelper.CommitResult.NotEmpty -> {
+                Logger.w("unlock", "archive-commit: refused, the device is not empty")
+                Outcome.RestoreFailed(RESTORE_NOT_EMPTY)
+            }
+            VaultHelper.CommitResult.Broken -> {
+                Logger.e("unlock", "archive-commit: failed part way; see haoma-vault.log")
+                restoredSink()
+                Outcome.RestoreFailed(RESTORE_BROKEN)
+            }
+        }
     }
 
     private suspend fun tryUnsealAndSpawn(passphrase: ByteArray, isDefault: Boolean): Outcome {
@@ -116,6 +175,11 @@ class UnlockManager(
             VaultHelper.unseal(app, passphrase)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: VaultHelper.RestorePendingException) {
+            
+            
+            restorePendingSink()
+            return Outcome.RestoreFailed(RESTORE_PENDING)
         } catch (t: Throwable) {
             
             
@@ -161,6 +225,31 @@ class UnlockManager(
 
     companion object {
         private const val SPAWN_TIMEOUT_MS = 35_000L
+
+        
+        private const val RESTORE_STOP_TIMEOUT_MS = 8_000L
+
+        
+        private const val RESTORE_WRITEBACK_SETTLE_MS = 250L
+
+        const val RESTORE_NOT_APPLIED = "The restore was not applied. This device is unchanged."
+        const val RESTORE_BROKEN = VaultHelper.RESTORE_DID_NOT_FINISH
+        const val RESTORE_UNKNOWN =
+            "The restore did not finish. This device may be part way through it."
+        const val RESTORE_STORE_IN_USE =
+            "The restore was not applied: the messenger is still running. This device is unchanged."
+        const val RESTORE_PENDING = VaultHelper.RESTORE_DID_NOT_FINISH
+        const val RESTORE_NOT_EMPTY = VaultHelper.RESTORE_NOT_EMPTY
+
+        
+        internal suspend fun stopServiceForRestore(app: Context): Boolean {
+            if (!HaomaCoreService.running) return true
+            Logger.i("unlock", "restore: stopping the service")
+            val signal = HaomaCoreService.stopAndAwait(app)
+            withTimeoutOrNull(RESTORE_STOP_TIMEOUT_MS) { signal.await() } ?: return false
+            delay(RESTORE_WRITEBACK_SETTLE_MS)
+            return true
+        }
     }
 }
 
@@ -176,4 +265,25 @@ private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
         diff = diff or (ca xor cb)
     }
     return diff == 0
+}
+
+
+internal sealed interface RestoreAttempt {
+    
+    data class Done(val result: VaultHelper.CommitResult) : RestoreAttempt
+
+    
+    data object StopFailed : RestoreAttempt
+}
+
+
+internal suspend fun commitStoppingDaemons(
+    commit: () -> VaultHelper.CommitResult,
+    stopDaemons: suspend () -> Boolean,
+): RestoreAttempt {
+    val first = commit()
+    if (first != VaultHelper.CommitResult.StoreInUse) return RestoreAttempt.Done(first)
+    Logger.i("unlock", "restore: a store is open; stopping the service and committing again")
+    if (!stopDaemons()) return RestoreAttempt.StopFailed
+    return RestoreAttempt.Done(commit())
 }

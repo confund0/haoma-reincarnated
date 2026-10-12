@@ -8,49 +8,37 @@ This is a beta cut for an inner-circle test group. The crypto and
 transport are well-trodden patterns (Signal Protocol via libsignal,
 Tor onion routing) but the application around them has not faced any
 external audit. Issues + Discussions on this repo are intentionally
-disabled during beta — feedback flows through the tester channel.
+disabled during beta.
 
 Do not use this for high-stakes adversaries yet.
 
 ## What it is
 
-- 1:1 messages, end-to-end encrypted (Signal Protocol Double Ratchet),
-  sent over Tor onion services. No server in the middle.
-- One onion address per pairing. No shared global address. Each
-  pairing also gets its own Tor circuits. `/rotate-tor` moves one
-  chat to a new onion address.
-- Pairing with 7 EFF-short words, said out-of-band. The phone can
-  scan the words as a QR code; the inviter's phone or desktop shows it.
-- In a chat: replies, edits and deletes of your own messages (last
-  24 hours), reactions, read receipts (can be turned off per chat),
-  disappearing messages (a timer per chat), search, presence
-  (available / away / busy).
-- Files up to 10 MB, with an optional caption. Images are sent
-  compressed by default, and compressing drops the EXIF data;
-  "original" sends the file as it is.
-- Calls: voice calls on Android and on the Linux desktop. Video calls
-  on Android. The desktop can receive video (shown with `ffplay`),
-  but it has no camera support yet.
-- Backup and restore: one archive file with all data of a device.
-  Restore needs the passphrase of the device that made the backup.
-- Encrypted store at rest. Argon2id key derivation; AEAD block-based
-  encryption.
-- Android app with a calculator disguise. A reveal gesture on the
-  keypad strips the disguise and shows the messenger. Lock levels
-  (soft / safe / hard), a PIN, an idle timeout, and notifications
-  that can hide the sender and the text.
-- Tor is built into the Android APK — no Termux, no Orbot, no system
-  tor needed on the phone.
+- 1:1 chats, end-to-end encrypted (Signal Protocol), over Tor onion
+  services. No server in the middle.
+- One onion address and its own Tor circuits per contact.
+- Pairing with 7 words said out of band, or as a QR code.
+- Linked devices: one more phone or desktop on the same identity.
+  Messages, edits, reactions, read state, files and the calls you
+  made show on both; an incoming call rings on both.
+- In a chat: replies, edits and deletes (24 hours), reactions, read
+  receipts, disappearing messages, search, presence.
+- Files up to 10 MB. Images are compressed without EXIF data unless
+  sent as "original".
+- Voice calls on Android and the Linux desktop. Video calls on
+  Android; the desktop shows video but sends none.
+- Backup and restore of a whole device in one archive file.
+- Encrypted store at rest (Argon2id, AEAD).
+- Android: Tor built in, a calculator disguise, lock levels, PIN,
+  idle timeout, notifications that hide the sender and the text.
+- Desktop: `haoma-text`, a terminal client for Linux. A desktop app
+  with windows, for Linux, Windows and macOS, is being built.
 
 ## What it is not
 
-- A phone-number-based messenger. There are no accounts, no servers,
-  no metadata you don't carry.
+- An account. No phone number, no servers.
 - Audited. See **Status** above.
 - A group messenger. Chats are 1:1 only.
-- A drop-in Signal/WhatsApp replacement. The threat model is closer
-  to Briar's: real-world adversaries you can name + identity hygiene
-  you can practice.
 
 ## Install
 
@@ -100,12 +88,12 @@ build from source (below).
 1. Download `haoma-vX.Y.Z-beta-linux-amd64.tar.gz` from the GH release page.
 2. Verify (`docs/HOWTO-VERIFY.md`).
 3. Untar, drop the binaries somewhere in `$PATH`. The tarball has
-   `haoma-text` (the terminal UI), `haoma` and `haomad` (the two daemons),
-   `haoma-vault`, and the call binaries `haoma-mic`, `haoma-spk`,
-   `haoma-cam`, `haoma-vid`.
-4. A system `tor` must be running: SOCKS on `127.0.0.1:9050`, control
-   port on `127.0.0.1:9051`. Cookie auth works as is; for a control
-   password use Settings → Tor or `/set-tor-password`.
+   `haoma-text` (the terminal client), `haoma` and `haomad` (the two
+   daemons), `haoma-vault`, and the call binaries `haoma-mic`,
+   `haoma-spk`, `haoma-cam`, `haoma-vid`.
+4. Install `tor`. `haomad` starts a `tor` of its own; no system tor
+   service is needed. To use a running system tor instead, start
+   `haoma-text --system-tor`.
 5. Run `haoma-text`. On first run it asks for a new master passphrase.
    Empty = the insecure default; change it with `/change-pass`.
 
@@ -127,10 +115,11 @@ make help             # all targets
 The Linux build needs Go, CMake, pkg-config and the development
 packages of libopus, libsodium, libvpx and libpipewire-0.3.
 
-The Android build needs the alpsec bubble + Debian chroot OR a glibc
-host with NDK r29 at `~/sdk/android/ndk/r29`. `make android-streams`,
-`make tor-rebuild` and `make streams-deps` run only in the alpsec
-bubble. See `mobile/tor-build/README.md` for the Tor build recipe and
+The Android build needs a glibc Linux host (tested on Debian) with
+NDK r29 at `~/sdk/android/ndk/r29`. Today `make android-streams`,
+`make tor-rebuild` and `make streams-deps` stop unless the maintainer's
+build sandbox is installed; running them on a plain glibc host is open
+work. See `mobile/tor-build/README.md` for the Tor build recipe and
 `mobile/streams-build/README.md` for the call libraries.
 
 ## License

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/dgraph-io/badger/v4"
@@ -276,24 +278,24 @@ func TestStores_OPKRefill_NoopAtFullPool(t *testing.T) {
 	}
 }
 
-func TestStores_OPKRefill_AvailableOPKReturnsValidPostRefill(t *testing.T) {
+func TestStores_OPKRefill_DispenseOPKReturnsValidPostRefill(t *testing.T) {
 	s := freshStoresN(t, LowWaterOPK+1)
 	ctx := context.Background()
 
 	_ = s.RemovePreKey(ctx, 1)
 	_ = s.RemovePreKey(ctx, 2)
 
-	id, pub, err := s.AvailableOPK()
+	id, pub, err := s.DispenseOPK()
 	if err != nil {
-		t.Fatalf("AvailableOPK: %v", err)
+		t.Fatalf("DispenseOPK: %v", err)
 	}
 
 	if id != 3 {
-		t.Errorf("AvailableOPK id = %d, want 3", id)
+		t.Errorf("DispenseOPK id = %d, want 3", id)
 	}
 
 	if len(pub) != 33 {
-		t.Errorf("AvailableOPK pub len = %d, want 33", len(pub))
+		t.Errorf("DispenseOPK pub len = %d, want 33", len(pub))
 	}
 }
 
@@ -440,5 +442,200 @@ func TestStores_GetSubDeviceSessions_EmptyUntilMultiDevice(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Errorf("want empty; got %v", ids)
+	}
+}
+
+func TestStores_DispenseOPK_NeverHandsTheSameKeyTwice(t *testing.T) {
+	s := freshStoresN(t, LowWaterOPK+5)
+
+	first, _, err := s.DispenseOPK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.DispenseOPK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("both invites carry opk %d — the second pairing can never complete", first)
+	}
+
+	if _, err := s.LoadPreKey(context.Background(), first); err != nil {
+		t.Fatalf("dispensed opk %d is not loadable: %v", first, err)
+	}
+}
+
+func TestStores_DispenseOPK_DoesNotRecycleUnredeemedKeys(t *testing.T) {
+	s := freshStoresN(t, LowWaterOPK+5)
+	seen := map[uint32]bool{}
+	for i := 0; i < 5; i++ {
+		id, _, err := s.DispenseOPK()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[id] {
+			t.Fatalf("opk %d was dispensed twice", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestStores_DispenseOPK_ConsumeClearsTheMarker(t *testing.T) {
+	s := freshStoresN(t, LowWaterOPK+5)
+	id, _, err := s.DispenseOPK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemovePreKey(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.Get(opkDispensedKey(id)); err == nil {
+		t.Errorf("handout marker for consumed opk %d survived", id)
+	}
+}
+
+func TestStores_DispenseOPK_RefillTracksOfferableKeys(t *testing.T) {
+	s := freshStoresN(t, LowWaterOPK+2)
+	for i := 0; i < LowWaterOPK+2; i++ {
+		if _, _, err := s.DispenseOPK(); err != nil {
+			t.Fatalf("dispense %d failed — the pool ran dry despite refill: %v", i, err)
+		}
+	}
+}
+
+func missCaptureStores(t *testing.T, n int) (*Stores, *bytes.Buffer) {
+	t.Helper()
+	s := freshStoresN(t, n)
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return s, &buf
+}
+
+func missField(t *testing.T, out, key string) string {
+	t.Helper()
+	var hits []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, `msg="one-time prekey miss"`) {
+			hits = append(hits, line)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("want exactly one prekey-miss warning, got %d — the classification cannot be read:\n%s", len(hits), out)
+	}
+	for _, field := range strings.Fields(hits[0]) {
+		if v, ok := strings.CutPrefix(field, key+"="); ok {
+			return v
+		}
+	}
+	t.Fatalf("prekey-miss warning states no %s:\n%s", key, hits[0])
+	return ""
+}
+
+func adoptOnto(t *testing.T, s *Stores) {
+	t.Helper()
+	source, err := Bootstrap(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privArr := source.IdentityKeyPair.PrivateKey().Serialize()
+	if err := AdoptIdentity(s.store, s.state, source.IdentityKeyPair.PublicKey().Serialize(), privArr[:]); err != nil {
+		t.Fatalf("AdoptIdentity: %v", err)
+	}
+}
+
+func TestStores_OPKMiss_AdoptedPoolIsNotReportedAsSpent(t *testing.T) {
+	s, buf := missCaptureStores(t, 4)
+	adoptOnto(t, s)
+
+	if _, err := s.LoadPreKey(context.Background(), 1); err == nil {
+		t.Fatal("LoadPreKey(1) succeeded after adoption — the pre-link pool was not deleted, so this test proves nothing")
+	}
+
+	if got := missField(t, buf.String(), "cause"); got != opkMissCauseAdoption {
+		t.Fatalf("cause = %q, want %q — an id from a pool adoption deleted is being filed as a spent key", got, opkMissCauseAdoption)
+	}
+	if got := missField(t, buf.String(), "erased_through"); got != "4" {
+		t.Fatalf("erased_through = %q, want 4 — the line does not say where the deleted pool ended", got)
+	}
+}
+
+func TestStores_OPKMiss_SpentKeyOnANeverLinkedDevice(t *testing.T) {
+	s, buf := missCaptureStores(t, 4)
+	ctx := context.Background()
+
+	if err := s.RemovePreKey(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadPreKey(ctx, 1); err == nil {
+		t.Fatal("LoadPreKey(1) succeeded after RemovePreKey — nothing was consumed")
+	}
+
+	if got := missField(t, buf.String(), "cause"); got != opkMissCauseSpent {
+		t.Fatalf("cause = %q, want %q — a consumed key on a device that never linked is being blamed on adoption", got, opkMissCauseSpent)
+	}
+	if got := missField(t, buf.String(), "erased_through"); got != "0" {
+		t.Fatalf("erased_through = %q, want 0 — this device has never adopted an identity", got)
+	}
+}
+
+func TestStores_OPKMiss_SpentKeyFromThePoolAdoptionMinted(t *testing.T) {
+	s, buf := missCaptureStores(t, 4)
+	adoptOnto(t, s)
+	ctx := context.Background()
+
+	var newest uint32
+	for _, opk := range s.state.OneTimePreKeys {
+		if id := opk.ID(); !id.IsEmpty && (newest == 0 || id.Value < newest) {
+			newest = id.Value
+		}
+	}
+	if newest <= 4 {
+		t.Fatalf("the pool adoption minted starts at %d, want an id above the deleted pool's 4", newest)
+	}
+	if err := s.RemovePreKey(ctx, newest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadPreKey(ctx, newest); err == nil {
+		t.Fatalf("LoadPreKey(%d) succeeded after RemovePreKey", newest)
+	}
+
+	if got := missField(t, buf.String(), "cause"); got != opkMissCauseSpent {
+		t.Fatalf("cause = %q, want %q — a key minted AFTER adoption and consumed normally is being blamed on adoption", got, opkMissCauseSpent)
+	}
+}
+
+func TestStores_OPKMiss_IdAboveThePoolWasNeverWritten(t *testing.T) {
+	s, buf := missCaptureStores(t, 4)
+	adoptOnto(t, s)
+
+	if _, err := s.LoadPreKey(context.Background(), 9999); err == nil {
+		t.Fatal("LoadPreKey(9999) succeeded")
+	}
+	if got := missField(t, buf.String(), "cause"); got != opkMissCauseNeverWritten {
+		t.Fatalf("cause = %q, want %q", got, opkMissCauseNeverWritten)
+	}
+}
+
+func TestStores_OPKMiss_CorruptBoundaryNamesNoCause(t *testing.T) {
+	s, buf := missCaptureStores(t, 4)
+	if err := s.store.Put([]byte(opkErasedThroughKey), []byte{9}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.LoadPreKey(context.Background(), 9999); err == nil {
+		t.Fatal("LoadPreKey(9999) succeeded")
+	}
+
+	out := buf.String()
+	if got := missField(t, out, "cause"); got != opkMissCauseUnknown {
+		t.Fatalf("cause = %q, want %q — a corrupt boundary row was read as a fact", got, opkMissCauseUnknown)
+	}
+	if got := missField(t, out, "pool"); got != "4" {
+		t.Fatalf("pool = %q, want 4 — a corrupt boundary row erased the numbers that were readable", got)
+	}
+	if !strings.Contains(out, "boundary_err=") {
+		t.Fatalf("the line does not say the boundary read failed:\n%s", out)
 	}
 }

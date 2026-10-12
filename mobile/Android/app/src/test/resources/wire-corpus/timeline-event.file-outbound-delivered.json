@@ -1,0 +1,32 @@
+{
+  "type": "msg.timeline-event",
+  "payload": {
+    "event": {
+      "recv_seq": 4198,
+      "chat_id": "7f3c1a94e60b45d28c1f0ab35d92e471",
+      "direction": "out",
+      "kind": "file",
+      "display_ts": 1754903300,
+      "sender_ts": 1754903300,
+      "recv_ts": 1754903300,
+      "sender_seq": 615,
+      "envelope_id": "6b19d0f437ac82e5019b6d3c48f72a10",
+      "envelope_ids": [
+        "6b19d0f437ac82e5019b6d3c48f72a10"
+      ],
+      "msg_id": "7d40b92e1c6a4358af02e75b9c163d84",
+      "body": {
+        "token": "4c8e7a01b53d69f2807a1e4c93b508d7",
+        "url_path": "/files/4c8e7a01b53d69f2807a1e4c93b508d7",
+        "name": "harbour-timetable.pdf",
+        "size": 184320,
+        "mime": "application/pdf",
+        "sha256_ciphertext": "9f2b70dc4a18e6350bc9d27f4a613e85c0d78b192f6a4e35c81d0b7a962e4f13",
+        "state": "ready",
+        "caption": "the winter timetable"
+      },
+      "delivery_state": "delivered",
+      "expire_seconds": 604800
+    }
+  }
+}

@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,12 +36,14 @@ var slashCommands = []string{
 	"/change-pass", "/change-pin", "/chats", "/close", "/contacts",
 	"/decline", "/delete", "/edit", "/files", "/fsbrowse",
 	"/h", "/hangup", "/help", "/inspect",
-	"/invite-dht", "/invite-file", "/invite-paste", "/invite-tor",
+	"/invite-dht", "/invite-file", "/invite-paste", "/invite-tor", "/invites",
+	"/link-cancel", "/link-device", "/link-join", "/linked-devices",
 	"/msg", "/new-circuit", "/nick", "/panic", "/peers",
-	"/q", "/quit", "/react", "/reject", "/renew-circuit", "/retry",
+	"/q", "/quit", "/re-pair", "/react", "/reject", "/renew-circuit", "/retry",
 	"/rotate-tor", "/search", "/send-file",
 	"/set-idle-action", "/set-idle-timeout", "/set-pin-validity", "/set-tor-password",
-	"/settings", "/status", "/tor-info", "/verify", "/vidcall",
+	"/settings", "/status", "/sync", "/tor-info", "/verify", "/vidcall",
+	"/wipe-device",
 }
 
 type winScope int
@@ -62,6 +65,9 @@ var statusOnlyCommands = map[string]bool{
 	"/invite-paste": true, "/invite-file": true, "/invite-dht": true, "/invite-tor": true,
 	"/accept-paste": true, "/accept-file": true, "/accept-dht": true, "/accept-tor": true,
 	"/cancel-dht": true, "/cancel-tor": true,
+	"/link-device": true, "/link-join": true, "/link-cancel": true, "/linked-devices": true, "/sync": true,
+
+	"/re-pair": true, "/invites": true,
 	"/set-idle-action": true, "/set-idle-timeout": true, "/set-pin-validity": true, "/set-tor-password": true,
 	"/change-pass": true, "/change-pin": true, "/backup": true,
 }
@@ -188,10 +194,7 @@ func (a *App) handleInput(_ tcell.Key) {
 			a.winMu.Unlock()
 			if !haomaUp {
 				a.log("[red]haoma unreachable[white] — message not sent")
-				return
-			}
-			if a.peerRetiredAt(active) != 0 {
-				a.log("[red]peer retired[white] — message not sent")
+				a.failTextInWindow(active, text, "haoma unreachable")
 				return
 			}
 			a.doSendText(active, text)
@@ -277,6 +280,28 @@ func (a *App) handleInput(_ tcell.Key) {
 		a.cmdAcceptTor(rest)
 	case "/cancel-tor":
 		a.cmdCancelTor(rest)
+	case "/link-device":
+		a.cmdLinkDevice(rest)
+	case "/link-join":
+
+		if a.VaultCtl == nil {
+			a.refuseWithoutVault("/link-join")
+			return
+		}
+		a.openLinkedDevicesPage(func() { a.beginLinkFlowWithWords(flowJoin, rest) })
+	case "/link-cancel":
+		a.cmdLinkCancel(rest)
+	case "/linked-devices":
+		a.cmdLinkedDevices()
+	case "/wipe-device":
+
+		a.cmdWipeDevice()
+	case "/sync":
+		a.cmdSync(rest)
+	case "/re-pair":
+		a.cmdRepair(rest)
+	case "/invites":
+		a.cmdInvites()
 	case "/msg":
 		a.cmdMsg(rest)
 	case "/send-file":
@@ -335,6 +360,16 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/invite-tor[white]                            — spin ephemeral onion; emit 7 EFF-short words (uses /nick)")
 	a.log("  [yellow]/accept-tor W1 W2 W3 W4 W5 W6 W7[white]      — accept an onion invite (uses /nick)")
 	a.log("  [yellow]/cancel-tor <handle-id>[white]               — tear down an in-flight onion invite")
+	a.log("my own devices (linking — this is NOT how you connect to another person):")
+	a.log("  " + StyleHelpCommand + "/link-device" + StyleHelpBody + "                           — offer to add one of your own devices; hands over your identity key")
+	a.log("  " + StyleHelpCommand + "/link-join W1 W2 W3 W4 W5 W6 W7" + StyleHelpBody + "       — run on a BRAND-NEW device: take on the identity of the device that offered")
+	a.log("  " + StyleHelpCommand + "/link-cancel <handle-id>" + StyleHelpBody + "              — withdraw an offer that has not been joined yet (no arg = the last one)")
+	a.log("  " + StyleHelpCommand + "/linked-devices" + StyleHelpBody + "                       — open Settings, Linked devices: the set and every action on it")
+
+	a.log("  " + StyleHelpCommand + "/sync <all>" + StyleHelpBody + "                            — ask your other devices for anything this one missed")
+	a.log("reaching a contact this device inherited but has never paired with:")
+	a.log("  " + StyleHelpCommand + "/re-pair <contact>" + StyleHelpBody + "                     — offer that person a pairing; it travels through a device of yours that can still reach them")
+	a.log("  " + StyleHelpCommand + "/invites" + StyleHelpBody + "                              — every open invitation, both directions; Enter accepts one offered to you")
 	a.log("pairing (DHT rendezvous — fallback, leaks IP to BEP-44 nodes):")
 	a.log("  [yellow]/invite-dht[white]                            — emit 3+4 word invite; share OOB (uses /nick)")
 	a.log("  [yellow]/accept-dht A B C  D E F G[white]            — accept a friend's 3+4 word invite (uses /nick)")
@@ -355,10 +390,11 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/close[white]                                — close active chat window (history preserved)")
 	a.log("  [yellow]/edit[white]                                 — edit one of your own messages (last 24h)")
 	a.log("  [yellow]/delete[white]                               — delete one of your own messages for everyone (last 24h)")
-	a.log("  [yellow]/files[white], chat-window [yellow]f[white]  — list file attachments in this chat (read-only; row actions land later)")
+	a.log("  [yellow]/files[white], chat-window [yellow]f[white]  — list file attachments in this chat; Enter on a row opens a save dialog")
 	a.log("  [yellow]/retry[white]                                — re-kick all stuck file downloads (failed_transient)")
 	a.log("  [yellow]/react[white]                                — react to any message in this chat (empty emoji removes)")
-	a.log("  [yellow]/call[white]                                — start a voice call with the active chat's peer (1a: signalling only — no audio yet)")
+	a.log("  [yellow]/search <text>[white]                        — search this chat's history (in a chat window)")
+	a.log("  [yellow]/call[white]                                — start a voice call with the active chat's peer")
 	a.log("  [yellow]/vidcall[white]                             — dev: voice+video call (needs $HAOMA_DEV_Y4M_CLIP or <dataDir>/test-clip.y4m on the sender; remote vid lands at <dataDir>/vid-<callid>.yuv)")
 	a.log("  [yellow]/answer[white]                              — accept the incoming call (keyboard alternative to the ringer's [Accept] button)")
 	a.log("  [yellow]/decline, /reject[white]                    — decline the incoming call")
@@ -378,9 +414,10 @@ func (a *App) showHelp() {
 	a.log("  [yellow]/set-idle-action <soft-lock|safe-lock>[white] — pick what fires when idle elapses")
 	a.log("  [yellow]/set-idle-timeout <seconds>[white]           — how long idle before the lock fires")
 	a.log("  [yellow]/set-pin-validity <seconds>[white]           — soft-lock escalation window (0 = no escalation)")
-	a.log("  [yellow]/set-tor-password <password>[white]          — tor control-port password (haomad restart required)")
+	a.log("  [yellow]/set-tor-password <password>[white]          — the system tor's control-port password; used with --system-tor only")
 	a.log("  [yellow]/backup [path][white]                         — stop daemons + write full-cfg-dir tar (default: ~/haoma-backup-<ts>.tar); session exits, restart to continue")
 	a.log("  [yellow]/settings[white]                              — open the settings dialog (one canonical home for prefs)")
+	a.log("  [yellow]/wipe-device[white]                           — open the block that erases this device; asks for the unlock PIN and the word ERASE")
 	a.log("navigation: Esc+1 status  Esc+2 contacts  Esc+3 chats  Esc+N chat")
 	a.log("focus: [yellow]F6[white] toggles between the input bar and the active window's main pane (table / list / scroll view)")
 	a.log("input: each window keeps its own draft; switching windows preserves what you typed without leaking it into another pane")
@@ -423,6 +460,7 @@ func (a *App) cmdVerify(arg string) {
 func (a *App) cmdContacts() {
 	a.switchTo("contacts")
 	a.sendRequest(ipc.FrameListPeers, nil, a.handlePeersListed)
+	a.sendRequest(ipc.FrameListInheritedContacts, nil, a.handleInheritedContactsListed)
 }
 
 func (a *App) cmdChats() {
@@ -497,24 +535,68 @@ func (a *App) doSendText(peerID, text string) {
 
 	if a.peerRetiredAt(peerID) != 0 {
 		a.log("[red]peer retired[white] — message not sent")
+		a.failTextInWindow(peerID, text, "peer retired")
 		return
 	}
-	a.sendRequest(ipc.FrameSendText, ipc.SendTextRequest{PeerID: peerID, Text: text}, func(f ipc.Frame) {
+
+	cp := a.chatPageForPeer(peerID)
+	corrID := a.nextCorrID()
+	if cp != nil {
+		cp.addPending(corrID, text, time.Now().Unix())
+	}
+	sent := a.sendRequestAs(corrID, ipc.FrameSendText, ipc.SendTextRequest{PeerID: peerID, Text: text}, func(f ipc.Frame) {
 		if f.Type == ipc.FrameError {
 			a.renderError(f)
+			if cp != nil {
+				var ep ipc.ErrorPayload
+				_ = json.Unmarshal(f.Payload, &ep)
+				a.app.QueueUpdateDraw(func() { cp.pendingFailed(f.ID, ep.Message) })
+			}
 			return
 		}
 		if f.Type != ipc.FrameTextSent {
 			a.log("[red]/msg[white] unexpected response: %s", f.Type)
+			if cp != nil {
+				a.app.QueueUpdateDraw(func() { cp.pendingFailed(f.ID, "unexpected answer "+string(f.Type)) })
+			}
 			return
 		}
 		var p ipc.SendTextResponse
 		if err := json.Unmarshal(f.Payload, &p); err != nil {
 			a.log("[red]/msg[white] decode: %v", err)
-			return
 		}
-		_ = p
+
+		if cp != nil {
+			a.app.QueueUpdateDraw(func() { cp.pendingSent(f.ID, p.MsgID) })
+		}
 	})
+	if !sent && cp != nil {
+		cp.pendingFailed(corrID, "the request could not be built")
+	}
+}
+
+func (a *App) failTextInWindow(peerID, text, reason string) {
+	cp := a.chatPageForPeer(peerID)
+	if cp == nil {
+		return
+	}
+	id := a.nextCorrID()
+	cp.addPending(id, text, time.Now().Unix())
+	cp.pendingFailed(id, reason)
+}
+
+func (a *App) chatPageForPeer(peerID string) *chatPage {
+	a.winMu.Lock()
+	defer a.winMu.Unlock()
+	for _, cp := range a.chatPages {
+		if cp.peerID == peerID {
+			return cp
+		}
+	}
+	if p := a.peerByIDLocked(peerID); p != nil && p.ChatID != "" {
+		return a.chatPages[p.ChatID]
+	}
+	return nil
 }
 
 func splitPeerArg(arg string) (peerID, text string, ok bool) {
@@ -1129,7 +1211,7 @@ func (a *App) renderInviteQR(payload string) {
 		b.WriteString("[-:-]")
 		fmt.Fprintf(a.statusView, "%s\n", b.String())
 	}
-	a.statusView.ScrollToEnd()
+	scrollStatusToEnd(a.statusView)
 }
 
 func (a *App) cmdAcceptTor(arg string) {
@@ -1152,11 +1234,34 @@ func (a *App) cmdAcceptTor(arg string) {
 		a.log("[yellow]heads-up:[white] your nick is still '[yellow]%s[white]' — set yours via [yellow]/nick <name>[white] before pairing for real", nick)
 	}
 	a.log("accepting onion invite (%d words)…", len(words))
-	a.log("[gray]deriving address + dialing onion via Tor (typically 5–30s — circuit setup) …[white]")
+	a.log(StylePairJoinDim+"deriving address + dialing onion via Tor. %s The countdown is in the bar at the foot of the screen."+StylePairJoinBody, joinWaitStartLine())
+	wait := a.startPairJoinWait()
 	a.sendRequest(ipc.FramePairOnionAccept, ipc.PairOnionAcceptRequest{
 		Words: words,
 	}, func(f ipc.Frame) {
+		a.endPairJoinWait(wait)
 		if f.Type == ipc.FrameError {
+			var p ipc.ErrorPayload
+			_ = json.Unmarshal(f.Payload, &p)
+			switch line, _, ok := joinFailureLine(p.Code); {
+			case ok:
+
+				reuse := p.Code != ipc.ReasonJoinInvitationSpent
+				slog.Info("pairing: join refused", slog.String("reason", p.Code), slog.Bool("words_kept", reuse))
+				style := StylePairJoinBad
+				if ipc.JoinDialFailed(p.Code) {
+					style = StyleTorSlow
+				}
+				a.log(style+"%s"+StylePairJoinBody, line)
+				if reuse {
+					a.keepPairJoinWords(words)
+				}
+				return
+			case p.Code == ipc.ReasonNoAnswer:
+
+				a.log(StylePairJoinBad+"%s"+StylePairJoinBody, pairJoinNoAnswerLine)
+				return
+			}
 			a.renderError(f)
 			return
 		}

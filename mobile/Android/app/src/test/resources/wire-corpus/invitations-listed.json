@@ -1,0 +1,30 @@
+{
+  "type": "invitations_listed",
+  "id": "c-21",
+  "payload": {
+    "invitations": [
+      {
+        "msg_id": "4a9d2e61b07c4f35a8e1d3c7b62f9054",
+        "label": "Mara from the ferry",
+        "direction": "in",
+        "expires_at": 1755420000,
+        "state": "live"
+      },
+      {
+        "msg_id": "e51b07c93a2d4f86b0c7d1e4a93f5268",
+        "label": "Toma at the boatyard",
+        "direction": "out",
+        "expires_at": 1755508620,
+        "state": "live",
+        "fingerprint": "05c1e84f27b30a95d6e1483fbc70a2d59e63817f04ab52c9d381e7f6a04b3c95e2"
+      },
+      {
+        "msg_id": "b83f16d0c95e4a27a1d6e08f3c724b91",
+        "label": "Mara from the ferry",
+        "direction": "in",
+        "expires_at": 1754990000,
+        "state": "superseded"
+      }
+    ]
+  }
+}

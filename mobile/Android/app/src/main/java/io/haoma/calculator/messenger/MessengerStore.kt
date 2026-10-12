@@ -6,6 +6,7 @@ import io.haoma.calculator.core.DisguiseStore
 import io.haoma.calculator.core.IdlePolicy
 import io.haoma.calculator.core.VaultSession
 import io.haoma.calculator.core.computeFingerprints
+import io.haoma.calculator.core.ipc.Frame
 import io.haoma.calculator.core.ipc.IpcClient
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.calls.video.CameraSource
@@ -20,9 +21,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -32,7 +36,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -47,6 +50,25 @@ class MessengerStore(
     
     
     internal val policyUpdater: (IdlePolicy) -> Unit = {},
+    
+    
+    internal val frameSender: ((Frame) -> Boolean)? = null,
+    
+    
+    internal val requestSender: (suspend (String, org.json.JSONObject?) -> Frame)? = null,
+    
+    
+    internal val timedRequestSender:
+        (suspend (String, org.json.JSONObject?, kotlin.time.Duration) -> Frame)? = null,
+    
+    
+    internal val deviceLinkTimings: DeviceLinkTimings = DeviceLinkTimings(),
+    
+    
+    internal val destroyTimings: DestroyTimings = DestroyTimings(),
+    
+    
+    internal val inheritedPairingTimings: InheritedPairingTimings = InheritedPairingTimings(),
     
     
     internal val unlockKeysStore: io.haoma.calculator.core.UnlockKeysStore? = null,
@@ -65,8 +87,9 @@ class MessengerStore(
     internal val _chats = MutableStateFlow<List<ChatEntry>>(emptyList())
     val chats: StateFlow<List<ChatEntry>> = _chats.asStateFlow()
 
-    internal val _presence = MutableStateFlow<Map<String, String>>(emptyMap())
-    val presence: StateFlow<Map<String, String>> = _presence.asStateFlow()
+    
+    internal val _presence = MutableStateFlow<Map<String, PresenceView>>(emptyMap())
+    val presence: StateFlow<Map<String, PresenceView>> = _presence.asStateFlow()
 
     internal val _health = MutableStateFlow(SystemHealth.INITIAL)
     val health: StateFlow<SystemHealth> = _health.asStateFlow()
@@ -93,11 +116,23 @@ class MessengerStore(
     internal val _noticeSnooze = MutableStateFlow<Map<String, NoticeSnoozeEntry>>(emptyMap())
 
     
+    internal val _noticeDestroyAttempts = MutableStateFlow<DestroyAttemptsSeenPush?>(null)
+
+    
+    internal val _noticeSaysPassphraseIsDefault = MutableStateFlow(true)
+
+    
     val notices: StateFlow<List<Notice>> = combine(
         _noticePassphraseIsDefault,
+        _noticeSaysPassphraseIsDefault,
+        _noticeDestroyAttempts,
         _noticeSnooze,
-    ) { passphraseDefault, snooze ->
-        produceNotices(passphraseDefault, snooze)
+    ) { passphraseDefault, saysSo, destroyAttempts, snooze ->
+        produceNotices(
+            passphraseNoticeApplies(passphraseDefault, saysSo),
+            destroyAttempts,
+            snooze,
+        )
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     
@@ -113,6 +148,13 @@ class MessengerStore(
         all.filter { it.snoozeUntil <= now }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
+    
+    internal val _destroySentence = MutableStateFlow<String?>(null)
+    val destroySentence: StateFlow<String?> = _destroySentence.asStateFlow()
+
+    
+    internal val destroyStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
     internal val _connection = MutableStateFlow(false)
     val connection: StateFlow<Boolean> = _connection.asStateFlow()
 
@@ -121,6 +163,48 @@ class MessengerStore(
 
     internal val _recentInvites = MutableStateFlow<List<RecentInvite>>(emptyList())
     val recentInvites: StateFlow<List<RecentInvite>> = _recentInvites.asStateFlow()
+
+    
+    internal val deviceLinkRunSeq = AtomicLong(0)
+
+    internal val _deviceLinkRun = MutableStateFlow<DeviceLinkRun?>(null)
+    val deviceLinkRun: StateFlow<DeviceLinkRun?> = _deviceLinkRun.asStateFlow()
+
+    
+    internal val _linkedAction = MutableStateFlow(LinkedActionState())
+    val linkedAction: StateFlow<LinkedActionState> = _linkedAction.asStateFlow()
+
+    
+    internal val _deviceLinkDraft = MutableStateFlow(DeviceLinkDraft())
+    val deviceLinkDraft: StateFlow<DeviceLinkDraft> = _deviceLinkDraft.asStateFlow()
+
+    
+    internal val _pairJoin = MutableStateFlow(PairJoinState())
+    val pairJoin: StateFlow<PairJoinState> = _pairJoin.asStateFlow()
+
+    internal val _linkedDevices = MutableStateFlow<List<DeviceLinkEntry>>(emptyList())
+    val linkedDevices: StateFlow<List<DeviceLinkEntry>> = _linkedDevices.asStateFlow()
+
+    internal val _destroyGuard = MutableStateFlow<DestroyPinListedResponse?>(null)
+    val destroyGuard: StateFlow<DestroyPinListedResponse?> = _destroyGuard.asStateFlow()
+
+    
+    internal val _inheritedPairing = MutableStateFlow(InheritedPairing())
+    val inheritedPairing: StateFlow<InheritedPairing> = _inheritedPairing.asStateFlow()
+
+    
+    internal val deviceSyncWait = java.util.concurrent.atomic.AtomicReference<DeviceSyncWait?>(null)
+
+    
+    internal val _toasts = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val toasts: SharedFlow<String> = _toasts.asSharedFlow()
+
+    internal val _invitations = MutableStateFlow(InvitationsView())
+    val invitations: StateFlow<InvitationsView> = _invitations.asStateFlow()
+
+    
+    internal val inheritedListSeq = AtomicLong(0)
+    internal val invitationsListSeq = AtomicLong(0)
 
     
     internal val _freshPeers = MutableStateFlow<Set<String>>(emptySet())
@@ -243,6 +327,11 @@ class MessengerStore(
     
     internal val _replyTargets = MutableStateFlow<Map<String, TimelineEvent>>(emptyMap())
     val replyTargets: StateFlow<Map<String, TimelineEvent>> = _replyTargets.asStateFlow()
+
+    
+    internal val _pendingTexts = MutableStateFlow<Map<String, List<PendingText>>>(emptyMap())
+    val pendingTexts: StateFlow<Map<String, List<PendingText>>> = _pendingTexts.asStateFlow()
+    internal val pendingTextSeq = AtomicLong(0L)
 
     
     internal val _pendingAnchors = MutableStateFlow<Map<String, AnchorState>>(emptyMap())
@@ -383,6 +472,15 @@ class MessengerStore(
     }
 
     fun onDaemonsStopped() {
+        
+        
+        forgetTypedJoinSecrets()
+        
+        
+        dropInheritedQueueOnStop()
+        
+        
+        dropDeviceSyncWait("daemons_stopped")
         val client = ipc ?: return
         ipc = null
         appendStatus("daemons stopping; closing IPC")
@@ -421,6 +519,7 @@ class MessengerStore(
         
         _drafts.value = emptyMap()
         _replyTargets.value = emptyMap()
+        _pendingTexts.value = emptyMap()
         _pendingAnchors.value = emptyMap()
         _chatSearch.value = null
     }
@@ -450,6 +549,9 @@ class MessengerStore(
                 fetchSystemInfo(c)
                 
                 
+                bootstrapPairingSurfaces()
+                
+                
                 for (chatId in _timelines.value.keys) {
                     loadTimeline(chatId, head = true)
                 }
@@ -457,6 +559,9 @@ class MessengerStore(
                 
                 requestExternalProbeBurst()
                 requestSelfProbeForActiveSurface()
+                
+                
+                reconcileDeviceLinkAfterConnect()
             } catch (t: Throwable) {
                 Logger.w("messenger", "bootstrap failed: ${t.message}")
                 appendStatus("bootstrap failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
@@ -468,7 +573,7 @@ class MessengerStore(
         try {
             val reply = c.request(type = io.haoma.calculator.core.ipc.FrameType.ListPeers)
             val peers = reply.payload?.peerArray("peers").orEmpty()
-            _peers.value = peers
+            applyPeersSnapshot(peers)
             appendStatus("peers snapshot: ${peers.size} row(s)")
         } catch (t: Throwable) {
             appendStatus("list_peers failed: ${t.message ?: "?"}", level = StatusLevel.WARN)
@@ -525,13 +630,19 @@ class MessengerStore(
     }
 
     
+    internal fun applyPeersSnapshot(peers: List<PeerEntry>) {
+        _peers.value = peers
+        _presence.value = peers.associate { it.id to peerPresence(it) }
+    }
+
     internal fun upsertPeer(p: PeerEntry) {
         _peers.update { list ->
             val idx = list.indexOfFirst { it.id == p.id }
             if (idx < 0) list + p else list.toMutableList().apply { this[idx] = p }
         }
+        
         if (p.effective.isNotEmpty()) {
-            _presence.update { it + (p.id to p.effective) }
+            _presence.update { it + (p.id to peerPresence(p)) }
         }
     }
 
@@ -700,6 +811,9 @@ data class SystemHealth(
 
     val defaultRetentionSec: Long = 28L * 24 * 3600,
     val defaultSendReceipts: Boolean = true,
+    
+
+    val chatDefaultsKnown: Boolean = false,
 ) {
     companion object {
         val INITIAL = SystemHealth(
@@ -718,7 +832,7 @@ data class SystemHealth(
 data class ExternalReach(val ok: Boolean, val lastTarget: String, val at: Long)
 
 
-data class SelfReach(val onion: String, val ok: Boolean, val at: Long)
+data class SelfReach(val ok: Boolean, val at: Long)
 
 
 data class ViewerTarget(

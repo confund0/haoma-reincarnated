@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"haoma/internal/files"
+	"haoma/internal/logid"
 )
 
-const maxStageBlobBody = 16 << 20
+const maxStageBlobBody = 20 << 20
 
 func (d *daemon) handleFileFetch(w http.ResponseWriter, r *http.Request) {
 	if d.files == nil {
@@ -39,7 +40,6 @@ func (d *daemon) handleFileFetch(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, files.ErrBlobNotFound) {
 
 		slog.Warn("/files token outlived blob; serving 404",
-			slog.String("token", token),
 			slog.String("msg_id", row.MsgID),
 		)
 		http.Error(w, "blob missing", http.StatusNotFound)
@@ -215,7 +215,7 @@ func (d *daemon) handleFetchFile(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:      time.Now().Unix(),
 	}
 	switch err := d.files.PutFetch(row); {
-	case errors.Is(err, files.ErrFetchTokenInUse):
+	case errors.Is(err, files.ErrFetchTokenInUse), errors.Is(err, files.ErrFetchReady):
 
 		existing, gerr := d.files.GetFetch(req.Token)
 		if gerr != nil {
@@ -228,6 +228,9 @@ func (d *daemon) handleFetchFile(w http.ResponseWriter, r *http.Request) {
 			State:         existing.State,
 			BytesReceived: existing.BytesReceived,
 		})
+		return
+	case errors.Is(err, files.ErrStagingIDInvalid):
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	case err != nil:
 		writeErr(w, http.StatusInternalServerError, err)
@@ -307,8 +310,8 @@ func (d *daemon) handleReceiveFileReceipt(w http.ResponseWriter, r *http.Request
 	switch {
 	case errors.Is(err, files.ErrTokenNotFound):
 		http.Error(w, "unknown token", http.StatusNotFound)
+
 		slog.Debug("/files/receipts unknown token",
-			slog.String("token", req.Token),
 			slog.String("recipient_peer_id", req.RecipientPeerID),
 		)
 		return
@@ -320,16 +323,14 @@ func (d *daemon) handleReceiveFileReceipt(w http.ResponseWriter, r *http.Request
 	if row.RecipientPeerID != req.RecipientPeerID {
 		http.Error(w, "recipient mismatch", http.StatusForbidden)
 		slog.Warn("/files/receipts recipient mismatch",
-			slog.String("token", req.Token),
-			slog.String("claimed_recipient", req.RecipientPeerID),
-			slog.String("bound_recipient", row.RecipientPeerID),
+			slog.String("claimed_recipient", logid.Short(req.RecipientPeerID)),
+			slog.String("bound_recipient", logid.Short(row.RecipientPeerID)),
 			slog.String("msg_id", row.MsgID),
 		)
 		return
 	}
 
 	slog.Info("file receipt acked",
-		slog.String("token", req.Token),
 		slog.String("recipient_peer_id", req.RecipientPeerID),
 		slog.String("msg_id", row.MsgID),
 	)
@@ -357,17 +358,19 @@ func (d *daemon) handleStagingDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := d.files.DeleteStaging(msgID); err != nil {
+	switch err := d.files.DropStaging(msgID, body.Token); {
+	case errors.Is(err, files.ErrFetchInFlight):
+		slog.Warn("/files/staging delete refused: fetch still in progress",
+			slog.String("msg_id", msgID),
+		)
+		writeErr(w, http.StatusConflict, err)
+		return
+	case errors.Is(err, files.ErrStagingIDInvalid):
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	case err != nil:
 		writeErr(w, http.StatusInternalServerError, err)
 		return
-	}
-	if body.Token != "" {
-		if err := d.files.DeleteFetch(body.Token); err != nil {
-			slog.Warn("/files/staging delete: drop fetch row failed",
-				slog.String("token", body.Token),
-				slog.Any("err", err),
-			)
-		}
 	}
 	slog.Debug("file staging dropped", slog.String("msg_id", msgID))
 	w.WriteHeader(http.StatusNoContent)
@@ -386,14 +389,7 @@ func (d *daemon) handleRetryFailed(w http.ResponseWriter, r *http.Request) {
 
 	_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, 4<<10))
 
-	isRetired := func(peerID string) bool {
-		p, err := d.registry.Get(peerID)
-		if err != nil {
-			return false
-		}
-		return p.RetiredAt != 0
-	}
-	enqueued, err := worker.RetryAllFailed(r.Context(), isRetired)
+	enqueued, err := worker.RetryAllFailed(r.Context(), d.peerRetired)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

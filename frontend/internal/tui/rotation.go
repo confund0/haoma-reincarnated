@@ -217,24 +217,16 @@ func roleToDirection(role string) string {
 }
 
 func (a *App) refreshAfterRotationChange() {
+	a.rebuildContactsPage()
 	a.winMu.Lock()
-	peers := a.peers
 	chats := a.chats
 	a.winMu.Unlock()
 	front, _ := a.pages.GetFrontPage()
-	a.contactTable = buildContactsTable(peers, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
-	a.installContactsKeys(a.contactTable)
-	a.pages.RemovePage("contacts")
-	a.pages.AddPage("contacts", a.contactTable, true, false)
-	a.chatsTable = buildChatsTable(chats, a.peerLabelForChat, a.peerPresenceLabel, a.peerRotationCell, a.openChat)
+	a.chatsTable = a.chatsTableKeepingCursor(chats)
 	a.installChatsKeys(a.chatsTable)
 	a.pages.RemovePage("chats")
 	a.pages.AddPage("chats", a.chatsTable, true, false)
-	switch front {
-	case "contacts":
-		a.pages.SwitchToPage("contacts")
-		a.app.SetFocus(a.contactTable)
-	case "chats":
+	if front == "chats" {
 		a.pages.SwitchToPage("chats")
 		a.app.SetFocus(a.chatsTable)
 	}

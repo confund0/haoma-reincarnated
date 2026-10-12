@@ -35,6 +35,7 @@ fun SettingsSectionScreen(
         SettingsDomains.Notifications -> NotificationsSection(store, onBack)
         SettingsDomains.Tor -> TorSection(store, onBack)
         SettingsDomains.Lock -> LockSection(store, onBack)
+        SettingsDomains.LinkedDevices -> LinkedDevicesSection(store, onBack)
         SettingsDomains.Advanced -> AdvancedSection(store, onBack)
         else -> PendingSection(store = store, domain = domain, onBack = onBack)
     }

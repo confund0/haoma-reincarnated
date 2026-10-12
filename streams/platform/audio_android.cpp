@@ -1,21 +1,3 @@
-// AAudio audio backend (Android, API 26+). Implements both halves of
-// platform/audio_backend.h.
-//
-// AAudio's data-callback model: the framework owns a high-priority audio
-// thread that invokes our static on_data hook with a raw float buffer.
-// Capture: setFramesPerDataCallback is best-effort, so we accumulate into a
-// FRAME_SAMPLES-sized buffer like audio_pipewire.cpp's PWCapture does.
-// Playback: one shot per callback — fill what on_need gives us, silence
-// the remainder.  Mirrors PWPlayback.
-//
-// Voice-tuning knobs (AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION, setUsage,
-// setContentType) are API 28-gated and guarded with
-// android_get_device_api_level() so the build stays minSdk-26 friendly.
-// Without these, AudioManager.setCommunicationDevice() routes voice calls
-// at the framework layer but our AAudio streams still play through MEDIA
-// usage and the route picker has no observable effect — VOICE_COMMUNICATION
-// + SPEECH content tags are what tell AudioFlinger to follow the comm
-// device.
 
 #include "audio_backend.h"
 #include "../common/log.h"
@@ -35,17 +17,6 @@
 
 namespace haoma::streams {
 namespace {
-
-// ── Voice-tuning trampolines ───────────────────────────────────────────────
-//
-// AAudioStreamBuilder_{setInputPreset,setUsage,setContentType} are API
-// 28+ symbols marked __INTRODUCED_IN(28); a direct call refuses to
-// compile when we target API 26 (NDK r29 escalates the deprecation to
-// a hard error and __builtin_available / -Wno-unguarded-availability
-// pragma don't silence it). dlsym lets us discover the symbol at
-// runtime and skip the call entirely on API 26/27 without a compile
-// guard. Looked-up once via std::call_once; the trampoline is a
-// no-op when libaaudio doesn't ship the function on this device.
 
 using SetInputPresetFn   = void (*)(AAudioStreamBuilder*, aaudio_input_preset_t);
 using SetUsageFn         = void (*)(AAudioStreamBuilder*, aaudio_usage_t);
@@ -69,13 +40,7 @@ void init_voice_symbols() {
       dlsym(lib, "AAudioStreamBuilder_setContentType"));
 }
 
-// ── Capture ────────────────────────────────────────────────────────────────
-
 struct AACapture final : AudioCapture {
-  // `stream` swaps under the reopen worker — protected by `swap_mu` so
-  // close() can't race a mid-reopen pointer flip and double-close. The
-  // data callback never touches `stream` directly (AAudio passes it as
-  // the first arg), so no mutex is held on the hot path.
   AAudioStream*                     stream = nullptr;
   std::mutex                        swap_mu;
   std::function<void(const float*)> on_frame;
@@ -92,16 +57,15 @@ struct AACapture final : AudioCapture {
   void close() override;
   ~AACapture() override { close(); }
 
-  bool open_stream();   // build+open+start; assigns `stream`
+  bool open_stream();   
   void reopen_after_disconnect();
 };
 
 aaudio_data_callback_result_t AACapture::on_data(
-    AAudioStream* /*s*/, void* ud, void* audio_data, int32_t num_frames) {
+    AAudioStream*  , void* ud, void* audio_data, int32_t num_frames) {
   auto* self = static_cast<AACapture*>(ud);
   if (self->stopped.load()) return AAUDIO_CALLBACK_RESULT_STOP;
 
-  // CHANNELS == 1 so one frame == one float sample.
   const float* in = static_cast<const float*>(audio_data);
   for (int32_t i = 0; i < num_frames; ++i) {
     self->acc.push_back(in[i]);
@@ -113,16 +77,9 @@ aaudio_data_callback_result_t AACapture::on_data(
   return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
-void AACapture::on_error(AAudioStream* /*s*/, void* ud, aaudio_result_t error) {
+void AACapture::on_error(AAudioStream*  , void* ud, aaudio_result_t error) {
   auto* self = static_cast<AACapture*>(ud);
   LOG_ERR("aaudio capture error: %s", AAudio_convertResultToText(error));
-  // AAUDIO_ERROR_DISCONNECTED fires whenever the routing destination
-  // changes (user picks Speaker, BT (dis)connect, headset plug). The
-  // stream is dead; AAudio docs explicitly forbid calling AAudio APIs
-  // from this callback — they can deadlock with the audio thread.
-  // Spawn a detached worker that closes the dead stream and opens a
-  // fresh one with the same parameters; data + error callbacks survive
-  // because the lambdas / function pointers live on `this`.
   if (error != AAUDIO_ERROR_DISCONNECTED) return;
   if (self->shutting_down.load()) return;
   bool expected = false;
@@ -153,8 +110,6 @@ bool AACapture::open_stream() {
   AAudioStreamBuilder_setFramesPerDataCallback(b, FRAME_SAMPLES);
   AAudioStreamBuilder_setDataCallback(b, &AACapture::on_data, this);
   AAudioStreamBuilder_setErrorCallback(b, &AACapture::on_error, this);
-  // Voice-comm input preset is gated on API 28+; trampoline is a
-  // no-op on API 26/27 (default capture preset stays in effect).
   std::call_once(voice_init_flag, init_voice_symbols);
   if (p_setInputPreset) {
     p_setInputPreset(b, AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION);
@@ -169,9 +124,6 @@ bool AACapture::open_stream() {
     return false;
   }
 
-  // AAudio may negotiate format/rate/channels different from what we asked
-  // for; the F32/48k/mono triplet is supported by every recent device but
-  // a mismatch here would silently break Opus encoding downstream.
   if (AAudioStream_getFormat(s)        != AAUDIO_FORMAT_PCM_FLOAT ||
       AAudioStream_getSampleRate(s)    != SAMPLE_RATE ||
       AAudioStream_getChannelCount(s)  != CHANNELS) {
@@ -190,12 +142,6 @@ bool AACapture::open_stream() {
     AAudioStream_close(s);
     return false;
   }
-  // Device-id pin diagnostic. The framework picks the physical device
-  // at open time based on the comm-device + MODE_IN_COMMUNICATION
-  // combo; on BT this can land on TYPE_BLUETOOTH_A2DP (output-only)
-  // when the user intended SCO. Cross-correlate this with the Kotlin
-  // AudioRouter's "comm-device changed -> id=N" line to see if mic +
-  // spk ended up on the same physical bridge.
   LOG_INFO("aaudio capture opened: device_id=%d preset_set=%d",
            AAudioStream_getDeviceId(s),
            p_setInputPreset ? 1 : 0);
@@ -205,9 +151,6 @@ bool AACapture::open_stream() {
 }
 
 void AACapture::reopen_after_disconnect() {
-  // Brief backoff so AudioFlinger settles after the route change —
-  // hammering reopen synchronously can race with the comm-device flip
-  // and yield a second DISCONNECTED.
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   if (shutting_down.load()) {
     reopen_inflight.store(false);
@@ -228,8 +171,6 @@ void AACapture::reopen_after_disconnect() {
   acc.clear();
   bool ok = open_stream();
   if (ok) {
-    // open_stream() already logged the NEW device_id; pair it with the
-    // OLD id so a route flap surfaces as one diff'able line pair.
     LOG_INFO("aaudio capture reopened after DISCONNECTED (was device_id=%d)", old_id);
   } else {
     LOG_ERR("aaudio capture reopen failed — call audio will stay silent");
@@ -241,9 +182,6 @@ void AACapture::reopen_after_disconnect() {
 void AACapture::close() {
   shutting_down.store(true);
   stopped.store(true);
-  // Drain any in-flight reopen before we tear down the stream so the
-  // worker thread doesn't observe a closed stream pointer or assign a
-  // fresh one after our close().
   while (reopen_inflight.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -258,13 +196,6 @@ void AACapture::close() {
     AAudioStream_close(s);
   }
 }
-
-// ── Playback ───────────────────────────────────────────────────────────────
-//
-// Mirror of AACapture's reopen-on-DISCONNECTED ladder. The same routing
-// events (Speaker/Earpiece toggle, BT (dis)connect, headset plug) tear
-// down output streams just like input ones — and a silent playback path
-// is half of the "voice disappears on both sides" failure mode.
 
 struct AAPlayback final : AudioPlayback {
   AAudioStream*                         stream = nullptr;
@@ -295,9 +226,6 @@ bool AAPlayback::query_render_timestamp(int64_t* fp, int64_t* mono_ns) {
   }
   if (!s) return false;
   int64_t f = 0, t = 0;
-  // AAudio fills (f, t) such that frame `f` is/was rendered at
-  // monotonic time `t`. Returns INVALID_STATE during the warmup window
-  // and on devices with broken HAL timestamping (some Bluetooth routes).
   aaudio_result_t rc = AAudioStream_getTimestamp(s, CLOCK_MONOTONIC, &f, &t);
   if (rc != AAUDIO_OK) return false;
   *fp = f;
@@ -306,11 +234,10 @@ bool AAPlayback::query_render_timestamp(int64_t* fp, int64_t* mono_ns) {
 }
 
 aaudio_data_callback_result_t AAPlayback::on_data(
-    AAudioStream* /*s*/, void* ud, void* audio_data, int32_t num_frames) {
+    AAudioStream*  , void* ud, void* audio_data, int32_t num_frames) {
   auto* self = static_cast<AAPlayback*>(ud);
   if (self->stopped.load()) return AAUDIO_CALLBACK_RESULT_STOP;
 
-  // CHANNELS == 1 so one frame == one float sample.
   float*       out  = static_cast<float*>(audio_data);
   const size_t want = (size_t)num_frames;
   size_t       got  = self->on_need(out, want);
@@ -320,7 +247,7 @@ aaudio_data_callback_result_t AAPlayback::on_data(
   return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
-void AAPlayback::on_error(AAudioStream* /*s*/, void* ud, aaudio_result_t error) {
+void AAPlayback::on_error(AAudioStream*  , void* ud, aaudio_result_t error) {
   auto* self = static_cast<AAPlayback*>(ud);
   LOG_ERR("aaudio playback error: %s", AAudio_convertResultToText(error));
   if (error != AAUDIO_ERROR_DISCONNECTED) return;
@@ -383,10 +310,6 @@ bool AAPlayback::open_stream() {
     AAudioStream_close(s);
     return false;
   }
-  // Sibling diagnostic to the capture-side device-id log. usage_set=1
-  // means USAGE_VOICE_COMMUNICATION + CONTENT_TYPE_SPEECH tags landed
-  // (API 28+); 0 means we're on the legacy MEDIA-usage path where the
-  // comm-device pick has no observable effect.
   LOG_INFO("aaudio playback opened: device_id=%d usage_set=%d",
            AAudioStream_getDeviceId(s),
            (p_setUsage && p_setContentType) ? 1 : 0);
@@ -441,9 +364,9 @@ void AAPlayback::close() {
   }
 }
 
-}  // namespace
+}  
 
 std::unique_ptr<AudioCapture>  make_capture()  { return std::make_unique<AACapture>(); }
 std::unique_ptr<AudioPlayback> make_playback() { return std::make_unique<AAPlayback>(); }
 
-}  // namespace haoma::streams
+}  

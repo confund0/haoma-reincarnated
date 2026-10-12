@@ -25,10 +25,17 @@ const (
 	haomadLogName = "haomad.log"
 	haomaLogName  = "haoma.log"
 
+	haomadStderrName = "haomad.stderr"
+	haomaStderrName  = "haoma.stderr"
+
 	readyTimeout = 30 * time.Second
 	stopTimeout  = 10 * time.Second
 	healthDial   = 3 * time.Second
 )
+
+func daemonLogPaths(root, logName, stderrName string) (logPath, stderrPath string) {
+	return filepath.Join(root, logName), filepath.Join(root, stderrName)
+}
 
 type spawnOpts struct {
 	haomadBin     string
@@ -39,6 +46,7 @@ type spawnOpts struct {
 	logFormat     string
 	idleOverride  int
 	restoreBackup string
+	tor           torSetup
 }
 
 func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
@@ -46,8 +54,8 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 	backendDir := paths.BackendDir(root)
 	frontendDir := paths.FrontendDir(root)
 	runtimePath := filepath.Join(root, runtimeFileName)
-	haomadLog := filepath.Join(root, haomadLogName)
-	haomaLog := filepath.Join(root, haomaLogName)
+	haomadLog, haomadStderr := daemonLogPaths(root, haomadLogName, haomadStderrName)
+	haomaLog, haomaStderr := daemonLogPaths(root, haomaLogName, haomaStderrName)
 
 	if _, err := paths.BootstrapAt(backendDir); err != nil {
 		return fmt.Errorf("bootstrap %s: %w", backendDir, err)
@@ -60,7 +68,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 		return fmt.Errorf("bootstrap text dir: %w", err)
 	}
 
-	secretsBlob, err := payload.Secrets.Marshal()
+	secretsBlob, err := secretsForSpawn(payload.Secrets, opts.tor).Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal secrets: %w", err)
 	}
@@ -71,13 +79,23 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 
 	haomadCertPath := filepath.Join(backendDir, "cert.pem")
 
-	haomadArgs := []string{
-		"--cfg-dir", root,
-		"--secrets-stdin",
-		"--api-addr", "127.0.0.1:0",
-		"--runtime-file", runtimePath,
-		"--log-level", opts.logLevel,
-		"--log-file", haomadLog,
+	haomadArgs, err := buildHaomadArgs(root, runtimePath, opts.logLevel, haomadLog, opts.tor)
+	if err != nil {
+		return fmt.Errorf("haomad: %w", err)
+	}
+
+	torrc := filepath.Join(root, torDirName, "torrc")
+	sweep := endLeftoverTors(runtimePath, torrc, 5*time.Second)
+	switch {
+	case sweep.skipped != "":
+		slog.Debug("no sweep for a leftover tor", slog.String("why", sweep.skipped))
+	case len(sweep.ended)+len(sweep.refused)+len(sweep.changed)+len(sweep.stuck) > 0:
+		slog.Warn("sweep for a tor left by an earlier haomad",
+			slog.String("torrc", torrc),
+			slog.String("ended", describeProcs(sweep.ended)),
+			slog.String("refused", describeProcs(sweep.refused)),
+			slog.String("changed", describeProcs(sweep.changed)),
+			slog.String("still_running", describeProcs(sweep.stuck)))
 	}
 	haomadCtx, haomadCancel := context.WithTimeout(context.Background(), readyTimeout)
 	defer haomadCancel()
@@ -88,7 +106,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 		haomadArgs,
 		secretsBlob,
 		runtimePath,
-		haomadLog,
+		haomadStderr,
 		haomadHealthCheck(bearer, haomadCertPath),
 	)
 	if err != nil {
@@ -98,7 +116,27 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 		slog.Int("pid", haomad.PID),
 		slog.String("api_addr", haomad.APIAddr),
 		slog.Time("started_at", haomad.StartedAt),
+		slog.Bool("attached", haomad.Attached()),
 	)
+
+	haomadTor := opts.tor
+	var torStatus string
+	if haomad.Attached() {
+
+		running := torSetupFromRuntime(haomad.ManageTor, haomad.TorDataDir)
+		haomadTor = running
+		if running == opts.tor {
+			slog.Info("haomad was already running, with the tor asked for",
+				slog.Int("pid", haomad.PID), slog.String("tor", running.String()))
+		} else {
+			slog.Warn("haomad was already running with another tor, and keeps it until it restarts",
+				slog.Int("pid", haomad.PID), slog.String("tor", running.String()),
+				slog.String("tor_asked", opts.tor.String()))
+			torStatus = attachedTorStatus(haomad.PID, running, opts.tor)
+		}
+	} else {
+		slog.Info("haomad started", slog.String("tor", opts.tor.String()))
+	}
 
 	haomaArgs := []string{
 		"--cfg-dir", root,
@@ -108,7 +146,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 		"--log-level", opts.logLevel,
 		"--log-file", haomaLog,
 	}
-	haoma, err := supervisor.Spawn("haoma", opts.haomaBin, haomaArgs, secretsBlob, haomaLog)
+	haoma, err := supervisor.Spawn("haoma", opts.haomaBin, haomaArgs, secretsBlob, haomaStderr)
 	if err != nil {
 
 		return fmt.Errorf("haoma: %w", err)
@@ -151,8 +189,18 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 	app.SweepVideoFifos()
 	app.VaultCtl = vc
 	app.BackupCtl = newBackupController(root, opts.haomaVaultBin, client, haomad, haoma)
+	app.SystemTor = haomadTor.system
+	if torStatus != "" {
+		app.PostStatus("%s", torStatus)
+	}
 
-	if vc.IsInsecureDefaultPassphrase() {
+	isDefault, saysSo := vc.IsInsecureDefaultPassphrase(), vc.SaysPassphraseIsDefault()
+	slog.Debug("status: the default-passphrase warning was decided",
+		slog.Bool("passphrase_is_default", isDefault),
+		slog.Bool("says_passphrase_is_default", saysSo),
+		slog.String("tier", vc.snapshot().ThreatProfile),
+	)
+	if isDefault && saysSo {
 		app.PostStatus("[red]WARNING:[white] vault sealed with the insecure default passphrase. Run [yellow]/change-pass <old> <new>[white] before sharing anything sensitive.")
 	}
 	if vc.IsInsecureDefaultPIN() {
@@ -165,7 +213,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 	go func() {
 		select {
 		case sig := <-sigCh:
-			slog.Info("signal received; stopping TUI (haomad stays alive per ADR-036)",
+			slog.Info("signal received; stopping TUI (haomad stays alive)",
 				slog.String("signal", sig.String()))
 			app.Stop()
 		case <-stopBackground:
@@ -194,7 +242,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 
 	runErr := app.Run()
 
-	slog.Info("TUI exited; stopping haoma (haomad stays running per ADR-036)")
+	slog.Info("TUI exited; stopping haoma (haomad stays running)")
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer stopCancel()
 	if err := haoma.Stop(stopCtx); err != nil {
@@ -296,7 +344,7 @@ func runIdleWatcher(stopCh <-chan struct{}, app *tui.App, snap func() vault.Payl
 					slog.Info("PIN gate cleared; resuming")
 					continue
 				}
-				slog.Info("PIN gate escalated to safe-lock; stopping TUI (haomad stays alive per ADR-036)")
+				slog.Info("PIN gate escalated to safe-lock; stopping TUI (haomad stays alive)")
 				app.Stop()
 				return
 			}
@@ -304,7 +352,7 @@ func runIdleWatcher(stopCh <-chan struct{}, app *tui.App, snap func() vault.Payl
 				slog.Warn("idle elapsed (action=soft-lock) but PIN is unset; falling back to safe-lock",
 					slog.Int64("elapsed_sec", elapsed))
 			} else {
-				slog.Info("idle elapsed; safe-locking; stopping TUI (haomad stays alive per ADR-036)",
+				slog.Info("idle elapsed; safe-locking; stopping TUI (haomad stays alive)",
 					slog.Int64("elapsed_sec", elapsed),
 					slog.String("action", action),
 				)

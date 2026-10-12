@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,7 +31,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
@@ -61,6 +65,7 @@ fun ReadinessStrip(store: MessengerStore, onTap: () -> Unit = {}) {
     val botColor = localDotColor(health, nowSecs)
 
     var menuOpen by remember { mutableStateOf(false) }
+    var resetConfirmOpen by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
 
     Box(
@@ -106,24 +111,49 @@ fun ReadinessStrip(store: MessengerStore, onTap: () -> Unit = {}) {
                 
                 properties = PopupProperties(focusable = false),
             ) {
-                DropdownMenuItem(
-                    text = { Text("Force new identity", color = MenuAccent) },
-                    onClick = {
-                        menuOpen = false
-                        store.torRecover("newnym")
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Reset Tor", color = MenuAccent) },
-                    onClick = {
-                        menuOpen = false
-                        store.torRecover("reset")
-                    },
-                )
+                for (item in RECOVERY_MENU) {
+                    DropdownMenuItem(
+                        text = { Text(item, color = MenuAccent) },
+                        onClick = {
+                            menuOpen = false
+                            resetConfirmOpen = true
+                        },
+                    )
+                }
             }
+        }
+        if (resetConfirmOpen) {
+            AlertDialog(
+                onDismissRequest = { resetConfirmOpen = false },
+                title = { Text(RESET_TOR_TITLE, color = HaomaPalette.FG_PRIMARY) },
+                text = { Text(RESET_TOR_BODY, color = HaomaPalette.FG_SECONDARY, fontSize = 14.sp) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        resetConfirmOpen = false
+                        store.resetTor()
+                    }) {
+                        Text(RESET_TOR_ACTION, color = HaomaPalette.BTN_GIVE, fontWeight = FontWeight.SemiBold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { resetConfirmOpen = false }) {
+                        Text("Cancel", color = HaomaPalette.FG_LINK)
+                    }
+                },
+                containerColor = HaomaPalette.BG_BAR,
+            )
         }
     }
 }
+
+
+internal val RECOVERY_MENU = listOf("Reset Tor")
+
+internal const val RESET_TOR_TITLE = "Reset Tor?"
+internal const val RESET_TOR_BODY =
+    "This device's tor and daemons restart. Contacts cannot reach it for a short while, " +
+        "and calls and file transfers in progress end."
+internal const val RESET_TOR_ACTION = "Reset"
 
 @Composable
 private fun Led(color: Color) {

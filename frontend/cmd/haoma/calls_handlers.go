@@ -12,12 +12,13 @@ import (
 	"haoma-frontend/internal/calls"
 	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/ipc"
+	"haoma-frontend/internal/mirror"
 	"haoma-frontend/internal/msg"
 )
 
 var callOfferTimeout = 30 * time.Second
 
-var callTimeoutShipBudget = 5 * time.Second
+var callEndShipTimeout = 5 * time.Second
 
 func resolveStartCallModalities(req []string) ([]string, error) {
 	if len(req) == 0 {
@@ -75,7 +76,7 @@ func (sd *sessionDispatcher) handleStartCall(ctx context.Context, sess *ipc.Sess
 	}
 	dc, ok := c.(*chat.DirectChat)
 	if !ok {
-		sendError(sess, f.ID, "unsupported", "v0 calls are 1:1 only — group calls land with ADR-019")
+		sendError(sess, f.ID, "unsupported", "calls are 1:1 only; group calls are not supported yet")
 		return
 	}
 	peerID := dc.PeerID
@@ -102,7 +103,7 @@ func (sd *sessionDispatcher) handleStartCall(ctx context.Context, sess *ipc.Sess
 	}
 
 	for _, modality := range modalities {
-		if _, serr := spawnSenderLeg(ctx, sd.d, callID, modality, tokens[modality], outboundKey); serr != nil {
+		if _, serr := spawnCallSender(ctx, sd.d, callID, modality, tokens[modality], outboundKey); serr != nil {
 			slog.Warn("call sender-leg spawn failed",
 				slog.String("call_id", callID),
 				slog.String("modality", modality),
@@ -123,41 +124,29 @@ func (sd *sessionDispatcher) handleStartCall(ctx context.Context, sess *ipc.Sess
 		StartedAt:   time.Now().Unix(),
 		LocalTokens: tokens,
 	}
-	if err := sd.d.calls.PutState(state); err != nil {
-
-		teardownCall(sd.d, calls.State{CallID: callID, LocalTokens: tokens})
-		sendError(sess, f.ID, "persist_failed", err.Error())
-		return
-	}
-
-	broadcastCallStateChanged(sd.d, state)
 
 	offerSenderNick := sd.d.selfNick()
 	if dc.NickOverride != "" {
 		offerSenderNick = dc.NickOverride
 	}
-	if err := shipCallEnvelope(ctx, sd.d, peerID, callID, msg.KindCallOffer, modalities, "", tokens, outboundKey, offerSenderNick); err != nil {
+
+	state, code, err := startCallOffer(ctx, sd.d, dc, state, outboundKey, offerSenderNick)
+	if err != nil {
 		slog.Warn("call_offer ship failed",
 			slog.String("call_id", callID),
-			slog.String("peer_id", peerID),
+			slog.String("chat_id", string(chatID)),
 			slog.Any("err", err),
 		)
-		failed, terr := sd.d.calls.Transition(callID, calls.StatusFailed, calls.FailReasonSendFail+": "+err.Error(), time.Now().Unix())
-		if terr == nil {
-			teardownCall(sd.d, failed)
-			broadcastCallStateChanged(sd.d, failed)
-		}
-		sendError(sess, f.ID, "backend_send", err.Error())
+		sendError(sess, f.ID, code, clientDetail(code, err.Error()))
 		return
 	}
-
-	scheduleCallOfferTimeout(sd.d, callID, peerID)
 
 	slog.Info("call started",
 		slog.String("call_id", callID),
 		slog.String("peer_id", peerID),
 		slog.String("chat_id", string(chatID)),
 		slog.Any("modalities", modalities),
+		slog.Int("targets", len(state.Targets)),
 	)
 
 	resp, err := ipc.NewFrame(ipc.FrameCallStarted, f.ID, ipc.CallStartedResponse{
@@ -231,25 +220,35 @@ func (sd *sessionDispatcher) handleRespondCall(ctx context.Context, sess *ipc.Se
 			sendError(sess, f.ID, "build_failed", merr.Error())
 			return
 		}
-		spawnFailed := ""
+
+		callsAnswering.Store(state.CallID, struct{}{})
+		defer callsAnswering.Delete(state.CallID)
+		spawnSide, spawnErr := "", error(nil)
 		for _, modality := range state.Modalities {
-			if _, serr := spawnSenderLeg(ctx, sd.d, state.CallID, modality, tokens[modality], key); serr != nil {
-				spawnFailed = "sender:" + serr.Error()
+			if _, serr := spawnCallSender(ctx, sd.d, state.CallID, modality, tokens[modality], key); serr != nil {
+				spawnSide, spawnErr = "sender", serr
 				break
 			}
 			peerToken := state.RemoteTokens[modality]
-			if _, serr := spawnReceiverLeg(ctx, sd.d, state.CallID, state.PeerID, modality, peerToken, state.RemoteOutboundKey); serr != nil {
-				spawnFailed = "receiver:" + serr.Error()
+			if _, serr := spawnCallReceiver(ctx, sd.d, state.CallID, state.PeerID, modality, peerToken, state.RemoteOutboundKey); serr != nil {
+				spawnSide, spawnErr = "receiver", serr
 				break
 			}
 		}
-		if spawnFailed != "" {
+		if spawnErr != nil {
 			teardownCall(sd.d, calls.State{CallID: state.CallID, LocalTokens: tokens, RemoteTokens: state.RemoteTokens})
-			failed, terr := sd.d.calls.Transition(state.CallID, calls.StatusFailed, calls.FailReasonStreamerSpawn+": "+spawnFailed, time.Now().Unix())
+
+			failed, terr := sd.d.calls.Transition(state.CallID, calls.StatusFailed, calls.FailReasonStreamerSpawn+": "+spawnSide, time.Now().Unix())
 			if terr == nil {
 				broadcastCallStateChanged(sd.d, failed)
 			}
-			sendError(sess, f.ID, "streamer_spawn", spawnFailed)
+			detail := clientDetail("streamer_spawn", spawnSide+": "+spawnErr.Error())
+			slog.Warn("call accept: streamer start failed",
+				slog.String("call_id", state.CallID),
+				slog.String("side", spawnSide),
+				slog.String("err", detail),
+			)
+			sendError(sess, f.ID, "streamer_spawn", detail)
 			return
 		}
 		rememberLocalTokens(sd.d, state.CallID, tokens)
@@ -296,27 +295,44 @@ func (sd *sessionDispatcher) handleRespondCall(ctx context.Context, sess *ipc.Se
 	if wireKind == msg.KindCallAccept {
 		respondSenderNick = callSenderNickForChat(sd.d, chat.ChatID(state.ChatID))
 	}
-	if err := shipCallEnvelope(ctx, sd.d, state.PeerID, state.CallID, wireKind, state.Modalities, reason, ownTokens, ownKey, respondSenderNick); err != nil {
+
+	recipients := callRecipients(updated)
+	wire := callWire{
+		callID:      state.CallID,
+		kind:        wireKind,
+		modalities:  state.Modalities,
+		reason:      reason,
+		tokens:      ownTokens,
+		outboundKey: ownKey,
+		senderNick:  respondSenderNick,
+	}
+	if wireKind == msg.KindCallEnd {
+
+		wire.reason = ""
+	}
+	sent, err := shipCallToDevices(ctx, sd.d, recipients, wire)
+	if len(recipients) > 0 && sent == 0 {
 
 		slog.Warn("call response ship failed",
 			slog.String("call_id", state.CallID),
 			slog.String("peer_id", state.PeerID),
 			slog.String("kind", string(wireKind)),
+			slog.Int("devices", len(recipients)),
 			slog.Any("err", err),
 		)
 		if req.Action == ipc.CallActionAccept {
 			teardownCall(sd.d, updated)
-			failed, terr := sd.d.calls.Transition(state.CallID, calls.StatusFailed, calls.FailReasonSendFail+": "+err.Error(), time.Now().Unix())
+			failed, terr := sd.d.calls.Transition(state.CallID, calls.StatusFailed, calls.FailReasonSendFail+": "+clientDetail(calls.FailReasonSendFail, err.Error()), time.Now().Unix())
 			if terr == nil {
 				broadcastCallStateChanged(sd.d, failed)
 			}
 		}
-		sendError(sess, f.ID, "backend_send", err.Error())
+		sendError(sess, f.ID, "backend_send", clientDetail("backend_send", err.Error()))
 		return
 	}
 
 	if updated.IsTerminal() {
-		teardownCall(sd.d, updated)
+		callTeardown(sd.d, updated)
 	}
 
 	slog.Info("call response shipped",
@@ -325,6 +341,8 @@ func (sd *sessionDispatcher) handleRespondCall(ctx context.Context, sess *ipc.Se
 		slog.String("kind", string(wireKind)),
 		slog.String("status", string(updated.Status)),
 		slog.String("reason", reason),
+		slog.Int("devices", len(recipients)),
+		slog.Int("sent", sent),
 	)
 
 	resp, err := ipc.NewFrame(ipc.FrameCallResponded, f.ID, ipc.CallRespondedResponse{
@@ -354,50 +372,6 @@ func callSenderNickForChat(d *daemon, chatID chat.ChatID) string {
 		return global
 	}
 	return override
-}
-
-func shipCallEnvelope(ctx context.Context, d *daemon, peerID, callID string, kind msg.Kind, modalities []string, reason string, tokens map[string]string, outboundKey []byte, senderNick string) error {
-	seq, err := d.peerSeq.NextSendSeq(peerID)
-	if err != nil {
-		return fmt.Errorf("seq: %w", err)
-	}
-	msgID, err := msg.NewID()
-	if err != nil {
-		return fmt.Errorf("msg id: %w", err)
-	}
-	now := time.Now().Unix()
-	var wrapper *msg.Wrapper
-	switch kind {
-	case msg.KindCallOffer:
-		wrapper, err = msg.BuildCallOffer(seq, now, msgID, callID, modalities, tokens, outboundKey, senderNick, 0)
-	case msg.KindCallAccept:
-		wrapper, err = msg.BuildCallAccept(seq, now, msgID, callID, modalities, tokens, outboundKey, senderNick, 0)
-	case msg.KindCallReject:
-		wrapper, err = msg.BuildCallReject(seq, now, msgID, callID, reason, 0)
-	case msg.KindCallEnd:
-		wrapper, err = msg.BuildCallEnd(seq, now, msgID, callID, 0)
-	default:
-		return fmt.Errorf("unsupported call kind %q", kind)
-	}
-	if err != nil {
-		return fmt.Errorf("build wrapper: %w", err)
-	}
-	plaintext, err := msg.Marshal(wrapper)
-	if err != nil {
-		return fmt.Errorf("marshal wrapper: %w", err)
-	}
-	blob, err := d.cipher.Encrypt(ctx, peerID, plaintext)
-	if err != nil {
-		return fmt.Errorf("encrypt: %w", err)
-	}
-	if _, err := d.backendClient.Send(ctx, backendapi.SendRequest{
-		PeerID:         peerID,
-		Payload:        blob,
-		PresenceSource: backendapi.PresenceSourceHaoma,
-	}); err != nil {
-		return fmt.Errorf("backend send: %w", err)
-	}
-	return nil
 }
 
 func (sd *sessionDispatcher) handleCallControl(ctx context.Context, sess *ipc.Session, f ipc.Frame) {
@@ -480,23 +454,25 @@ func (sd *sessionDispatcher) handleCallControl(ctx context.Context, sess *ipc.Se
 	)
 
 	if side == "cam" {
-		if state.PeerID == "" {
+
+		mediaPeer := state.MediaPeer()
+		if mediaPeer == "" {
 			slog.Warn("call control: no peer id for peer-signal ship",
 				slog.String("call_id", req.CallID),
 				slog.String("action", req.Action),
 			)
 		} else {
-			if err := shipCallControl(ctx, sd.d, state.PeerID, req.CallID, req.Action); err != nil {
+			if err := shipCallControl(ctx, sd.d, mediaPeer, req.CallID, req.Action); err != nil {
 				slog.Warn("call control: peer-signal ship failed (receiver falls back to heuristic)",
 					slog.String("call_id", req.CallID),
-					slog.String("peer_id", state.PeerID),
+					slog.String("peer_id", mediaPeer),
 					slog.String("action", req.Action),
 					slog.Any("err", err),
 				)
 			} else {
 				slog.Debug("call control: peer-signal shipped",
 					slog.String("call_id", req.CallID),
-					slog.String("peer_id", state.PeerID),
+					slog.String("peer_id", mediaPeer),
 					slog.String("action", req.Action),
 				)
 			}
@@ -534,18 +510,33 @@ func shipCallControl(ctx context.Context, d *daemon, peerID, callID, action stri
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
 	}
-	if _, err := d.backendClient.Send(ctx, backendapi.SendRequest{
-		PeerID:         peerID,
-		Payload:        blob,
-		PresenceSource: backendapi.PresenceSourceHaoma,
-	}); err != nil {
+	if _, err := mirror.Dispatch(ctx, d.backendClient, mirror.NewRail(d.railKey, d.siblings, d.peerMeta),
+		mirror.SingleTarget(peerID),
+		func(ctx context.Context, deviceID string) (backendapi.SendRequest, []byte, error) {
+			return backendapi.SendRequest{
+				PeerID:         deviceID,
+				Payload:        blob,
+				PresenceSource: backendapi.PresenceSourceHaoma,
+			}, plaintext, nil
+		},
+		mirror.NewOp(wrapper.Kind, "")); err != nil {
 		return fmt.Errorf("backend send: %w", err)
 	}
 	return nil
 }
 
-func scheduleCallOfferTimeout(d *daemon, callID, peerID string) {
-	time.AfterFunc(callOfferTimeout, func() {
+func scheduleCallOfferTimeout(d *daemon, callID string) {
+	armCallOfferTimer(d, callID, callOfferTimeout, 0)
+}
+
+func armCallOfferTimer(d *daemon, callID string, after time.Duration, rearms int) {
+	entry := &offerTimer{}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	callOfferTimers.Store(callID, entry)
+	entry.t = time.AfterFunc(after, func() {
+
+		callOfferTimers.CompareAndDelete(callID, entry)
 		state, err := d.calls.GetState(callID)
 		if err != nil {
 			if !errors.Is(err, calls.ErrCallNotFound) {
@@ -563,7 +554,15 @@ func scheduleCallOfferTimeout(d *daemon, callID, peerID string) {
 			)
 			return
 		}
-		updated, err := d.calls.Transition(callID, calls.StatusFailed, calls.FailReasonNoAnswer, time.Now().Unix())
+		if state.AnsweredBy != "" {
+
+			slog.Debug("call timeout: a device answered; no-op",
+				slog.String("call_id", callID),
+			)
+			return
+		}
+
+		updated, err := failCallUnanswered(d.calls, callID, calls.FailReasonNoAnswer, time.Now().Unix())
 		if err != nil {
 			if errors.Is(err, calls.ErrIllegalTransition) {
 
@@ -572,7 +571,16 @@ func scheduleCallOfferTimeout(d *daemon, callID, peerID string) {
 				)
 				return
 			}
-			slog.Warn("call timeout: transition failed",
+			if rearms < callTimerRearms {
+				slog.Warn("call timeout: transition failed; trying again",
+					slog.String("call_id", callID),
+					slog.Int("attempt", rearms+1),
+					slog.Any("err", err),
+				)
+				armCallOfferTimer(d, callID, callTimerRearmDelay, rearms+1)
+				return
+			}
+			slog.Error("call timeout: transition failed on every try; the row stays offered until the next start",
 				slog.String("call_id", callID),
 				slog.Any("err", err),
 			)
@@ -581,20 +589,14 @@ func scheduleCallOfferTimeout(d *daemon, callID, peerID string) {
 		broadcastCallStateChanged(d, updated)
 		slog.Info("call auto-hangup (no answer)",
 			slog.String("call_id", callID),
-			slog.String("peer_id", peerID),
 			slog.Duration("after", callOfferTimeout),
 		)
 
-		teardownCall(d, updated)
-
-		ctx, cancel := context.WithTimeout(context.Background(), callTimeoutShipBudget)
+		ctx, cancel := context.WithTimeout(context.Background(), callEndShipTimeout)
 		defer cancel()
-		if err := shipCallEnvelope(ctx, d, peerID, callID, msg.KindCallEnd, nil, "", nil, nil, ""); err != nil {
-			slog.Warn("call timeout: KindCallEnd ship failed",
-				slog.String("call_id", callID),
-				slog.String("peer_id", peerID),
-				slog.Any("err", err),
-			)
-		}
+
+		endCallOnDevices(ctx, d, callID, callRecipients(updated), "", "no answer")
+
+		callTeardown(d, updated)
 	})
 }
