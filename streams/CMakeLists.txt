@@ -101,6 +101,9 @@ add_library(streams_common STATIC
   common/aead.cpp
   common/key_fd.cpp
   common/control.cpp
+  common/media_meter.cpp
+  common/jitter_buffer.cpp
+  common/playout_scaler.cpp
 )
 target_include_directories(streams_common PUBLIC ${CMAKE_SOURCE_DIR})
 target_link_libraries(streams_common PUBLIC streams_sodium)

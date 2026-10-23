@@ -16,6 +16,8 @@ public:
   virtual ~AudioCapture() = default;
   virtual bool open(std::function<void(const float* samples)> on_frame) = 0;
   virtual void close() = 0;
+
+  virtual int32_t xrun_count() { return -1; }
 };
 
 class AudioPlayback {

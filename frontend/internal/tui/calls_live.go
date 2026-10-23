@@ -23,9 +23,8 @@ type liveCallPage struct {
 	body *tview.TextView
 	form *tview.Form
 
-	mu      sync.Mutex
-	muted   bool
-	dropped uint64
+	mu    sync.Mutex
+	muted bool
 
 	mic streamSampleHistory
 	spk streamSampleHistory
@@ -151,7 +150,6 @@ func (lp *liveCallPage) refresh() {
 	lp.mu.Lock()
 	mic := lp.mic
 	spk := lp.spk
-	dropped := lp.dropped
 	muted := lp.muted
 	lp.mu.Unlock()
 
@@ -168,14 +166,12 @@ func (lp *liveCallPage) refresh() {
 
 	micLine := formatStreamLine("↑ mic", mic, true)
 	spkLine := formatStreamLine("↓ spk", spk, false)
-	dropsLine := fmt.Sprintf("drops: %d", dropped)
 
 	const pad = "  "
-	lp.body.SetText(fmt.Sprintf("%s%s\n\n%s%s\n%s%s\n%s%s",
+	lp.body.SetText(fmt.Sprintf("%s%s\n\n%s%s\n%s%s",
 		pad, header,
 		pad, micLine,
 		pad, spkLine,
-		pad, dropsLine,
 	))
 }
 
@@ -324,9 +320,5 @@ func applyStreamSample(page *liveCallPage, p ipc.CallStreamEventPayload) {
 		}
 		page.spk.cur = sample
 		page.spk.hasCur = true
-	}
-
-	if p.FramesDropped > page.dropped {
-		page.dropped = p.FramesDropped
 	}
 }

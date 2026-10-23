@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"haoma-frontend/internal/ipc"
@@ -35,6 +36,7 @@ func main() {
 	flag.StringVar(&cfg.logFormat, "log-format", "text", "log format: text|json")
 	flag.StringVar(&cfg.logFileMode, "log-file-mode", "", "mode of the log file, kept across rotation: 0600 (default), 0640 or 0660")
 	flag.Int64Var(&cfg.logMaxBytes, "log-max-bytes", 0, "rotate the log file when it would exceed this size (0 = 4 MiB default); ignored when --log-file is empty or \"-\"")
+	flag.BoolVar(&cfg.callStats, "call-stats", false, "write 1 s call-media summaries to haoma-media.log beside --log-file, at any log level (off by default)")
 	flag.BoolVar(&cfg.showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -66,6 +68,21 @@ func main() {
 	defer closeLog()
 	slog.SetDefault(logger)
 
+	closeStatsLog := func() error { return nil }
+	if callStatsActive(cfg.callStats, cfg.logFile) {
+		mediaPath := filepath.Join(filepath.Dir(cfg.logFile), "haoma-media.log")
+		var errStatsLog error
+		cfg.statsLog, closeStatsLog, errStatsLog = logging.New(logging.Config{
+			Level: "debug", File: mediaPath, Format: cfg.logFormat, Service: "haoma",
+			MaxBytes: cfg.logMaxBytes, FileMode: logMode,
+		})
+		if errStatsLog != nil {
+			fmt.Fprintf(os.Stderr, "haoma: logging: %v\n", errStatsLog)
+			os.Exit(2)
+		}
+	}
+	defer closeStatsLog()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -73,6 +90,10 @@ func main() {
 		slog.Error("fatal", slog.Any("err", err))
 		os.Exit(1)
 	}
+}
+
+func callStatsActive(callStats bool, logFile string) bool {
+	return callStats && logFile != "" && logFile != "-"
 }
 
 type config struct {
@@ -92,9 +113,12 @@ type config struct {
 	logFormat       string
 	logMaxBytes     int64
 	logFileMode     string
+	callStats       bool
 	showVersion     bool
 
 	secrets secrets.Secrets
+
+	statsLog *slog.Logger
 }
 
 func loadSecrets(cfg config) (secrets.Secrets, error) {

@@ -50,6 +50,8 @@ type config struct {
 	manageTor     string
 	torDataDir    string
 	onionVirtPort int
+
+	statsLog *slog.Logger
 }
 
 type daemon struct {
@@ -133,6 +135,8 @@ type daemon struct {
 	routes routeBook
 
 	stallFault *stallFault
+
+	mediaStallFault *mediaStallFault
 
 	extProbe  *extprobe.Prober
 	selfProbe *peerSelfProbe
@@ -443,24 +447,28 @@ func run(ctx context.Context, cfg config) error {
 		)
 	}
 	d := &daemon{
-		cfg:          cfg,
-		store:        s,
-		registry:     peers.NewRegistry(s),
-		inbox:        newInbox(s, bus),
-		ids:          idsEngine,
-		dhtPairCache: newDHTPairCache(s),
-		bus:          bus,
-		files:        filesMgr,
-		proxy:        proxy.NewManager(slog.Default()),
-		onionInvites: newOnionInviteRegistry(),
-		rendezvous:   newRendezvousStore(s),
-		bgCtx:        ctx,
-		stopRun:      stopRun,
-		runDone:      runDone,
-		torPassword:  cfg.secrets.TorPassword,
-		torKick:      make(chan struct{}, 1),
-		startedAt:    time.Now().UTC(),
-		stallFault:   readStallFault(os.Getenv),
+		cfg:             cfg,
+		store:           s,
+		registry:        peers.NewRegistry(s),
+		inbox:           newInbox(s, bus),
+		ids:             idsEngine,
+		dhtPairCache:    newDHTPairCache(s),
+		bus:             bus,
+		files:           filesMgr,
+		proxy:           proxy.NewManager(slog.Default(), cfg.statsLog),
+		onionInvites:    newOnionInviteRegistry(),
+		rendezvous:      newRendezvousStore(s),
+		bgCtx:           ctx,
+		stopRun:         stopRun,
+		runDone:         runDone,
+		torPassword:     cfg.secrets.TorPassword,
+		torKick:         make(chan struct{}, 1),
+		startedAt:       time.Now().UTC(),
+		stallFault:      readStallFault(os.Getenv),
+		mediaStallFault: readMediaStallFault(os.Getenv),
+	}
+	if d.mediaStallFault != nil {
+		d.proxy.ServeWriteWrap = d.mediaStallFault.wrapServe
 	}
 
 	go bridgeIDSToBus(ctx, idsEngine, bus)

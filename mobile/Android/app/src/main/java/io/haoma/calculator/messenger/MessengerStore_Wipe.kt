@@ -134,7 +134,7 @@ private fun clearClipboard(ctx: Context) {
 const val WIPE_BLOCK_LABEL = "Erase this device"
 
 
-const val WIPE_BLOCK_PATH = "Settings → Advanced"
+const val WIPE_BLOCK_PATH = "Settings → Advanced → Erase"
 
 
 const val WIPE_BODY_GOES = "Erase this device:"

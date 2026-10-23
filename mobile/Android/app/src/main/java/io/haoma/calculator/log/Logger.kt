@@ -31,9 +31,28 @@ object Logger {
     @Volatile private var size: Long = 0
     @Volatile private var dir: File? = null
     @Volatile private var debugBuild: Boolean = false
+    @Volatile private var levelOverride: String? = null
+
+    private val KNOWN_LEVELS = setOf("error", "warn", "info", "debug")
 
     
-    val suiteLogLevel: String get() = if (debugBuild) "debug" else "warn"
+    fun setLevelOverride(level: String?) {
+        levelOverride = level
+    }
+
+    
+    fun resolveLogLevel(debugBuild: Boolean, override: String?): String {
+        if (override != null && override.isNotBlank() && override in KNOWN_LEVELS) {
+            return override
+        }
+        if (override != null && override.isNotBlank()) {
+            w("log-level", "unknown override '$override', falling back to the build default")
+        }
+        return if (debugBuild) "debug" else "warn"
+    }
+
+    
+    val suiteLogLevel: String get() = resolveLogLevel(debugBuild, levelOverride)
 
     
     val suiteLogFileMode: String get() = if (debugBuild) "0660" else "0600"

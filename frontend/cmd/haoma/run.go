@@ -66,6 +66,8 @@ type daemon struct {
 	backendClient *backendapi.Client
 	ipcSrv        *ipc.Server
 
+	statsLog *slog.Logger
+
 	startedAt time.Time
 
 	backendReachable atomic.Bool
@@ -272,6 +274,7 @@ func run(ctx context.Context, cfg config) error {
 		presenceCache: presence.New(),
 		notifier:      notify.New(nil, nil, ""),
 		startedAt:     time.Now().UTC(),
+		statsLog:      cfg.statsLog,
 
 		seededFaults: seededFaultsFromEnv(),
 		gapOfferTTL:  gapOfferLifetimeFromEnv(),

@@ -55,6 +55,7 @@ struct AACapture final : AudioCapture {
 
   bool open(std::function<void(const float*)> cb) override;
   void close() override;
+  int32_t xrun_count() override;
   ~AACapture() override { close(); }
 
   bool open_stream();   
@@ -177,6 +178,12 @@ void AACapture::reopen_after_disconnect() {
     stopped.store(true);
   }
   reopen_inflight.store(false);
+}
+
+int32_t AACapture::xrun_count() {
+  std::lock_guard<std::mutex> lock(swap_mu);
+  if (!stream) return -1;
+  return (int32_t)AAudioStream_getXRunCount(stream);
 }
 
 void AACapture::close() {

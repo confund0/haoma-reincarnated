@@ -22,7 +22,7 @@ func fakeTorBin(t *testing.T, mode os.FileMode) string {
 func TestBuildHaomadArgsOwnTor(t *testing.T) {
 	root := "/home/u/.haoma"
 	tor := torSetup{bin: "/usr/bin/tor"}.withDir(root)
-	args, err := buildHaomadArgs(root, "/rt", "warn", "/log", tor)
+	args, err := buildHaomadArgs(root, "/rt", "warn", "/log", tor, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestBuildHaomadArgsOwnTor(t *testing.T) {
 
 func TestBuildHaomadArgsSystemTor(t *testing.T) {
 	root := "/home/u/.haoma"
-	args, err := buildHaomadArgs(root, "/rt", "warn", "/log", torSetup{system: true}.withDir(root))
+	args, err := buildHaomadArgs(root, "/rt", "warn", "/log", torSetup{system: true}.withDir(root), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,9 +67,39 @@ func TestBuildHaomadArgsSystemTor(t *testing.T) {
 
 func TestBuildHaomadArgsRefusesAnEmptyOwnTor(t *testing.T) {
 	for _, tor := range []torSetup{{}, {bin: "/usr/bin/tor"}, {dir: "/d"}} {
-		if args, err := buildHaomadArgs("/r", "/rt", "warn", "/log", tor); err == nil {
+		if args, err := buildHaomadArgs("/r", "/rt", "warn", "/log", tor, false); err == nil {
 			t.Fatalf("%+v: no error, args %v", tor, args)
 		}
+	}
+}
+
+func TestBuildHaomadArgsCallStats(t *testing.T) {
+	root := "/home/u/.haoma"
+	ownTor := torSetup{bin: "/usr/bin/tor"}.withDir(root)
+	systemTor := torSetup{system: true}.withDir(root)
+	for _, tc := range []struct {
+		name string
+		tor  torSetup
+	}{
+		{"own tor", ownTor},
+		{"system tor", systemTor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			on, err := buildHaomadArgs(root, "/rt", "warn", "/log", tc.tor, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(on, "--call-stats") {
+				t.Fatalf("callStats=true: no --call-stats in %v", on)
+			}
+			off, err := buildHaomadArgs(root, "/rt", "warn", "/log", tc.tor, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(off, "--call-stats") {
+				t.Fatalf("callStats=false: --call-stats present in %v", off)
+			}
+		})
 	}
 }
 

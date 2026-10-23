@@ -5,6 +5,7 @@
 #include "../common/aead.h"
 #include "../common/key_fd.h"
 #include "../common/control.h"
+#include "../common/media_meter.h"
 #include "../platform/audio_backend.h"
 
 #include <opus/opus.h>
@@ -28,6 +29,7 @@ struct Args {
   uint16_t    port = 0;
   std::string stream_id;
   bool        trace = false;
+  bool        stream_debug = false;
 };
 
 bool parse_args(int argc, char** argv, Args& a) {
@@ -41,16 +43,19 @@ bool parse_args(int argc, char** argv, Args& a) {
       a.stream_id = argv[++i];
     } else if (s == "--trace") {
       a.trace = true;
+    } else if (s == "--stream-debug") {
+      a.stream_debug = true;
     } else if (s == "--help" || s == "-h") {
       std::fprintf(stderr,
-        "usage: haoma-mic --port N --stream-id ID [--trace]\n"
+        "usage: haoma-mic --port N --stream-id ID [--trace] [--stream-debug]\n"
         "  binds 127.0.0.1:N, accepts ONE client, captures mic,\n"
         "  encodes Opus 48k/mono/20ms/32kbps CBR/VOIP, DTX off,\n"
         "  AEAD-seals each frame (ChaCha20-Poly1305).\n"
         "  Reads 32-byte key from the first 32 bytes of stdin;\n"
         "  remainder of stdin is JSON-line control input.\n"
         "  --stream-id ID is one of: mic | cam | screen.\n"
-        "  --trace ups stats cadence + emits per-frame trace lines.\n");
+        "  --trace ups stats cadence + emits per-frame trace lines.\n"
+        "  --stream-debug emits a 200 ms \"sample\" line.\n");
       std::exit(0);
     } else {
       LOG_ERR("unknown arg: %s", argv[i]);
@@ -64,6 +69,29 @@ bool parse_args(int argc, char** argv, Args& a) {
 
 std::atomic<bool> g_done{false};
 void on_signal(int) { g_done.store(true); }
+
+struct MicMeterAccum {
+  std::atomic<uint64_t> frames_captured{0};
+  std::atomic<uint64_t> frames_out{0};
+  std::atomic<uint64_t> bytes_out{0};
+  std::atomic<int64_t>  write_block_max_ms{0};
+  int32_t xrun_in_period = 0;
+
+  std::atomic<uint64_t> frames_captured_sample{0};
+  std::atomic<uint64_t> frames_out_sample{0};
+  std::atomic<int64_t>  write_block_max_ms_sample{0};
+
+  void report_write_block_ms(int64_t v) {
+    int64_t cur = write_block_max_ms.load(std::memory_order_relaxed);
+    while (v > cur &&
+           !write_block_max_ms.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
+    }
+    int64_t cur_sample = write_block_max_ms_sample.load(std::memory_order_relaxed);
+    while (v > cur_sample &&
+           !write_block_max_ms_sample.compare_exchange_weak(cur_sample, v, std::memory_order_relaxed)) {
+    }
+  }
+};
 
 }  
 
@@ -121,12 +149,16 @@ int main(int argc, char** argv) {
 
   Stats              stats;
   std::atomic<bool>  trace{a.trace};
+  std::atomic<bool>  stream_debug{a.stream_debug};
   std::atomic<bool>  stats_req{false};
   std::atomic<bool>  muted{false};
   std::atomic<int>   request_kbps{0};
+  std::atomic<int>   current_kbps{32};
 
   uint64_t counter = 0;
   std::atomic<bool> write_failed{false};
+
+  MicMeterAccum meter;
 
   bool ok = cap->open([&](const float* samples) {
     if (write_failed.load()) return;
@@ -136,8 +168,12 @@ int main(int argc, char** argv) {
     int kbps = request_kbps.exchange(0);
     if (kbps > 0) {
       opus_encoder_ctl(enc, OPUS_SET_BITRATE(kbps * 1000));
+      current_kbps.store(kbps);
       LOG_INFO("bitrate -> %d kbps", kbps);
     }
+
+    meter.frames_captured.fetch_add(1, std::memory_order_relaxed);
+    meter.frames_captured_sample.fetch_add(1, std::memory_order_relaxed);
 
     static thread_local float silence[FRAME_SAMPLES] = {0};
     const float* in = muted.load() ? silence : samples;
@@ -160,7 +196,10 @@ int main(int argc, char** argv) {
     uint64_t this_counter = counter;
     counter++;
 
-    if (write_all(cfd, frame, flen) != (int64_t)flen) {
+    int64_t write_start_ns = steady_now_ns();
+    int64_t wrote = write_all(cfd, frame, flen);
+    int64_t write_block_ms = (steady_now_ns() - write_start_ns) / 1000000;
+    if (wrote != (int64_t)flen) {
       LOG_INFO("peer closed (write failed)");
       stats.frames_dropped.fetch_add(1);
       write_failed.store(true);
@@ -169,6 +208,10 @@ int main(int argc, char** argv) {
     }
     stats.frames_out.fetch_add(1);
     stats.bytes_out.fetch_add(flen);
+    meter.frames_out.fetch_add(1, std::memory_order_relaxed);
+    meter.frames_out_sample.fetch_add(1, std::memory_order_relaxed);
+    meter.bytes_out.fetch_add(flen, std::memory_order_relaxed);
+    meter.report_write_block_ms(write_block_ms);
     if (trace.load()) emit_trace_frame(this_counter, (uint32_t)flen, muted.load());
   });
   if (!ok) {
@@ -215,8 +258,65 @@ int main(int argc, char** argv) {
   std::thread stats_th(stats_loop, std::ref(stats), nullptr,
                        std::ref(g_done), std::ref(trace), std::ref(stats_req));
 
+  AudioCapture* cap_raw = cap.get();
+  std::thread meter_th([&]() {
+    PeriodClock period_clock(steady_now_ns());
+    int32_t last_xrun = -1;  
+    bool    xrun_primed = false;
+    while (!g_done.load()) {
+      for (int slept = 0; slept < 200 && !g_done.load(); slept += 100) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      if (g_done.load()) break;
+
+      int32_t xr_this_tick = 0;  
+      int32_t xr = cap_raw->xrun_count();
+      if (xr >= 0) {
+        if (!xrun_primed) {
+          last_xrun   = xr;
+          xrun_primed = true;
+        } else if (xr != last_xrun) {
+          int32_t delta = xrun_delta(xr, last_xrun);
+          last_xrun = xr;
+          meter.xrun_in_period += delta;
+          xr_this_tick = delta;
+          char fields[48];
+          std::snprintf(fields, sizeof(fields), "\"xrun_total\":%d", xr);
+          emit_event("xrun", fields);
+        }
+      }
+
+      if (stream_debug.load(std::memory_order_relaxed)) {
+        char fields[128];
+        std::snprintf(fields, sizeof(fields),
+                      "\"cap\":%llu,\"out\":%llu,\"q\":0,\"drop\":0,\"wb\":%lld,\"xr\":%d",
+                      (unsigned long long)meter.frames_captured_sample.exchange(0, std::memory_order_relaxed),
+                      (unsigned long long)meter.frames_out_sample.exchange(0, std::memory_order_relaxed),
+                      (long long)meter.write_block_max_ms_sample.exchange(0, std::memory_order_relaxed),
+                      xr_this_tick);
+        emit_sample(fields);
+      }
+
+      int64_t period_ms = 0;
+      if (!period_clock.tick(steady_now_ns(), &period_ms)) continue;
+
+      MicPeriod p;
+      p.period_ms          = period_ms;
+      p.frames_captured    = meter.frames_captured.exchange(0, std::memory_order_relaxed);
+      p.frames_out         = meter.frames_out.exchange(0, std::memory_order_relaxed);
+      p.write_block_max_ms = meter.write_block_max_ms.exchange(0, std::memory_order_relaxed);
+      p.bytes_out          = meter.bytes_out.exchange(0, std::memory_order_relaxed);
+      p.xrun_count         = xrun_primed ? meter.xrun_in_period : -1;
+      meter.xrun_in_period = 0;
+      p.bitrate_kbps       = current_kbps.load();
+      p.muted              = muted.load();
+      emit_summary(format_mic_summary(p));
+    }
+  });
+
   while (!g_done.load()) ::usleep(100000);
 
+  meter_th.join();
   cap->close();
   ::shutdown(cfd, SHUT_RDWR);
   ::close(cfd);

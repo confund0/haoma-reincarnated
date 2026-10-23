@@ -11,6 +11,11 @@ import (
 )
 
 func main() {
+
+	if len(os.Args) > 1 && os.Args[1] == "redact" {
+		os.Exit(redactMain(os.Args[2:]))
+	}
+
 	fs := flag.NewFlagSet("haoma-logs", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -294,6 +299,12 @@ func usage(fs *flag.FlagSet) {
 
 Usage:
   haoma-logs [flags] [run-directory]
+  haoma-logs redact [flags] <dir>
+
+The second form is the one mode that writes: it rewrites the logs
+under a directory in place, replacing anything that could identify a
+person or a device, so the directory can then be handed to an agent.
+It takes its own flags; run "haoma-logs redact -h" for them.
 
 The run directory holds one directory per account. Each account
 directory holds the log of its daemon and the logs of its clients. Give

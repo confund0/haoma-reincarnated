@@ -41,6 +41,7 @@ func main() {
 	logFormat := flag.String("log-format", "text", "log format: text|json")
 	logFileMode := flag.String("log-file-mode", "", "mode of the log file, kept across rotation: 0600 (default), 0640 or 0660")
 	logMaxBytes := flag.Int64("log-max-bytes", 0, "rotate the log file when it would exceed this size (0 = 4 MiB default); ignored when --log-file is empty or \"-\"")
+	callStats := flag.Bool("call-stats", false, "write 1 s call-media summaries to haomad-media.log beside --log-file, at any log level (off by default)")
 	flag.Parse()
 
 	if *showVersion {
@@ -78,6 +79,22 @@ func main() {
 	defer closeLog()
 	slog.SetDefault(logger)
 
+	var statsLog *slog.Logger
+	closeStatsLog := func() error { return nil }
+	if callStatsActive(*callStats, *logFile) {
+		mediaPath := filepath.Join(filepath.Dir(*logFile), "haomad-media.log")
+		var errStatsLog error
+		statsLog, closeStatsLog, errStatsLog = logging.New(logging.Config{
+			Level: "debug", File: mediaPath, Format: *logFormat, Service: "haomad",
+			MaxBytes: *logMaxBytes, FileMode: logMode,
+		})
+		if errStatsLog != nil {
+			fmt.Fprintf(os.Stderr, "haomad: logging: %v\n", errStatsLog)
+			os.Exit(2)
+		}
+	}
+	defer closeStatsLog()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -111,6 +128,7 @@ func main() {
 		manageTor:     *manageTor,
 		torDataDir:    resolvedTorDataDir,
 		onionVirtPort: *onionVirtPort,
+		statsLog:      statsLog,
 	}
 	runErr := run(ctx, cfg)
 
@@ -119,6 +137,10 @@ func main() {
 		slog.Error("fatal", slog.Any("err", runErr))
 		os.Exit(1)
 	}
+}
+
+func callStatsActive(callStats bool, logFile string) bool {
+	return callStats && logFile != "" && logFile != "-"
 }
 
 func loadSecrets(useStdin, manageTor bool, passphraseFile, torPasswordFile, tokenFile string) (secrets.Secrets, error) {

@@ -135,7 +135,7 @@ const val JOIN_NOT_OFFERED =
     "This device already has contacts or chats, so it cannot join another device. " +
         "A joining device takes on the other device's identity whole, which only " +
         "works from a device you have not set up yet. Invite from here instead.\n\n" +
-        "To make this device empty, erase it: $WIPE_BLOCK_PATH, at the foot of the page."
+        "To make this device empty, erase it: $WIPE_BLOCK_PATH."
 
 
 fun boldedPath(text: String, bold: String = WIPE_BLOCK_PATH): AnnotatedString = buildAnnotatedString {

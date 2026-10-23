@@ -23,3 +23,6 @@ smoke-bad: build
 test: build
 	$(BIN_DIR)/streams_test
 	$(BIN_DIR)/streams_control_test
+	$(BIN_DIR)/streams_media_meter_test
+	$(BIN_DIR)/streams_jitter_buffer_test
+	$(BIN_DIR)/streams_playout_scaler_test

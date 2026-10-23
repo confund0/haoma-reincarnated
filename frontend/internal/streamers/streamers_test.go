@@ -10,7 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,6 +65,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Test-only hooks (same shape as STREAMERS_TEST_RAW_UNIX below): a
+	// run-separated (\x1e) list of extra lines to print, so the L2
+	// tests can drive arbitrary summary / event / stats shapes and
+	// stderr lines through the real Spawn + readEvents / pumpStderr
+	// path rather than reimplementing it.
+	if lines := os.Getenv("STREAMERS_TEST_STDERR_LINES"); lines != "" {
+		for _, l := range strings.Split(lines, "\x1e") {
+			fmt.Fprintln(os.Stderr, l)
+		}
+	}
+
 	if !*noReady && !*emitError {
 		rawUnix := *readyRawUnix
 		if env := os.Getenv("STREAMERS_TEST_RAW_UNIX"); env != "" {
@@ -71,6 +85,12 @@ func main() {
 			fmt.Printf("{\"type\":\"ready\",\"raw_unix\":\"%s\"}\n", rawUnix)
 		} else {
 			fmt.Println("{\"type\":\"ready\"}")
+		}
+		os.Stdout.Sync()
+	}
+	if lines := os.Getenv("STREAMERS_TEST_PRINT_LINES"); lines != "" {
+		for _, l := range strings.Split(lines, "\x1e") {
+			fmt.Println(l)
 		}
 		os.Stdout.Sync()
 	}
@@ -693,5 +713,217 @@ func TestTeardown_Exit4WithoutStopIsReported(t *testing.T) {
 	err = mgr.Teardown("call5")
 	if err == nil || !strings.Contains(err.Error(), "exit status 4") {
 		t.Fatalf("Teardown = %v, want an error naming exit status 4", err)
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func findLine(s, substr string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if strings.Contains(l, substr) {
+			return l
+		}
+	}
+	return ""
+}
+
+func readUntilType(t *testing.T, events <-chan streamers.Event, want string, timeout time.Duration) streamers.Event {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("events channel closed before type %q arrived", want)
+			}
+			if ev.Type == want {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for type %q", want)
+		}
+	}
+}
+
+func TestReadEvents_RawKeptForSummaryAndEvent_EmptyForStats(t *testing.T) {
+	stub := buildStub(t)
+	t.Setenv("STREAMERS_TEST_PRINT_LINES", strings.Join([]string{
+		`{"type":"summary","period_ms":1000,"frames_in":5}`,
+		`{"type":"event","ev":"xrun","xrun_total":3}`,
+		`{"type":"stats","bytes_in":1,"bytes_out":2,"frames_in":1,"frames_out":1,"frames_dropped":0,"jitter_ms":0.1,"cpu_pct":0.0}`,
+	}, "\x1e"))
+
+	mgr, err := streamers.New(streamers.Config{Logger: discardLogger(), MicPath: stub, SpkPath: stub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := mgr.SpawnMic(ctx, "callRaw", 40001, bytes.Repeat([]byte{7}, 32), "mic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	summary := readUntilType(t, stream.Events(), "summary", 5*time.Second)
+	if len(summary.Raw) == 0 {
+		t.Error("summary event: Raw is empty, want the raw line kept")
+	} else if !bytes.Contains(summary.Raw, []byte(`"frames_in":5`)) {
+		t.Errorf("summary Raw = %q, want it to contain the summary's own fields", summary.Raw)
+	}
+
+	event := readUntilType(t, stream.Events(), "event", 5*time.Second)
+	if len(event.Raw) == 0 {
+		t.Error("event event: Raw is empty, want the raw line kept")
+	} else if !bytes.Contains(event.Raw, []byte(`"ev":"xrun"`)) {
+		t.Errorf("event Raw = %q, want it to contain the event's own fields", event.Raw)
+	}
+
+	stats := readUntilType(t, stream.Events(), "stats", 5*time.Second)
+	if len(stats.Raw) != 0 {
+		t.Errorf("stats event: Raw = %q, want empty (stats keeps its named fields only)", stats.Raw)
+	}
+
+	if err := mgr.Teardown("callRaw"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+}
+
+func TestPumpStderr_DBGLineAtDebug_OthersAtInfo(t *testing.T) {
+	stub := buildStub(t)
+	t.Setenv("STREAMERS_TEST_STDERR_LINES", strings.Join([]string{
+		"[haoma-mic] DBG : queue drained",
+		"[haoma-mic] INFO: plain line",
+	}, "\x1e"))
+
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mgr, err := streamers.New(streamers.Config{Logger: logger, MicPath: stub, SpkPath: stub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := mgr.SpawnMic(ctx, "callDbg", 40002, bytes.Repeat([]byte{8}, 32), "mic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+
+	var out string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		out = buf.String()
+		if strings.Contains(out, "queue drained") && strings.Contains(out, "plain line") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := mgr.Teardown("callDbg"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	dbgLine := findLine(out, "queue drained")
+	if dbgLine == "" || !strings.Contains(dbgLine, "level=DEBUG") {
+		t.Errorf("DBG stderr line not logged at Debug: %q", dbgLine)
+	}
+	infoLine := findLine(out, "plain line")
+	if infoLine == "" || !strings.Contains(infoLine, "level=INFO") {
+		t.Errorf("plain stderr line not logged at Info: %q", infoLine)
+	}
+}
+
+var droppedRe = regexp.MustCompile(`dropped=(\d+)`)
+
+func sumDropped(s string) int {
+	total := 0
+	for _, m := range droppedRe.FindAllStringSubmatch(s, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err == nil {
+			total += n
+		}
+	}
+	return total
+}
+
+func TestReadEvents_ChannelFull_LogsDroppedCount(t *testing.T) {
+	stub := buildStub(t)
+	const floodCount = 20
+	lines := make([]string, 0, floodCount)
+	for i := 0; i < floodCount; i++ {
+		lines = append(lines, fmt.Sprintf(`{"type":"event","ev":"flood","counter":%d}`, i))
+	}
+	t.Setenv("STREAMERS_TEST_PRINT_LINES", strings.Join(lines, "\x1e"))
+
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mgr, err := streamers.New(streamers.Config{Logger: logger, MicPath: stub, SpkPath: stub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mgr.Shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := mgr.SpawnMic(ctx, "callFlood", 40003, bytes.Repeat([]byte{9}, 32), "mic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	_ = stream
+
+	var out string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		out = buf.String()
+		if strings.Contains(out, "streamer event dropped") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := mgr.Teardown("callFlood"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	wantDropped := 1 + floodCount - 16
+	var got int
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		out = buf.String()
+		if got = sumDropped(out); got == wantDropped {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !strings.Contains(out, "streamer event dropped") {
+		t.Fatalf("no dropped-event log line; log:\n%s", out)
+	}
+	if got != wantDropped {
+		t.Errorf("total dropped = %d, want %d; log:\n%s", got, wantDropped, out)
 	}
 }

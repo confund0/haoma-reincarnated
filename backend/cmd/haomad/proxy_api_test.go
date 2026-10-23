@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net"
@@ -14,10 +15,21 @@ import (
 	"haoma/internal/proxy"
 )
 
+func encodeAudioTestFrame(counter, pts uint64, payload []byte) []byte {
+	body := make([]byte, 8+8+len(payload)+16)
+	binary.BigEndian.PutUint64(body[0:8], counter)
+	binary.BigEndian.PutUint64(body[8:16], pts)
+	copy(body[16:16+len(payload)], payload)
+	frame := make([]byte, 2+len(body))
+	binary.BigEndian.PutUint16(frame[0:2], uint16(len(body)))
+	copy(frame[2:], body)
+	return frame
+}
+
 func newProxyTestDaemon(t *testing.T) *daemon {
 	t.Helper()
 	d := newTestDaemon(t)
-	d.proxy = proxy.NewManager(nil)
+	d.proxy = proxy.NewManager(nil, nil)
 	return d
 }
 
@@ -221,7 +233,7 @@ func TestPeerOnion_AudioStreamGet_HappyPath(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("streamer did not see haomad dial")
 	}
-	want := []byte("audio-frames-1234")
+	want := encodeAudioTestFrame(1, 1000, []byte("audio-frames-1234"))
 	conn.Write(want)
 	conn.Close()
 

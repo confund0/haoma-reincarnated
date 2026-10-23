@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -281,6 +283,84 @@ func awaitStats(t *testing.T, s *streamers.Stream, timeout time.Duration, want f
 		case <-deadline:
 			t.Fatalf("no wanted stats from the %s in %s; last %+v", s.Side, timeout, last)
 		}
+	}
+}
+
+func awaitSummary(t *testing.T, s *streamers.Stream, timeout time.Duration) streamers.Event {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-s.Events():
+			if !ok {
+				t.Fatalf("the %s exited before a summary line arrived", s.Side)
+			}
+			if ev.Type == "summary" {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("no summary line from the %s in %s", s.Side, timeout)
+		}
+	}
+}
+
+func rawKeys(t *testing.T, raw []byte) []string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil {
+		t.Fatalf("rawKeys: %v", err)
+	}
+	var keys []string
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("rawKeys: %v", err)
+		}
+		keys = append(keys, keyTok.(string))
+		if _, err := dec.Token(); err != nil {
+			t.Fatalf("rawKeys: %v", err)
+		}
+	}
+	return keys
+}
+
+func TestSummaryLine_KeysAndOrderPerRole(t *testing.T) {
+	m := newManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	outbound := randomKey(t)
+	sub, err := streamers.DeriveStreamKey(outbound, "mic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	micPort, spkPort := freePort(t), freePort(t)
+	mic := spawnReady(t, ctx, m.SpawnMic, "call-sum", micPort, sub)
+	spk := spawnReady(t, ctx, m.SpawnSpk, "call-sum", spkPort, sub)
+	splice(t, micPort, spkPort)
+
+	wantMic := []string{
+		"type", "period_ms", "frames_captured", "frames_out",
+		"write_block_max_ms", "bitrate_kbps", "bytes_out", "muted",
+	}
+	wantSpk := []string{
+		"type", "period_ms", "frames_in", "played_ms", "underrun_ms", "gap_ms",
+		"drop_overflow_ms", "drop_replay_ms", "drop_aead_ms", "drop_mute_ms", "drop_decode_ms",
+		"queue_min_ms", "queue_avg_ms", "queue_max_ms", "jitter_ms",
+		"delay_excess_min_ms", "delay_excess_avg_ms", "delay_excess_max_ms", "bytes_in",
+	}
+
+	micEv := awaitSummary(t, mic, 3*time.Second)
+	if got := rawKeys(t, micEv.Raw); !slices.Equal(got, wantMic) {
+		t.Fatalf("mic summary keys = %v, want %v", got, wantMic)
+	}
+
+	spkEv := awaitSummary(t, spk, 3*time.Second)
+	if got := rawKeys(t, spkEv.Raw); !slices.Equal(got, wantSpk) {
+		t.Fatalf("spk summary keys = %v, want %v", got, wantSpk)
+	}
+
+	if err := m.Teardown("call-sum"); err != nil {
+		t.Fatal(err)
 	}
 }
 

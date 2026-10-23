@@ -1837,7 +1837,6 @@ data class CallStreamState(
     val spk: CallStreamSide? = null,
     val cam: CallStreamSide? = null,
     val vid: CallStreamSide? = null,
-    val dropped: Long = 0L,
 )
 
 

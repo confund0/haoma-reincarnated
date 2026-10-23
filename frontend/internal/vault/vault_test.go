@@ -573,6 +573,8 @@ func TestPayload_StrictDecodeAcceptsAllMobileKeys(t *testing.T) {
 		"show_failed_destroy_attempts": false,
 		"url_force_chooser":         true,
 		"share_target_enabled":      true,
+		"log_level":                 "debug",
+		"call_stats":                true,
 		"mobile_notice_snooze":      {"passphrase_is_default": {"until": 1733600000000, "step": 2}}
 	}`
 
@@ -612,6 +614,9 @@ func TestPayload_RoundTripsAllFields(t *testing.T) {
 	want.DefaultAttachStartDir = "/tmp/haoma-test-attach"
 
 	want.URLForceChooser = false
+
+	want.LogLevel = "debug"
+	want.CallStats = true
 
 	want.MobileNoticeSnooze = map[string]NoticeSnoozeState{
 		"passphrase_is_default": {Until: 1733600000000, Step: 2},

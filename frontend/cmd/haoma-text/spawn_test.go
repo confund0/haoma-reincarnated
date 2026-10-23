@@ -103,6 +103,89 @@ func TestSpawnAndRun_WiresStderrCaptureNotLogPath(t *testing.T) {
 	requireAbsent(t, haomaLog)
 }
 
+func TestSpawnAndRun_PassesCallStatsToBoth(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		callStats bool
+	}{
+		{"on", true},
+		{"off (default)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Chmod(root, 0o700); err != nil {
+				t.Fatalf("chmod root: %v", err)
+			}
+			argvDir := t.TempDir()
+			vc := newTestController(t)
+			t.Setenv("HAOMA_TEXT_TEST_MODE", "mock-daemon")
+			t.Setenv("HAOMA_TEXT_TEST_ARGV_DIR", argvDir)
+
+			opts := spawnOpts{
+				haomadBin: os.Args[0],
+				haomaBin:  os.Args[0],
+				logLevel:  "warn",
+				tor:       torSetup{system: true},
+				callStats: tc.callStats,
+			}
+			done := make(chan error, 1)
+			go func() { done <- spawnAndRun(root, vc, opts) }()
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), "ipc client") {
+					t.Fatalf("spawnAndRun err = %v, want the ipc-client failure after both spawns", err)
+				}
+			case <-time.After(20 * time.Second):
+				t.Fatal("spawnAndRun did not return within 20s")
+			}
+
+			files, _ := filepath.Glob(filepath.Join(argvDir, "argv-*"))
+			if len(files) != 2 {
+				t.Fatalf("%d argv files written, want 2", len(files))
+			}
+			var haomadArgv, haomaArgv []string
+			for _, f := range files {
+				raw, err := os.ReadFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				argv := strings.Split(string(raw), "\x00")
+				isHaomad := false
+				for _, a := range argv {
+					if a == "--runtime-file" {
+						isHaomad = true
+					}
+				}
+				if isHaomad {
+					haomadArgv = argv
+				} else {
+					haomaArgv = argv
+				}
+			}
+			if haomadArgv == nil || haomaArgv == nil {
+				t.Fatalf("could not tell haomad's argv from haoma's among %v", files)
+			}
+			haveHaomad := strings.Contains(strings.Join(haomadArgv, "\x00"), "--call-stats")
+			haveHaoma := strings.Contains(strings.Join(haomaArgv, "\x00"), "--call-stats")
+			if tc.callStats {
+				if !haveHaomad {
+					t.Fatalf("callStats=true: no --call-stats in haomad argv %q", haomadArgv)
+				}
+				if !haveHaoma {
+					t.Fatalf("callStats=true: no --call-stats in haoma argv %q", haomaArgv)
+				}
+			} else {
+				if haveHaomad {
+					t.Fatalf("callStats=false: --call-stats present in haomad argv %q", haomadArgv)
+				}
+				if haveHaoma {
+					t.Fatalf("callStats=false: --call-stats present in haoma argv %q", haomaArgv)
+				}
+			}
+		})
+	}
+}
+
 func requireMarker(t *testing.T, path string) {
 	t.Helper()
 	data, err := os.ReadFile(path)

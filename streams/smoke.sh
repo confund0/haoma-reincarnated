@@ -49,10 +49,39 @@
 #                        stdin (spk stays on plain `<keyfile`).
 #   TRACE=1            — pass --trace to both streamers (200ms stats
 #                        cadence + per-frame trace events).
+#   STREAM_DEBUG=1     — pass --stream-debug to both streamers: a 200ms
+#                        "sample" line on top of the 1s "summary" line,
+#                        same JSON-line stdout stream.
 #   EVENTS=1           — capture each streamer's stdout (the JSON-line
 #                        event stream) to tmp/streams-smoke/*.jsonl.
 #                        Default: stdout to /dev/null so the terminal
 #                        is reserved for INFO/ERR on stderr.
+#   STALL=1            — ferry with frontend/cmd/haoma-rig/stallrelay
+#                        instead of socat, so weak-link stalls and a
+#                        capped catch-up drain happen on the mic-to-spk
+#                        path, the desktop stall harness. Press
+#                        Enter in this terminal to trigger a stall by
+#                        hand. STALL_EVERY, STALL_FOR, STALL_CAP,
+#                        STALL_BUF set stallrelay's -stall-every,
+#                        -stall-for, -cap, -buf; unset, each keeps the
+#                        Go binary's own default (-cap 5000 B/s).
+#                        -cap's default is BELOW the real wire rate
+#                        (mic's default 32 kbps Opus + 34 B/frame
+#                        header+tag at 50 frames/s ~= 5,700 B/s), so
+#                        left unset the post-stall "drain" never
+#                        actually exceeds real-time — it trickles, and
+#                        nothing shows up in the events/summary lines.
+#                        For the flood/catch-up shape (a Tor circuit
+#                        catching up after a stall, not a sustained
+#                        slow link), always set STALL_CAP
+#                        well above the wire rate, e.g.:
+#                          STALL=1 STALL_CAP=50000 STALL_FOR=5s \
+#                          STALL_EVERY=15s STREAM_DEBUG=1 EVENTS=1 \
+#                          streams/smoke.sh
+#   SPK_EXTRA_FLAGS    — appended verbatim to the spk command line, e.g.
+#                        SPK_EXTRA_FLAGS="--jb-scale-enabled" to exercise
+#                        the playout time-scaler under STALL=1's
+#                        weak-link stalls.
 
 set -u
 
@@ -63,7 +92,7 @@ MIC_PORT="${MIC_PORT:-15551}"
 SPK_PORT="${SPK_PORT:-15552}"
 STREAM_ID="${STREAM_ID:-mic}"
 
-if ! command -v socat >/dev/null 2>&1; then
+if [ "${STALL:-0}" != "1" ] && ! command -v socat >/dev/null 2>&1; then
   echo "smoke: socat not installed (apk add socat)" >&2
   exit 1
 fi
@@ -103,7 +132,7 @@ else
 fi
 
 cleanup() {
-  [ -n "${SOCAT_PID:-}" ] && kill "$SOCAT_PID" 2>/dev/null
+  [ -n "${RELAY_PID:-}" ] && kill "$RELAY_PID" 2>/dev/null
   [ -n "${MIC_PID:-}"   ] && kill "$MIC_PID"   2>/dev/null
   [ -n "${SPK_PID:-}"   ] && kill "$SPK_PID"   2>/dev/null
   exec 7>&- 2>/dev/null
@@ -120,9 +149,11 @@ trap 'exit 0' INT TERM
 
 TRACE_FLAG=
 [ "${TRACE:-0}" = "1" ] && TRACE_FLAG="--trace"
+STREAM_DEBUG_FLAG=
+[ "${STREAM_DEBUG:-0}" = "1" ] && STREAM_DEBUG_FLAG="--stream-debug"
 
 # spk: always plain <keyfile.  Control plane is a mic-only demo here.
-eval "\"\$BIN_DIR/haoma-spk\" --port \"\$SPK_PORT\" --stream-id \"\$STREAM_ID\" \$TRACE_FLAG <\"\$SPK_KEY\" $SPK_OUT_REDIR &"
+eval "\"\$BIN_DIR/haoma-spk\" --port \"\$SPK_PORT\" --stream-id \"\$STREAM_ID\" \$TRACE_FLAG \$STREAM_DEBUG_FLAG \${SPK_EXTRA_FLAGS:-} <\"\$SPK_KEY\" $SPK_OUT_REDIR &"
 SPK_PID=$!
 
 if [ "${CMDS:-0}" = "1" ]; then
@@ -131,20 +162,31 @@ if [ "${CMDS:-0}" = "1" ]; then
   # would deadlock against the streamer's <FIFO open-for-read.
   mkfifo -m 600 "$MIC_FIFO"
   exec 7<>"$MIC_FIFO"
-  eval "\"\$BIN_DIR/haoma-mic\" --port \"\$MIC_PORT\" --stream-id \"\$STREAM_ID\" \$TRACE_FLAG <\"\$MIC_FIFO\" $MIC_OUT_REDIR &"
+  eval "\"\$BIN_DIR/haoma-mic\" --port \"\$MIC_PORT\" --stream-id \"\$STREAM_ID\" \$TRACE_FLAG \$STREAM_DEBUG_FLAG <\"\$MIC_FIFO\" $MIC_OUT_REDIR &"
   MIC_PID=$!
   cat "$MIC_KEY" >&7
 else
-  eval "\"\$BIN_DIR/haoma-mic\" --port \"\$MIC_PORT\" --stream-id \"\$STREAM_ID\" \$TRACE_FLAG <\"\$MIC_KEY\" $MIC_OUT_REDIR &"
+  eval "\"\$BIN_DIR/haoma-mic\" --port \"\$MIC_PORT\" --stream-id \"\$STREAM_ID\" \$TRACE_FLAG \$STREAM_DEBUG_FLAG <\"\$MIC_KEY\" $MIC_OUT_REDIR &"
   MIC_PID=$!
 fi
 
-# Let listeners come up before socat dials.
+# Let listeners come up before the relay dials.
 sleep 0.3
 
-echo "smoke: ferrying  mic:$MIC_PORT  ->  spk:$SPK_PORT   (Ctrl-C to stop)"
-socat -u "TCP:127.0.0.1:$MIC_PORT" "TCP:127.0.0.1:$SPK_PORT" &
-SOCAT_PID=$!
+if [ "${STALL:-0}" = "1" ]; then
+  RELAY_FLAGS="-mic-port $MIC_PORT -spk-port $SPK_PORT"
+  [ -n "${STALL_EVERY:-}" ] && RELAY_FLAGS="$RELAY_FLAGS -stall-every $STALL_EVERY"
+  [ -n "${STALL_FOR:-}"   ] && RELAY_FLAGS="$RELAY_FLAGS -stall-for $STALL_FOR"
+  [ -n "${STALL_CAP:-}"   ] && RELAY_FLAGS="$RELAY_FLAGS -cap $STALL_CAP"
+  [ -n "${STALL_BUF:-}"   ] && RELAY_FLAGS="$RELAY_FLAGS -buf $STALL_BUF"
+  echo "smoke: ferrying  mic:$MIC_PORT  ->  spk:$SPK_PORT  via stallrelay (STALL=1, Enter to trigger a stall, Ctrl-C to stop)"
+  (cd "$ROOT/frontend" && go run ./cmd/haoma-rig/stallrelay $RELAY_FLAGS) &
+  RELAY_PID=$!
+else
+  echo "smoke: ferrying  mic:$MIC_PORT  ->  spk:$SPK_PORT   (Ctrl-C to stop)"
+  socat -u "TCP:127.0.0.1:$MIC_PORT" "TCP:127.0.0.1:$SPK_PORT" &
+  RELAY_PID=$!
+fi
 
 if [ "${CMDS:-0}" = "1" ]; then
   echo "smoke: CMDS=1 — driving control plane on mic"
@@ -164,4 +206,4 @@ if [ "${CMDS:-0}" = "1" ]; then
   ) &
 fi
 
-wait "$SOCAT_PID"
+wait "$RELAY_PID"

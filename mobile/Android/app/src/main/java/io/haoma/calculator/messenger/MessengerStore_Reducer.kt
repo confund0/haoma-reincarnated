@@ -326,8 +326,6 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                             "mic" -> cur.copy(mic = side)
                             "spk" -> cur.copy(spk = side)
                             else -> cur
-                        }.let { s ->
-                            if (ev.framesDropped > s.dropped) s.copy(dropped = ev.framesDropped) else s
                         }
                         prev + (ev.callId to next)
                     }

@@ -182,3 +182,24 @@ func randHex(t *testing.T, n int) string {
 	}
 	return hex.EncodeToString(b)
 }
+
+func TestCallStatsActive(t *testing.T) {
+	cases := []struct {
+		name       string
+		callStats  bool
+		logFile    string
+		wantActive bool
+	}{
+		{"off", false, "/tmp/haoma.log", false},
+		{"on with real path", true, "/tmp/haoma.log", true},
+		{"on with empty log-file", true, "", false},
+		{"on with stderr log-file", true, "-", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := callStatsActive(tc.callStats, tc.logFile); got != tc.wantActive {
+				t.Errorf("callStatsActive(%v, %q) = %v, want %v", tc.callStats, tc.logFile, got, tc.wantActive)
+			}
+		})
+	}
+}

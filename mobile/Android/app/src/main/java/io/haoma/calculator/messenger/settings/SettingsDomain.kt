@@ -47,6 +47,6 @@ internal object SettingsDomains {
         Tor to "Control-port password",
         Notifications to "Per-OS banners, sender + body privacy",
         LinkedDevices to "Your other device, destroy PIN, unlink",
-        Advanced to "Security warnings",
+        Advanced to "Privacy, backup, logs, erase",
     )
 }

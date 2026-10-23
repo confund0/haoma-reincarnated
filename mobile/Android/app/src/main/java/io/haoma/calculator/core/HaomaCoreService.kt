@@ -172,6 +172,13 @@ class HaomaCoreService : Service() {
         reapStaleHandles()
         
         
+        val vaultSnapshot = (applicationContext as? HaomaApp)?.vaultSession?.snapshot()
+        if (vaultSnapshot != null) {
+            Logger.setLevelOverride(vaultSnapshot.optString("log_level", "").ifBlank { null })
+        }
+        val callStatsOn = vaultSnapshot?.optBoolean("call_stats", false) ?: false
+        
+        
         if (haomad != null) {
             if (!probeHaomadHealth(haomadAddr)) {
                 Logger.w("fgs", "haomad probe failed; reaping and respawning")
@@ -199,7 +206,7 @@ class HaomaCoreService : Service() {
         var spawnedHaoma = false
         try {
             if (haomad == null) {
-                val d = spawnHaomad(secrets)
+                val d = spawnHaomad(secrets, callStatsOn)
                 haomad = d
                 spawnedHaomad = true
                 val addr = d.waitReady(READY_TIMEOUT_MS)
@@ -212,7 +219,7 @@ class HaomaCoreService : Service() {
                 ?: error("haomad addr null after liveness check")
 
             if (haoma == null) {
-                val d = spawnHaoma(secrets, haomadAddrLocal)
+                val d = spawnHaoma(secrets, haomadAddrLocal, callStatsOn)
                 haoma = d
                 spawnedHaoma = true
                 val addr = d.waitReady(READY_TIMEOUT_MS)
@@ -376,7 +383,7 @@ class HaomaCoreService : Service() {
         ensureDaemonsUp()
     }
 
-    private fun spawnHaomad(secretsBlob: ByteArray): Daemon {
+    private fun spawnHaomad(secretsBlob: ByteArray, callStatsOn: Boolean): Daemon {
         val nativeDir = applicationInfo.nativeLibraryDir
         val cfg = VaultHelper.cfgDir(applicationContext)
         val haomadLog = File(Logger.fileFor("haomad"))
@@ -384,7 +391,7 @@ class HaomaCoreService : Service() {
         
         val torBin = File(nativeDir, "libtor.so")
         val torDataDir = File(cfg, "tor")
-        val args = listOf(
+        val args = mutableListOf(
             "--cfg-dir", cfg.absolutePath,
             "--secrets-stdin",
             "--api-addr", "127.0.0.1:0",
@@ -395,6 +402,7 @@ class HaomaCoreService : Service() {
             "--log-file", haomadLog.absolutePath,
             "--log-file-mode", Logger.suiteLogFileMode,
         )
+        if (callStatsOn) args.add("--call-stats")
         return Daemon.spawn(
             name = "haomad",
             bin = File(nativeDir, "libhaomad.so"),
@@ -405,11 +413,11 @@ class HaomaCoreService : Service() {
     }
 
     
-    private fun spawnHaoma(secretsBlob: ByteArray, haomadAddr: String): Daemon {
+    private fun spawnHaoma(secretsBlob: ByteArray, haomadAddr: String, callStatsOn: Boolean): Daemon {
         val nativeDir = applicationInfo.nativeLibraryDir
         val cfg = VaultHelper.cfgDir(applicationContext)
         val haomaLog = File(Logger.fileFor("haoma"))
-        val args = listOf(
+        val args = mutableListOf(
             "--cfg-dir", cfg.absolutePath,
             "--secrets-stdin",
             "--addr", "127.0.0.1:0",
@@ -418,6 +426,7 @@ class HaomaCoreService : Service() {
             "--log-file", haomaLog.absolutePath,
             "--log-file-mode", Logger.suiteLogFileMode,
         )
+        if (callStatsOn) args.add("--call-stats")
         return Daemon.spawn(
             name = "haoma",
             bin = File(nativeDir, "libhaoma.so"),

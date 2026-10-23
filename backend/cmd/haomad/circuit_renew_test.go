@@ -515,7 +515,7 @@ func TestCircuitRenewal_OldInboundEnvelopeIsNoProof(t *testing.T) {
 func TestCircuitRenewal_ActiveCallDoesNotRenew(t *testing.T) {
 	fx := newRenewFixture(t)
 	fx.d.onInboundVerified(context.Background(), fx.peer.ID)
-	fx.d.proxy = proxy.NewManager(nil)
+	fx.d.proxy = proxy.NewManager(nil, nil)
 	const token = "calltokencalltokencalltoken"
 	startCall(t, fx.d, fx.addr, token)
 	if why := fx.decide(time.Now()); why != circuitCallActive {
@@ -530,7 +530,7 @@ func TestCircuitRenewal_ActiveCallDoesNotRenew(t *testing.T) {
 func TestCircuitRenewal_CallWithAnotherPeerDoesNotHold(t *testing.T) {
 	fx := newRenewFixture(t)
 	fx.d.onInboundVerified(context.Background(), fx.peer.ID)
-	fx.d.proxy = proxy.NewManager(nil)
+	fx.d.proxy = proxy.NewManager(nil, nil)
 	startCall(t, fx.d, sid("someoneelse"), "othertokenothertokenothertoken")
 	if why := fx.decide(time.Now()); why != circuitRenewed {
 		t.Fatalf("outcome %q with a call to another onion, want %q", why, circuitRenewed)
@@ -563,7 +563,7 @@ func TestCircuitRenewal_RecheckedAfterTheSelfProbe(t *testing.T) {
 	})
 	t.Run("call", func(t *testing.T) {
 		fx := newRenewFixture(t)
-		fx.d.proxy = proxy.NewManager(nil)
+		fx.d.proxy = proxy.NewManager(nil, nil)
 		staleSelfProbe(fx.d, fx.peer)
 		fx.socks.onConnect = func(_, host string) {
 			if host == fx.peer.MyOnionAddr {
@@ -783,7 +783,7 @@ func TestCircuitRenewal_RecheckedAfterTheDelay(t *testing.T) {
 	t.Run("call", func(t *testing.T) {
 		fx := newRenewFixture(t)
 		burst(fx)
-		fx.d.proxy = proxy.NewManager(nil)
+		fx.d.proxy = proxy.NewManager(nil, nil)
 		renewSleep = func(context.Context, time.Duration) bool {
 			startCall(t, fx.d, fx.addr, "delaycalltokendelaycalltoken")
 			return true
@@ -1028,7 +1028,7 @@ func TestCircuitRenewal_GatesHoldAtTheCut(t *testing.T) {
 		"self-probe red, no inbound envelope": func(fx *renewFixture) { setSelfProbe(fx.d, fx.peer, false) },
 		"a call is pulling": func(fx *renewFixture) {
 			fx.d.onInboundVerified(context.Background(), fx.peer.ID)
-			fx.d.proxy = proxy.NewManager(nil)
+			fx.d.proxy = proxy.NewManager(nil, nil)
 			startCall(t, fx.d, fx.addr, "cutcalltokencutcalltoken")
 		},
 		"window not passed": func(fx *renewFixture) {

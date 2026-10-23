@@ -136,6 +136,21 @@ void emit_error(const std::string& reason) {
   emit_line(s.c_str());
 }
 
+void emit_summary(const std::string& fields) {
+  std::string s = "{\"type\":\"summary\"," + fields + "}";
+  emit_line(s.c_str());
+}
+
+void emit_event(const char* ev, const std::string& fields) {
+  std::string s = "{\"type\":\"event\",\"ev\":\"" + esc(ev) + "\"," + fields + "}";
+  emit_line(s.c_str());
+}
+
+void emit_sample(const std::string& fields) {
+  std::string s = "{\"type\":\"sample\"," + fields + "}";
+  emit_line(s.c_str());
+}
+
 void emit_trace_frame(uint64_t counter, uint32_t bytes, bool muted) {
   char buf[128];
   std::snprintf(buf, sizeof(buf),

@@ -206,7 +206,6 @@ private fun StreamStatsChip(
     val micColor = micArrowColor(stream?.mic, nowMs)
     val spkColor = spkArrowColor(stream?.spk, nowMs)
     val jitter = stream?.spk?.jitterMs
-    val drops = stream?.dropped ?: 0L
     val haptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
 
@@ -248,12 +247,6 @@ private fun StreamStatsChip(
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
             )
-            Text(
-                text = "${drops}drp",
-                color = if (drops > 0) ArrowRed else BarText,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-            )
         }
     }
 }
@@ -282,7 +275,6 @@ private fun CallStatsSheet(
         ) {
             StatsTitle("Call diagnostics")
             StatsRow("call id", callId.take(16))
-            StatsRow("drops", (stream?.dropped ?: 0L).toString())
             StatsTitle("mic ↑")
             StatsRow("frames out", (stream?.mic?.framesOut ?: 0L).toString())
             StatsRow("sample age", sampleAgeMs(stream?.mic?.lastSampleAtMs, nowMs))

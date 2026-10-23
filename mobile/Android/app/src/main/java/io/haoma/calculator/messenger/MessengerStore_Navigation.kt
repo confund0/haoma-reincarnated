@@ -34,6 +34,11 @@ fun MessengerStore.openSettingsSection(domain: String) {
 }
 
 
+fun MessengerStore.openAdvancedLogs() {
+    _backStack.update { it + Screen.AdvancedLogs }
+}
+
+
 fun MessengerStore.openChatForPeer(peerId: String) {
     val cached = _chats.value.firstOrNull { it.peerId == peerId }
     if (cached != null) {

@@ -45,6 +45,7 @@ import io.haoma.calculator.messenger.chats.ChatsTab
 import io.haoma.calculator.messenger.contacts.ContactDetailScreen
 import io.haoma.calculator.messenger.contacts.ContactsTab
 import io.haoma.calculator.messenger.invites.InvitesTab
+import io.haoma.calculator.messenger.settings.AdvancedLogsScreen
 import io.haoma.calculator.messenger.settings.SettingsSectionScreen
 import io.haoma.calculator.messenger.settings.SettingsTab
 import io.haoma.calculator.messenger.status.StatusScaffold
@@ -119,6 +120,10 @@ fun MessengerScaffold(store: MessengerStore) {
                 is Screen.SettingsSection -> SettingsSectionScreen(
                     store = store,
                     domain = screen.domain,
+                    onBack = { store.popBack() },
+                )
+                Screen.AdvancedLogs -> AdvancedLogsScreen(
+                    store = store,
                     onBack = { store.popBack() },
                 )
             }

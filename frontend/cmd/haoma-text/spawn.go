@@ -47,6 +47,7 @@ type spawnOpts struct {
 	idleOverride  int
 	restoreBackup string
 	tor           torSetup
+	callStats     bool
 }
 
 func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
@@ -79,7 +80,7 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 
 	haomadCertPath := filepath.Join(backendDir, "cert.pem")
 
-	haomadArgs, err := buildHaomadArgs(root, runtimePath, opts.logLevel, haomadLog, opts.tor)
+	haomadArgs, err := buildHaomadArgs(root, runtimePath, opts.logLevel, haomadLog, opts.tor, opts.callStats)
 	if err != nil {
 		return fmt.Errorf("haomad: %w", err)
 	}
@@ -145,6 +146,9 @@ func spawnAndRun(root string, vc *vaultController, opts spawnOpts) error {
 		"--backend-addr", "https://" + haomad.APIAddr,
 		"--log-level", opts.logLevel,
 		"--log-file", haomaLog,
+	}
+	if opts.callStats {
+		haomaArgs = append(haomaArgs, "--call-stats")
 	}
 	haoma, err := supervisor.Spawn("haoma", opts.haomaBin, haomaArgs, secretsBlob, haomaStderr)
 	if err != nil {

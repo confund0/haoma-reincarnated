@@ -42,6 +42,12 @@ void emit_stats(const Stats& s, double cpu_pct);
 void emit_warn(const std::string& reason);
 void emit_error(const std::string& reason);
 
+void emit_summary(const std::string& fields);
+
+void emit_event(const char* ev, const std::string& fields);
+
+void emit_sample(const std::string& fields);
+
 void emit_trace_frame(uint64_t counter, uint32_t bytes, bool muted);
 
 void emit_clock_sample(int64_t local_ns, int64_t sender_pts_ns);
@@ -71,6 +77,7 @@ class JitterTracker {
  public:
   void on_frame_arrival(std::chrono::steady_clock::time_point now);
   void store_into(Stats& s) const;
+  double current_ms() const { return j_ms_; }
  private:
   std::chrono::steady_clock::time_point last_{};
   bool   primed_ = false;

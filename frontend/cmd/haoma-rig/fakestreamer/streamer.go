@@ -66,8 +66,9 @@ type streamer struct {
 	st        counters
 	aeadFails atomic.Uint64
 
-	muted    atomic.Bool
-	statsReq atomic.Bool
+	muted       atomic.Bool
+	statsReq    atomic.Bool
+	bitrateKbps atomic.Int32
 
 	doneOnce sync.Once
 	done     chan struct{}
@@ -169,6 +170,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stop <-chan s
 		done:   make(chan struct{}),
 		origin: time.Now(),
 	}
+	s.bitrateKbps.Store(32)
 	ok, help := s.parseArgs(args)
 	if help {
 		_, _ = io.WriteString(stderr, helpText(tag))
@@ -238,6 +240,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, stop <-chan s
 
 	go s.controlLoop()
 	go s.statsLoop()
+	go s.summaryLoop()
 
 	<-s.done
 	_ = conn.Close()
@@ -621,6 +624,7 @@ func (s *streamer) apply(c command) {
 			s.logInfo("rejected bitrate %d kbps (allowed 6..128)", c.kbps)
 			return
 		}
+		s.bitrateKbps.Store(int32(c.kbps))
 		s.logInfo("bitrate -> %d kbps", c.kbps)
 	case "stats":
 		s.statsReq.Store(true)
@@ -650,4 +654,49 @@ func (s *streamer) statsLoop() {
 		s.statsReq.Store(false)
 		s.emitStats()
 	}
+}
+
+const summaryInterval = 1 * time.Second
+
+func (s *streamer) summaryLoop() {
+	var lastFramesIn, lastFramesOut, lastBytesIn, lastBytesOut, lastAeadFails uint64
+	t := time.NewTicker(summaryInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-t.C:
+		}
+		if s.mic {
+			framesOut := s.st.framesOut.Load()
+			bytesOut := s.st.bytesOut.Load()
+			s.emitMicSummary(framesOut-lastFramesOut, bytesOut-lastBytesOut)
+			lastFramesOut, lastBytesOut = framesOut, bytesOut
+			continue
+		}
+		framesIn := s.st.framesIn.Load()
+		bytesIn := s.st.bytesIn.Load()
+		aeadFails := s.aeadFails.Load()
+		dropAeadMs := (aeadFails - lastAeadFails) * 20
+		s.emitSpkSummary(framesIn-lastFramesIn, bytesIn-lastBytesIn, dropAeadMs)
+		lastFramesIn, lastBytesIn, lastAeadFails = framesIn, bytesIn, aeadFails
+	}
+}
+
+func (s *streamer) emitMicSummary(framesOut, bytesOut uint64) {
+	s.emit(fmt.Sprintf(
+		`{"type":"summary","period_ms":%d,"frames_captured":%d,"frames_out":%d,"write_block_max_ms":0,"bitrate_kbps":%d,"bytes_out":%d,"muted":%t}`,
+		summaryInterval.Milliseconds(), framesOut, framesOut, s.bitrateKbps.Load(), bytesOut, s.muted.Load(),
+	))
+}
+
+func (s *streamer) emitSpkSummary(framesIn, bytesIn, dropAeadMs uint64) {
+	s.emit(fmt.Sprintf(
+		`{"type":"summary","period_ms":%d,"frames_in":%d,"played_ms":0,"underrun_ms":0,"gap_ms":0,`+
+			`"drop_overflow_ms":0,"drop_replay_ms":0,"drop_aead_ms":%d,"drop_mute_ms":0,"drop_decode_ms":0,`+
+			`"queue_min_ms":0,"queue_avg_ms":0,"queue_max_ms":0,"jitter_ms":0,`+
+			`"delay_excess_min_ms":0,"delay_excess_avg_ms":0,"delay_excess_max_ms":0,"bytes_in":%d}`,
+		summaryInterval.Milliseconds(), framesIn, dropAeadMs, bytesIn,
+	))
 }

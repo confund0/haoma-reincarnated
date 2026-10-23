@@ -112,6 +112,10 @@ class MessengerStore(
     val backStack: StateFlow<List<Screen>> = _backStack.asStateFlow()
 
     
+    internal var advancedSelectedTab: io.haoma.calculator.messenger.settings.AdvancedTab =
+        io.haoma.calculator.messenger.settings.AdvancedTab.Privacy
+
+    
     internal val _noticePassphraseIsDefault = MutableStateFlow(false)
     internal val _noticeSnooze = MutableStateFlow<Map<String, NoticeSnoozeEntry>>(emptyMap())
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"sync"
 	"syscall"
 	"time"
@@ -42,6 +43,8 @@ type Event struct {
 
 	LocalNs     int64 `json:"local_ns,omitempty"`
 	SenderPtsNs int64 `json:"sender_pts_ns,omitempty"`
+
+	Raw []byte `json:"-"`
 }
 
 type Stream struct {
@@ -65,6 +68,9 @@ type Stream struct {
 	waitOnce sync.Once
 
 	keyDone bool
+
+	dropCount     uint64
+	lastDropLogAt time.Time
 }
 
 type Session struct {
@@ -304,6 +310,15 @@ func (m *Manager) spawn(ctx context.Context, callID string, side Side, binPath s
 
 func (s *Stream) readEvents(stdout io.Reader) {
 	defer close(s.events)
+
+	defer func() {
+		if s.dropCount > 0 {
+			s.logger.Debug("streamer event dropped",
+				slog.Uint64("dropped", s.dropCount),
+			)
+			s.dropCount = 0
+		}
+	}()
 	br := bufio.NewReaderSize(stdout, 4096)
 	for {
 		line, err := br.ReadBytes('\n')
@@ -314,6 +329,9 @@ func (s *Stream) readEvents(stdout io.Reader) {
 					slog.String("line", string(line)),
 				)
 			} else {
+				if ev.Type == "summary" || ev.Type == "event" {
+					ev.Raw = append([]byte(nil), trimRight(line)...)
+				}
 				switch ev.Type {
 				case "ready":
 					if ev.RawUnix != "" {
@@ -333,7 +351,15 @@ func (s *Stream) readEvents(stdout io.Reader) {
 				case s.events <- ev:
 				default:
 
-					s.logger.Debug("streamer event dropped (consumer slow)")
+					s.dropCount++
+					now := time.Now()
+					if now.Sub(s.lastDropLogAt) >= time.Second {
+						s.logger.Debug("streamer event dropped",
+							slog.Uint64("dropped", s.dropCount),
+						)
+						s.dropCount = 0
+						s.lastDropLogAt = now
+					}
 				}
 			}
 		}
@@ -348,14 +374,23 @@ func (s *Stream) readEvents(stdout io.Reader) {
 	}
 }
 
+var stderrDebugPrefix = regexp.MustCompile(`^\[[^\]]+\] DBG : `)
+
 func (s *Stream) pumpStderr(stderr io.Reader) {
 	br := bufio.NewReaderSize(stderr, 4096)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
-			s.logger.Info("streamer stderr",
-				slog.String("line", string(trimRight(line))),
-			)
+			trimmed := trimRight(line)
+			if stderrDebugPrefix.Match(trimmed) {
+				s.logger.Debug("streamer stderr",
+					slog.String("line", string(trimmed)),
+				)
+			} else {
+				s.logger.Info("streamer stderr",
+					slog.String("line", string(trimmed)),
+				)
+			}
 		}
 		if err != nil {
 			return

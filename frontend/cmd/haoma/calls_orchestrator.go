@@ -376,11 +376,26 @@ func pumpStreamEvents(d *daemon, callID string, side streamers.Side, stream *str
 				})
 				continue
 			}
-			slog.Debug("call stream event",
-				slog.String("call_id", callID),
-				slog.String("side", string(side)),
-				slog.String("type", ev.Type),
-			)
+
+			if ev.Type == "summary" {
+				if d.statsLog == nil {
+					continue
+				}
+				logRawStreamFields(d.statsLog, callID, side, "call media summary", ev.Raw)
+				continue
+			}
+			if ev.Type == "event" {
+				logRawStreamFields(nil, callID, side, "call media event", ev.Raw)
+				continue
+			}
+
+			if ev.Type != "stats" {
+				slog.Debug("call stream event",
+					slog.String("call_id", callID),
+					slog.String("side", string(side)),
+					slog.String("type", ev.Type),
+				)
+			}
 			push(d.ipcSrv, ipc.FrameCallStreamEvent, "", ipc.CallStreamEventPayload{
 				CallID:        callID,
 				Side:          string(side),
@@ -399,4 +414,23 @@ func pumpStreamEvents(d *daemon, callID string, side streamers.Side, stream *str
 			})
 		}
 	}()
+}
+
+func logRawStreamFields(log *slog.Logger, callID string, side streamers.Side, msg string, raw []byte) {
+	attrs, err := decodeRawStreamFields(raw)
+	if err != nil {
+		slog.Debug("call media parse error",
+			slog.String("call", logid.Short(callID)),
+			slog.String("side", string(side)),
+			slog.Any("err", err),
+		)
+		return
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	args := make([]any, 0, len(attrs)+2)
+	args = append(args, slog.String("call", logid.Short(callID)), slog.String("side", string(side)))
+	args = append(args, attrs...)
+	log.Debug(msg, args...)
 }

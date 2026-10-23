@@ -300,19 +300,13 @@ fun MessengerStore.loadLockSettings(): LockSettings? {
 }
 
 
-fun MessengerStore.loadSecurityWarnings(): List<String>? {
-    val session = vaultSessionProvider() ?: return null
-    val snap = session.snapshot()
-    val arr = snap.optJSONArray("security_warnings") ?: return emptyList()
-    return List(arr.length()) { i -> arr.optString(i, "") }.filter { it.isNotEmpty() }
-}
-
-
 fun MessengerStore.loadAdvancedSettings(): AdvancedSettings? {
     val session = vaultSessionProvider() ?: return null
     val snap = session.snapshot()
     return AdvancedSettings(
         urlForceChooser = snap.optBoolean("url_force_chooser", true),
+        logLevel = snap.optString("log_level", ""),
+        callStats = snap.optBoolean("call_stats", false),
     )
 }
 
@@ -320,6 +314,8 @@ fun MessengerStore.loadAdvancedSettings(): AdvancedSettings? {
 suspend fun MessengerStore.saveAdvancedSettings(settings: AdvancedSettings): Result<Unit> =
     resealVault("advanced", "advanced settings saved", pushSync = false) { p ->
         p.put("url_force_chooser", settings.urlForceChooser)
+        p.put("log_level", settings.logLevel)
+        p.put("call_stats", settings.callStats)
     }
 
 
@@ -587,6 +583,8 @@ data class ThreatPresetBundle(
 
 data class AdvancedSettings(
     val urlForceChooser: Boolean,
+    val logLevel: String = "",
+    val callStats: Boolean = false,
 )
 
 

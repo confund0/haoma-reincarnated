@@ -35,6 +35,7 @@ func TestPayloadValidateRejectsBadEnums(t *testing.T) {
 		{"idle_action", func(p *vault.Payload) { p.IdleAction = "panic-lock" }, "idle_action"},
 		{"panic_action", func(p *vault.Payload) { p.PanicAction = "burn-everything" }, "panic_action"},
 		{"threat_profile", func(p *vault.Payload) { p.ThreatProfile = "civilian" }, "threat_profile"},
+		{"log_level", func(p *vault.Payload) { p.LogLevel = "trace" }, "log_level"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -63,6 +64,16 @@ func TestPayloadValidateAcceptsKnownEnums(t *testing.T) {
 					t.Errorf("idle=%q panic=%q profile=%q: %v", ia, pa, pr, err)
 				}
 			}
+		}
+	}
+}
+
+func TestPayloadValidateAcceptsKnownLogLevels(t *testing.T) {
+	for _, lv := range []string{"", "error", "warn", "info", "debug"} {
+		p := freshPayload()
+		p.LogLevel = lv
+		if err := p.Validate(); err != nil {
+			t.Errorf("log_level=%q: %v", lv, err)
 		}
 	}
 }

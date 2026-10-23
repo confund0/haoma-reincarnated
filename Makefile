@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: linux linux-release android android-bins android-release android-streams tor-rebuild tor-verify streams-deps streams-verify cross-verify clean help test lint fmt check rig wire-corpus
+.PHONY: linux linux-release tools android android-bins android-release android-streams tor-rebuild tor-verify streams-deps streams-verify cross-verify clean help test lint fmt check rig wire-corpus
 
 ROOT      := $(CURDIR)
 BINS      := $(ROOT)/tmp/bins
@@ -108,6 +108,11 @@ linux-release: ## the shipping subset of the linux binaries
 	$(MAKE) -C streams build
 	strip $(BINS)/haoma-mic $(BINS)/haoma-spk $(BINS)/haoma-cam $(BINS)/haoma-vid
 	@ls -la $(BINS)
+
+tools: ## build dev-only tools into tmp/bins/ (not part of linux/linux-release)
+	mkdir -p $(BINS)
+	cd frontend && go build $(GO_BUILD_FLAGS) -o $(BINS)/haoma-logs ./cmd/haoma-logs
+	@ls -la $(BINS)/haoma-logs
 
 android-bins: ## cross-compile haoma + haomad for android-arm64 only
 	mkdir -p $(ANDROID_GOBINS)

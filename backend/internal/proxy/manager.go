@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	"haoma/internal/logid"
 )
@@ -65,6 +67,8 @@ type entry struct {
 	active   net.Conn
 	closed   bool
 
+	writeCloser io.Closer
+
 	cancel   context.CancelFunc
 	done     chan struct{}
 	peerHost string
@@ -73,17 +77,22 @@ type entry struct {
 type Manager struct {
 	log *slog.Logger
 
+	statsLog *slog.Logger
+
 	mu      sync.Mutex
 	entries map[string]*entry
+
+	ServeWriteWrap func(modality Modality, w io.Writer) io.Writer
 }
 
-func NewManager(log *slog.Logger) *Manager {
+func NewManager(log, statsLog *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Manager{
-		log:     log,
-		entries: make(map[string]*entry),
+		log:      log,
+		statsLog: statsLog,
+		entries:  make(map[string]*entry),
 	}
 }
 
@@ -229,13 +238,80 @@ func (m *Manager) runFetch(ctx context.Context, e *entry, peerURL string, hc *ht
 		}
 	}()
 
-	n, copyErr := io.Copy(conn, resp.Body)
-	m.log.Info("proxy fetch finished",
+	var (
+		n       int64
+		copyErr error
+	)
+	if e.modality == ModalityAudio {
+		mm := newMediaMeter(m.log, m.statsLog, "fetch", shortToken(e.token))
+		meterStop := make(chan struct{})
+		go runMeterTicker(mm, meterStop)
+		func() {
+			defer close(meterStop)
+			n, copyErr = copyFramesFetch(conn, resp.Body, mm)
+		}()
+		mm.end(time.Now())
+	} else {
+		bm := newByteMeter(m.log, m.statsLog, "fetch", shortToken(e.token), e.modality)
+		meterStop := make(chan struct{})
+		go runByteMeterTicker(bm, meterStop)
+		func() {
+			defer close(meterStop)
+			cw := &countingWriter{w: conn, onWrite: bm.onBytes}
+			n, copyErr = io.Copy(cw, resp.Body)
+		}()
+		bm.end(time.Now())
+	}
+
+	ended, copyErr := classifyEnded(copyErr)
+	if ended != "closed" && ctx.Err() != nil {
+
+		ended, copyErr = "closed", nil
+	}
+	attrs := []any{
 		slog.String("token", shortToken(e.token)),
 		slog.String("streamer", streamerAddr),
 		slog.Int64("bytes", n),
-		slog.Any("err", copyErr),
-	)
+		slog.String("ended", ended),
+	}
+	if copyErr != nil {
+		attrs = append(attrs, slog.Any("err", copyErr))
+	}
+	m.log.Info("proxy fetch finished", attrs...)
+}
+
+func copyFramesFetch(dst io.Writer, src io.Reader, mm *mediaMeter) (int64, error) {
+	br := bufio.NewReader(src)
+	var total int64
+	var buf []byte
+	for {
+		frame, _, pts, err := readFrame(br, buf)
+		if err != nil {
+			var pe *frameParseError
+			if errors.As(err, &pe) {
+				mm.onParseError(pe.err)
+				n, werr := dst.Write(pe.consumed)
+				total += int64(n)
+				if werr != nil {
+					return total, werr
+				}
+				n2, cerr := io.Copy(dst, br)
+				return total + n2, cerr
+			}
+			if errors.Is(err, io.EOF) {
+				return total, nil
+			}
+
+			return total, err
+		}
+		mm.onFrameIn(time.Now(), len(frame), pts)
+		buf = frame
+		n, werr := dst.Write(frame)
+		total += int64(n)
+		if werr != nil {
+			return total, werr
+		}
+	}
 }
 
 func (m *Manager) HandleServe(w http.ResponseWriter, r *http.Request, token string) bool {
@@ -303,28 +379,67 @@ func (m *Manager) HandleServe(w http.ResponseWriter, r *http.Request, token stri
 		flusher.Flush()
 	}
 
+	dst := io.Writer(w)
+	if flusher != nil {
+		dst = &flushWriter{w: w, f: flusher}
+	}
+	if m.ServeWriteWrap != nil {
+		dst = m.ServeWriteWrap(e.modality, dst)
+	}
+	if c, ok := dst.(io.Closer); ok {
+		e.activeMu.Lock()
+		e.writeCloser = c
+		e.activeMu.Unlock()
+	}
+
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
 		select {
 		case <-r.Context().Done():
 			conn.Close()
+			e.activeMu.Lock()
+			wc := e.writeCloser
+			e.activeMu.Unlock()
+			if wc != nil {
+				wc.Close()
+			}
 		case <-stop:
 		}
 	}()
 
-	dst := io.Writer(w)
-	if flusher != nil {
-		dst = &flushWriter{w: w, f: flusher}
+	var (
+		n       int64
+		copyErr error
+	)
+	if e.modality == ModalityAudio {
+		mm := newMediaMeter(m.log, m.statsLog, "serve", shortToken(token))
+		meterStop := make(chan struct{})
+		go runMeterTicker(mm, meterStop)
+		func() {
+			defer close(meterStop)
+			n, copyErr = copyFramesServe(dst, conn, mm)
+		}()
+		mm.end(time.Now())
+	} else {
+		bm := newByteMeter(m.log, m.statsLog, "serve", shortToken(token), e.modality)
+		meterStop := make(chan struct{})
+		go runByteMeterTicker(bm, meterStop)
+		func() {
+			defer close(meterStop)
+			cw := &countingWriter{w: dst, onWrite: bm.onBytes}
+			n, copyErr = io.Copy(cw, conn)
+		}()
+		bm.end(time.Now())
 	}
-	n, copyErr := io.Copy(dst, conn)
 
-	ended := "eof"
-	switch {
-	case errors.Is(copyErr, net.ErrClosed):
-		ended, copyErr = "closed", nil
-	case copyErr != nil:
-		ended = "error"
+	ended, copyErr := classifyEnded(copyErr)
+	e.activeMu.Lock()
+	closedByCancel := e.closed
+	e.activeMu.Unlock()
+	if !closedByCancel && r.Context().Err() != nil {
+
+		ended, copyErr = "peer_closed", nil
 	}
 	attrs := []any{
 		slog.String("token", shortToken(token)),
@@ -357,7 +472,12 @@ func (m *Manager) Cancel(token string) bool {
 			e.active.Close()
 			e.active = nil
 		}
+		wc := e.writeCloser
 		e.activeMu.Unlock()
+
+		if wc != nil {
+			wc.Close()
+		}
 	case kindFetch:
 		if e.cancel != nil {
 			e.cancel()
@@ -388,6 +508,98 @@ func (m *Manager) FetchingFrom(match func(host string) bool) bool {
 	return false
 }
 
+func copyFramesServe(dst io.Writer, src io.Reader, mm *mediaMeter) (int64, error) {
+	q := newFrameQueue()
+	readErrCh := make(chan error, 1)
+	go func() {
+		readErrCh <- readFramesServe(q, src, mm)
+	}()
+
+	total, writeErr := writeFramesServe(dst, q, mm)
+
+	if writeErr != nil {
+		if c, ok := src.(io.Closer); ok {
+			c.Close()
+		}
+	}
+
+	readErr := <-readErrCh
+
+	if writeErr != nil {
+		return total, writeErr
+	}
+	return total, readErr
+}
+
+func readFramesServe(q *frameQueue, src io.Reader, mm *mediaMeter) error {
+	defer q.close()
+	br := bufio.NewReader(src)
+	for {
+		frame, counter, pts, err := readFrame(br, nil)
+		if err != nil {
+			var pe *frameParseError
+			if errors.As(err, &pe) {
+				mm.onParseError(pe.err)
+				q.closeRaw(pe.consumed, br)
+				return nil
+			}
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		now := time.Now()
+		mm.onFrameIn(now, len(frame), pts)
+		q.push(queuedFrame{b: frame, at: now, counter: counter, pts: pts})
+	}
+}
+
+var serveWritePopHook func(q *frameQueue, mm *mediaMeter, droppedMs, ageMs int)
+
+func writeFramesServe(dst io.Writer, q *frameQueue, mm *mediaMeter) (int64, error) {
+	var total int64
+	for {
+		batch, droppedMs, ageMs, ok := q.popBatch(time.Now(), staleFrameMaxAge, 0, 1)
+		if !ok {
+
+			break
+		}
+		if serveWritePopHook != nil {
+			serveWritePopHook(q, mm, droppedMs, ageMs)
+		}
+		now := time.Now()
+		mm.onPop(now, droppedMs, ageMs, q.depthMs(now))
+		for _, f := range batch {
+			n, err := timedWrite(dst, f.b, mm)
+			total += int64(n)
+			if err != nil {
+				return total, err
+			}
+			mm.onFrameOut()
+		}
+	}
+	consumed, rest := q.rawTail()
+	if rest == nil {
+		return total, nil
+	}
+
+	n, err := timedWrite(dst, consumed, mm)
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+	n2, err := io.Copy(dst, rest)
+	return total + n2, err
+}
+
+func timedWrite(dst io.Writer, p []byte, mm *mediaMeter) (int, error) {
+	start := time.Now()
+	mm.onWriteStart(start)
+	n, err := dst.Write(p)
+	mm.onWriteDone(time.Now(), n, time.Since(start))
+	return n, err
+}
+
 type flushWriter struct {
 	w http.ResponseWriter
 	f http.Flusher
@@ -399,6 +611,17 @@ func (fw *flushWriter) Write(p []byte) (int, error) {
 		fw.f.Flush()
 	}
 	return n, err
+}
+
+func classifyEnded(err error) (ended string, logErr error) {
+	switch {
+	case err == nil:
+		return "eof", nil
+	case errors.Is(err, net.ErrClosed), errors.Is(err, context.Canceled):
+		return "closed", nil
+	default:
+		return "error", err
+	}
 }
 
 func shortToken(t string) string {

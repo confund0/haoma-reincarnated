@@ -2,6 +2,8 @@
 #include "../common/control.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
 using namespace haoma::streams;
 
@@ -45,6 +47,32 @@ int main() {
   EXPECT(parse_command(R"({"foo":"bar"})").cmd   == Command::Unknown, "no cmd field");
   EXPECT(parse_command(R"({"cmd":})").cmd        == Command::Unknown, "missing value");
   EXPECT(parse_command(R"({"cmd":"mute)").cmd    == Command::Unknown, "unterminated quote");
+
+  {
+    const char* tmpdir = std::getenv("TMPDIR");
+    std::string path = std::string(tmpdir ? tmpdir : "/tmp") + "/haoma_control_test_emit.log";
+    FILE* f = std::freopen(path.c_str(), "w+", stdout);
+    EXPECT(f != nullptr, "freopen stdout for emit capture");
+    if (f) {
+      emit_summary(R"("period_ms":1000,"frames_in":5)");
+      emit_event("xrun", R"("xrun_count":3)");
+      std::fflush(stdout);
+      std::rewind(f);
+
+      char line1[256] = {0};
+      char line2[256] = {0};
+      bool got1 = std::fgets(line1, sizeof(line1), f) != nullptr;
+      bool got2 = std::fgets(line2, sizeof(line2), f) != nullptr;
+      EXPECT(got1, "emit_summary wrote a line");
+      EXPECT(got2, "emit_event wrote a line");
+      std::string l1(line1), l2(line2);
+      EXPECT(l1.rfind(R"({"type":"summary","period_ms":1000)", 0) == 0,
+             "emit_summary line has the summary prefix");
+      EXPECT(l2.rfind(R"({"type":"event","ev":"xrun","xrun_count":3)", 0) == 0,
+             "emit_event line has the event prefix");
+    }
+    std::remove(path.c_str());
+  }
 
   if (fails) {
     std::fprintf(stderr, "%d failures\n", fails);

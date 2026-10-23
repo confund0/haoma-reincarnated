@@ -36,6 +36,7 @@ func main() {
 		restoreBackup string
 		torBin        string
 		systemTor     bool
+		callStats     bool
 	)
 	flag.StringVar(&cfgDir, "cfg-dir", "", "data root: anchors vault.enc + vault.lock + daemon tier dirs. Empty = platform per-user dir (Linux ~/.haoma, Windows %AppData%/haoma). Tilde + relative paths resolved against CWD.")
 	flag.StringVar(&haomadBin, "haomad-bin", "", "path to the haomad binary; default = same directory as haoma-text.")
@@ -48,6 +49,7 @@ func main() {
 	idleOverride := flag.Int("idle-timeout-seconds", 0, "override the vault's IdleTimeoutSeconds for this run (dev convenience). 0 = use vault value.")
 	flag.StringVar(&torBin, "tor-bin", defaultTorBin, "tor binary haomad starts as a tor of its own, with its data dir in <cfg-dir>/tor; a bare name is looked up on PATH. No tor control password is needed with it. Not used with --system-tor.")
 	flag.BoolVar(&systemTor, "system-tor", false, "use the tor already running on 127.0.0.1:9050 (SOCKS) and 9051 (control) instead of a tor of haomad's own. Its control password is the vault's tor password (/set-tor-password), needed only if that tor asks for one.")
+	flag.BoolVar(&callStats, "call-stats", false, "turn on --call-stats in the spawned haomad and haoma: 1 s call-media summaries to their own haomad-media.log / haoma-media.log, at any log level (off by default)")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -78,6 +80,7 @@ func main() {
 		idleOverride:  *idleOverride,
 		restoreBackup: restoreBackup,
 		tor:           tor,
+		callStats:     callStats,
 	})
 }
 

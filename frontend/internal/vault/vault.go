@@ -263,6 +263,10 @@ type Payload struct {
 
 	ShareTargetEnabled bool `json:"share_target_enabled,omitempty"`
 
+	LogLevel string `json:"log_level,omitempty"`
+
+	CallStats bool `json:"call_stats,omitempty"`
+
 	MobileNoticeSnooze map[string]NoticeSnoozeState `json:"mobile_notice_snooze,omitempty"`
 }
 
@@ -284,6 +288,11 @@ func (p Payload) Validate() error {
 	case "", "safe-lock", "hard-lock", "self-destruct":
 	default:
 		return fmt.Errorf("vault: invalid panic_action %q", p.PanicAction)
+	}
+	switch p.LogLevel {
+	case "", "error", "warn", "info", "debug":
+	default:
+		return fmt.Errorf("vault: invalid log_level %q", p.LogLevel)
 	}
 	switch p.ThreatProfile {
 	case "", PresetNobody, PresetDomestic, PresetPower, PresetForce:

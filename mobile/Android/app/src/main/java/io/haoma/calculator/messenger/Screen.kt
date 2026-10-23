@@ -29,6 +29,9 @@ sealed interface Screen {
     
     data class SettingsSection(val domain: String) : Screen
 
+    
+    data object AdvancedLogs : Screen
+
 }
 
 

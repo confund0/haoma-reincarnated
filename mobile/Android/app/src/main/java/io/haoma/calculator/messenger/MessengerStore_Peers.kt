@@ -64,11 +64,13 @@ fun MessengerStore.peerAction(peerId: String, action: PeerAction) {
                 PeerAction.Retire -> "unpaired"
                 PeerAction.Delete -> "deleted"
             }
-            val displayed = resp.peer.label.ifEmpty { "(unnamed)" }
+            
+            
+            val who = shortChat(resp.peer.id)
             if (resp.deletedCount > 0) {
-                appendStatus("$verb $displayed (${resp.deletedCount} events purged)")
+                appendStatus("$verb $who (${resp.deletedCount} events purged)")
             } else {
-                appendStatus("$verb $displayed")
+                appendStatus("$verb $who")
             }
         } catch (t: Throwable) {
             appendStatus("peer action failed: ${t.message ?: "?"}", level = StatusLevel.WARN)

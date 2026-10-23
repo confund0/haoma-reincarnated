@@ -82,7 +82,7 @@ func (t torSetup) withDir(root string) torSetup {
 	return t
 }
 
-func buildHaomadArgs(root, runtimePath, logLevel, logPath string, tor torSetup) ([]string, error) {
+func buildHaomadArgs(root, runtimePath, logLevel, logPath string, tor torSetup, callStats bool) ([]string, error) {
 	args := []string{
 		"--cfg-dir", root,
 		"--secrets-stdin",
@@ -90,6 +90,9 @@ func buildHaomadArgs(root, runtimePath, logLevel, logPath string, tor torSetup) 
 		"--runtime-file", runtimePath,
 		"--log-level", logLevel,
 		"--log-file", logPath,
+	}
+	if callStats {
+		args = append(args, "--call-stats")
 	}
 	if tor.system {
 		return args, nil
