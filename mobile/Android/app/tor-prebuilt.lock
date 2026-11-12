@@ -1,6 +1,6 @@
 # Auto-written by `make tor-rebuild`. Do not hand-edit.
 # Verified by `make tor-verify` and CI.
 abi=arm64-v8a
-tor_version=0.4.9.13
+tor_version=0.4.9.16
 ndk_revision=29.0.14206865
-libtor_so_sha256=e75a5b76ee5b48989cd7ac5cbbe078c539dea2b742d88fcf22519e5a29a01a40
+libtor_so_sha256=56c6d18e43795a31600243560f84ccbb8f29a61ae20fce8edd0973bbc6aa7b96

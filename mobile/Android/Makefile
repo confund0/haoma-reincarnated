@@ -61,10 +61,15 @@ help:
 bootstrap:
 	./bootstrap.sh
 
+# build and test are quiet like the root targets: one line on success,
+# the error lines on failure, the full output in
+# tmp/logs/android-<target>.log. V=1 streams it.
+V ?= 0
+QUIET = $(if $(filter 1,$(V)),,$(ANDROID_DIR)/../../tools/quiet.sh android-$@)
+
 build:
 	@mkdir -p $(JVM_TMP)
-	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon $(GRADLE_PROPS) assembleDebug'
-	@ls -la $(APK)
+	@$(QUIET) env $(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon $(GRADLE_PROPS) assembleDebug'
 
 release:
 	@mkdir -p $(JVM_TMP)
@@ -82,4 +87,4 @@ audit:
 
 test:
 	@mkdir -p $(JVM_TMP)
-	$(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon testDebugUnitTest'
+	@$(QUIET) env $(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon testDebugUnitTest'

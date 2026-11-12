@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: linux linux-release tools android android-bins android-release android-streams tor-rebuild tor-verify streams-deps streams-verify cross-verify clean help test lint fmt check rig wire-corpus
+.PHONY: linux _linux linux-release _linux-release tools _tools android android-bins _android-bins android-release android-streams tor-rebuild tor-verify streams-deps streams-verify cross-verify clean help test test-backend test-frontend test-android test-streams lint _lint fmt check rig wire-corpus
 
 ROOT      := $(CURDIR)
 BINS      := $(ROOT)/tmp/bins
@@ -45,16 +45,34 @@ export CGO_ENABLED = 0
 help: ## print this index
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
 
+# test and lint are quiet: one line on success, the error lines on
+# failure, the full output in tmp/logs/<target>.log (tools/quiet.sh).
+# V=1 streams the full output instead.
+V ?= 0
+QUIET = $(if $(filter 1,$(V)),,$(ROOT)/tools/quiet.sh $@)
+
 # Everything that has to pass before a commit, in one run. End-to-end
 # runs and tests on real devices are not part of it.
 check: fmt lint test cross-verify ## run every check a commit must pass
 
-test: ## run the unit tests: backend, frontend, mobile
-	$(MAKE) -C backend test
-	cd frontend && go test ./... && go test -tags faults ./cmd/haoma
-	$(MAKE) -C $(ANDROID) test
+test: test-backend test-frontend test-android ## run the unit tests: backend, frontend, mobile (V=1 for full output)
 
-lint: ## vet + staticcheck, both Go modules, with and without the faults tag
+test-backend: ## backend Go unit tests, faults tag and short fuzz pass included
+	@$(QUIET) $(MAKE) --no-print-directory -C backend test
+
+test-frontend: ## frontend Go unit tests, faults tag included
+	@$(QUIET) sh -c 'cd frontend && go test ./... && go test -tags faults ./cmd/haoma'
+
+test-android: ## Android unit tests (gradle; quiet in mobile/Android/Makefile)
+	@$(MAKE) --no-print-directory -C $(ANDROID) test
+
+test-streams: ## C++ call streamer tests (not part of test)
+	@$(QUIET) $(MAKE) --no-print-directory -C streams test
+
+lint: ## vet + staticcheck, both Go modules, with and without the faults tag (V=1 for full output)
+	@$(QUIET) $(MAKE) --no-print-directory _lint
+
+_lint:
 	cd backend  && go vet ./... && staticcheck ./... && go vet -tags faults ./... && staticcheck -tags faults ./...
 	cd frontend && go vet ./... && staticcheck ./... && go vet -tags faults ./... && staticcheck -tags faults ./...
 
@@ -84,7 +102,20 @@ RIG_CHUTNEY = $(if $(filter command line,$(origin CHUTNEY)),$(CHUTNEY))
 rig: ## run an end-to-end test scenario (SCENARIO, CASES, CHUTNEY)
 	cd frontend && go run ./cmd/haoma-rig -scenario $(or $(SCENARIO),sibling)$(if $(RIG_CASES), -cases '$(RIG_CASES)')$(if $(RIG_CHUTNEY), -chutney '$(RIG_CHUTNEY)')
 
+# The builds are quiet too; the binaries they made are in the log.
 linux: ## build every Go binary into tmp/bins/
+	@$(QUIET) $(MAKE) --no-print-directory _linux
+
+linux-release: ## the shipping subset of the linux binaries
+	@$(QUIET) $(MAKE) --no-print-directory _linux-release
+
+tools: ## build dev-only tools into tmp/bins/ (not part of linux/linux-release)
+	@$(QUIET) $(MAKE) --no-print-directory _tools
+
+android-bins: ## cross-compile haoma + haomad for android-arm64 only
+	@$(QUIET) $(MAKE) --no-print-directory _android-bins
+
+_linux:
 	mkdir -p $(BINS)
 	@echo "==> backend binaries"
 	cd backend  && go build $(GO_BUILD_FLAGS) -o $(BINS)/haomad        ./cmd/haomad
@@ -98,7 +129,7 @@ linux: ## build every Go binary into tmp/bins/
 	$(MAKE) -C streams build
 	@ls -la $(BINS)
 
-linux-release: ## the shipping subset of the linux binaries
+_linux-release:
 	mkdir -p $(BINS)
 	cd backend  && go build $(GO_BUILD_FLAGS) -o $(BINS)/haomad     ./cmd/haomad
 	cd frontend && go build $(GO_BUILD_FLAGS) -o $(BINS)/haoma      ./cmd/haoma
@@ -109,12 +140,12 @@ linux-release: ## the shipping subset of the linux binaries
 	strip $(BINS)/haoma-mic $(BINS)/haoma-spk $(BINS)/haoma-cam $(BINS)/haoma-vid
 	@ls -la $(BINS)
 
-tools: ## build dev-only tools into tmp/bins/ (not part of linux/linux-release)
+_tools:
 	mkdir -p $(BINS)
 	cd frontend && go build $(GO_BUILD_FLAGS) -o $(BINS)/haoma-logs ./cmd/haoma-logs
 	@ls -la $(BINS)/haoma-logs
 
-android-bins: ## cross-compile haoma + haomad for android-arm64 only
+_android-bins:
 	mkdir -p $(ANDROID_GOBINS)
 	@echo "==> cross-compile haomad → libhaomad.so (android/arm64)"
 	cd backend  && GOOS=android GOARCH=arm64 \
