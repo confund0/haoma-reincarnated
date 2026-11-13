@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: linux _linux linux-release _linux-release tools _tools android android-bins _android-bins android-release android-streams tor-rebuild tor-verify streams-deps streams-verify cross-verify clean help test test-backend test-frontend test-android test-streams lint _lint fmt check rig wire-corpus
+.PHONY: linux _linux linux-release _linux-release tools _tools android android-bins _android-bins android-release android-streams tor-rebuild tor-verify streams-deps streams-verify cross-verify clean help test test-backend test-frontend test-android test-streams test-tools lint _lint fmt check rig wire-corpus
 
 ROOT      := $(CURDIR)
 BINS      := $(ROOT)/tmp/bins
@@ -55,7 +55,7 @@ QUIET = $(if $(filter 1,$(V)),,$(ROOT)/tools/quiet.sh $@)
 # runs and tests on real devices are not part of it.
 check: fmt lint test cross-verify ## run every check a commit must pass
 
-test: test-backend test-frontend test-android ## run the unit tests: backend, frontend, mobile (V=1 for full output)
+test: test-backend test-frontend test-android test-tools ## run the unit tests: backend, frontend, mobile, tools (V=1 for full output)
 
 test-backend: ## backend Go unit tests, faults tag and short fuzz pass included
 	@$(QUIET) $(MAKE) --no-print-directory -C backend test
@@ -69,15 +69,19 @@ test-android: ## Android unit tests (gradle; quiet in mobile/Android/Makefile)
 test-streams: ## C++ call streamer tests (not part of test)
 	@$(QUIET) $(MAKE) --no-print-directory -C streams test
 
-lint: ## vet + staticcheck, both Go modules, with and without the faults tag (V=1 for full output)
+test-tools: ## tools module unit tests (seccheck and the strip-comments checks)
+	@$(QUIET) sh -c 'cd tools && go test ./...'
+
+lint: ## vet + staticcheck, backend and frontend with and without the faults tag, and tools (V=1 for full output)
 	@$(QUIET) $(MAKE) --no-print-directory _lint
 
 _lint:
 	cd backend  && go vet ./... && staticcheck ./... && go vet -tags faults ./... && staticcheck -tags faults ./...
 	cd frontend && go vet ./... && staticcheck ./... && go vet -tags faults ./... && staticcheck -tags faults ./...
+	cd tools    && go vet ./... && staticcheck ./...
 
 fmt: ## fail when any Go file is unformatted
-	@out=$$(gofmt -l backend frontend); \
+	@out=$$(gofmt -l backend frontend tools); \
 	if [ -n "$$out" ]; then echo "unformatted:"; echo "$$out"; exit 1; fi
 
 # The wire fixture corpus the mobile tests read. A Go test marshals it

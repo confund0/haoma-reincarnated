@@ -8,7 +8,6 @@ import (
 	"go/token"
 	"log/slog"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -298,19 +297,30 @@ func TestInheritedContacts_APairingPushesTheChangedSet(t *testing.T) {
 
 func TestPeerPaired_OnlyTheHelperSendsTheFrame(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+
+	paths, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkg, ok := pkgs["main"]
-	if !ok || len(pkg.Files) == 0 {
+	files := map[string]*ast.File{}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Name.Name == "main" {
+			files[path] = f
+		}
+	}
+	if len(files) == 0 {
 		t.Fatal("no daemon sources parsed — the guard would pass on an empty set")
 	}
 
 	var helper *ast.FuncDecl
-	for _, f := range pkg.Files {
+	for _, f := range files {
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if ok && fn.Recv == nil && fn.Name.Name == "pushPeerPaired" {
@@ -350,7 +360,7 @@ func TestPeerPaired_OnlyTheHelperSendsTheFrame(t *testing.T) {
 	}
 
 	checked := 0
-	for path, f := range pkg.Files {
+	for path, f := range files {
 		checked++
 		ast.Inspect(f, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)

@@ -1,6 +1,6 @@
 module haoma-frontend
 
-go 1.25.9
+go 1.27.4
 
 require (
 	github.com/coder/websocket v1.8.14

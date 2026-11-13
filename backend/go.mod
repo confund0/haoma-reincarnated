@@ -1,6 +1,6 @@
 module haoma
 
-go 1.25.9
+go 1.27.4
 
 require (
 	github.com/dgraph-io/badger/v4 v4.9.1

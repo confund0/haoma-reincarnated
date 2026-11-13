@@ -61,12 +61,12 @@ func LoadMyKeys(st *store.Store, handle string) (*MyKeys, backendapi.MintedOnion
 		return nil, backendapi.MintedOnion{}, fmt.Errorf("pair: stored MyKeys for %s outbound length %d, want %d", handle, len(p.OutboundSecret), SecretLen)
 	}
 	return &MyKeys{
-			PeerID:         p.PeerID,
-			OutboundSecret: p.OutboundSecret,
-		}, backendapi.MintedOnion{
-			Address:    p.MyOnionAddr,
-			PrivateKey: p.MyOnionPrivateKey,
-		}, nil
+		PeerID:         p.PeerID,
+		OutboundSecret: p.OutboundSecret,
+	}, backendapi.MintedOnion{
+		Address:    p.MyOnionAddr,
+		PrivateKey: p.MyOnionPrivateKey,
+	}, nil
 }
 
 func DeleteMyKeys(st *store.Store, handle string) error {
