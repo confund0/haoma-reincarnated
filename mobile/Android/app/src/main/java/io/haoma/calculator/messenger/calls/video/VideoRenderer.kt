@@ -276,7 +276,7 @@ internal class VideoRenderer(
             vpY = (surfaceHeight - vpH) / 2
         }
 
-        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClearColor(CLEAR_R, CLEAR_G, CLEAR_B, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glViewport(vpX, vpY, vpW, vpH)
 
@@ -362,7 +362,7 @@ internal class VideoRenderer(
         }
         GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
 
-        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClearColor(CLEAR_R, CLEAR_G, CLEAR_B, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         EGL14.eglSwapBuffers(eglDisplay, eglSurface)
     }
@@ -425,6 +425,11 @@ internal class VideoRenderer(
         private const val STALE_SAMPLE_THRESHOLD_NS = 5_000_000_000L
         private const val RECOVERY_SNAP_NS = 500_000_000L
         private const val SENDER_RESET_NS = 5_000_000_000L
+
+        
+        private const val CLEAR_R = 0x1D / 255f
+        private const val CLEAR_G = 0x20 / 255f
+        private const val CLEAR_B = 0x21 / 255f
 
         private const val VERTEX_SRC = """
             attribute vec2 aPos;

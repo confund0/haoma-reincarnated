@@ -506,7 +506,7 @@ class HaomaApp : Application(), ImageLoaderFactory {
             idleTimer.resume()
             
             
-            messengerStore.refireFocusOnResume()
+            messengerStore.refireFocusOnResume(appState.state.value == AppState.Warm)
             
             
             messengerStore.requestExternalProbeBurst()

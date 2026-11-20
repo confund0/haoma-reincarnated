@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import io.haoma.calculator.HaomaApp
 import io.haoma.calculator.R
+import io.haoma.calculator.ShareReceiverActivity
 import io.haoma.calculator.log.Logger
 import io.haoma.calculator.messenger.reportNetworkChanged
 import java.io.File
@@ -124,6 +125,11 @@ class HaomaCoreService : Service() {
 
     
     override fun onTaskRemoved(rootIntent: Intent?) {
+        if (rootIntent?.component?.className == ShareReceiverActivity::class.java.name) {
+            Logger.d("fgs", "HaomaCoreService.onTaskRemoved: share trampoline task, no idle action")
+            super.onTaskRemoved(rootIntent)
+            return
+        }
         Logger.i("fgs", "HaomaCoreService.onTaskRemoved")
         (application as? HaomaApp)?.idleLockDispatcher?.fire("swipe-up-kill")
         super.onTaskRemoved(rootIntent)

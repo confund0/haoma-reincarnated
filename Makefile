@@ -14,9 +14,9 @@ TOR_JNILIBS   := $(ANDROID)/app/src/main/jniLibs
 TOR_LOCKFILE  := $(ANDROID)/app/tor-prebuilt.lock
 TOR_BUBBLE    := /usr/local/lib/alpsec/bubble.sh
 
-# Call-streamer native deps (libopus + libsodium) cross-compile recipe
-# + the committed static archives it produces. NOT runtime artifacts;
-# linked into haoma-mic / haoma-spk at compile-time.
+# Call-streamer native deps (libopus, libsodium, libvpx) cross-compile
+# recipe + the committed static archives it produces. NOT runtime
+# artifacts; linked into the four streamers at compile-time.
 STREAMS_BUILD     := $(ROOT)/mobile/streams-build
 STREAMS_PREBUILT  := $(STREAMS_BUILD)/prebuilt
 STREAMS_LOCKFILE  := $(STREAMS_BUILD)/streams-prebuilt.lock
@@ -216,10 +216,11 @@ tor-verify: ## re-hash the committed libtor.so against its lockfile
 	 fi; \
 	 echo "tor-verify: ok ($$ACTUAL)"
 
-# Cross-compile libopus + libsodium static archives for arm64-v8a from
-# upstream sources via mobile/streams-build/. Runs inside the alpsec
-# Debian chroot (NDK is a glibc-linked toolchain; autotools needs
-# native glibc make / autoconf / clang). After build success, the
+# Cross-compile libopus, libsodium and libvpx static archives for
+# arm64-v8a from upstream sources via mobile/streams-build/. Runs
+# inside the alpsec Debian chroot (NDK is a glibc-linked toolchain;
+# autotools needs native glibc make / autoconf / clang). After build
+# success, the
 # committed archives + headers are at mobile/streams-build/prebuilt/
 # and the SHA-256 lockfile is rewritten.
 streams-deps: ## cross-compile libopus, libsodium and libvpx for arm64-v8a
@@ -273,10 +274,11 @@ streams-verify: ## re-hash the committed streams archives against their lockfile
 	 fi; \
 	 echo "streams-verify: ok (opus=$$ACTUAL_OPUS sodium=$$ACTUAL_SODIUM vpx=$$ACTUAL_VPX)"
 
-# Cross-compile the C++ call streamers (haoma-mic + haoma-spk) for
-# arm64-v8a, linking against the vendored libopus + libsodium static
-# archives from `make streams-deps`. Output: libhaoma-mic.so +
-# libhaoma-spk.so under mobile/Android/app/src/main/jniLibs/arm64-v8a/.
+# Cross-compile the C++ call streamers (haoma-mic, -spk, -cam, -vid)
+# for arm64-v8a, linking against the vendored libopus, libsodium and
+# libvpx static archives from `make streams-deps`. Output:
+# libhaoma-{mic,spk,cam,vid}.so under
+# mobile/Android/app/src/main/jniLibs/arm64-v8a/.
 # These are PIE ELF executables — the lib*.so naming is what makes
 # Android's PackageManager extract them to nativeLibraryDir, where
 # exec is permitted (W^X is enforced everywhere else from API 29).

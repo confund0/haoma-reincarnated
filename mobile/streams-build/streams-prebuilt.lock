@@ -1,10 +1,10 @@
 # Auto-written by `make streams-deps`. Do not hand-edit.
 # Verified by `make streams-verify` and CI.
 abi=arm64-v8a
-opus_version=v1.5.2
-libsodium_version=1.0.20-RELEASE
-libvpx_version=v1.14.1
+opus_version=v1.6.1
+libsodium_version=1.0.22-RELEASE
+libvpx_version=v1.17.0
 ndk_revision=29.0.14206865
-libopus_a_sha256=d18960e8577366d253b0f4296425d461b14ca6c78ae5344e1ec5080b6b4deea8
-libsodium_a_sha256=871778f4738af78d5486bba8ae324d1353fbe0000e7a26635c4134bea522d69c
-libvpx_a_sha256=534690993bd2ee0d5bae2802b2e94ccaf85f657b79963a6088a8d8a3ab140738
+libopus_a_sha256=ce887a9d907da7619fb164ab3a9504e90df9bc2543f94bd1d9d59b9ab3542482
+libsodium_a_sha256=192da97985733e30bbfeb2b611e6049358d938e6b4d510b713f6645b186defa2
+libvpx_a_sha256=c20f299661aee6e9d11bf8a9c7ae7f410da1ac29a859c1c0a2e55b635b8a6bc3

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Cross-compile libopus + libsodium static archives for the call
-# streamers (haoma-mic, haoma-spk). Reads version pins from
+# Cross-compile libopus, libsodium and libvpx static archives for the
+# call streamers (haoma-mic, -spk, -cam, -vid). Reads version pins from
 # streams-versions.json, drives the Makefile recipe, stages the output
 # under prebuilt/<abi>/.
 #
@@ -90,6 +90,12 @@ export APP_ABI="$ABI"
 export TZ=UTC
 export LC_ALL=C.UTF-8
 export SOURCE_DATE_EPOCH=1234567890
+
+# The stamps have no inputs, so make never sees a new tag. clone_or_fetch
+# already cleaned every source tree, so always build from scratch; an old
+# install/ would also leave headers a new version removed.
+rm -f "$WORK_DIR/opus-build-stamp" "$WORK_DIR/libsodium-build-stamp" "$WORK_DIR/libvpx-build-stamp"
+rm -rf "${WORK_DIR:?}/install/$ABI"
 
 make -C "$WORK_DIR" all
 

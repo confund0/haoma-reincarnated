@@ -1,17 +1,17 @@
 {
-  "_comment": "Pinned upstream versions for the call-streamers' native deps (libopus + libsodium). Schema mirrors mobile/tor-build/tor-versions.json. NDK revision MUST match the tor-build pin so a single NDK install satisfies both recipes. Bump 'commit' fields to move forward; commit the resulting .a archives + updated streams-prebuilt.lock together.",
+  "_comment": "Pinned upstream versions for the call-streamers' native deps (libopus, libsodium, libvpx). Schema mirrors mobile/tor-build/tor-versions.json. NDK revision MUST match the tor-build pin so a single NDK install satisfies both recipes. Bump 'commit' fields to move forward; commit the resulting .a archives + updated streams-prebuilt.lock together.",
   "0.1.0": {
     "opus": {
       "url": "https://github.com/xiph/opus.git",
-      "commit": "v1.5.2"
+      "commit": "v1.6.1"
     },
     "libsodium": {
       "url": "https://github.com/jedisct1/libsodium.git",
-      "commit": "1.0.20-RELEASE"
+      "commit": "1.0.22-RELEASE"
     },
     "libvpx": {
       "url": "https://github.com/webmproject/libvpx.git",
-      "commit": "v1.14.1"
+      "commit": "v1.17.0"
     },
     "ndk": {
       "url": "https://dl.google.com/android/repository/android-ndk-r29-linux.zip",

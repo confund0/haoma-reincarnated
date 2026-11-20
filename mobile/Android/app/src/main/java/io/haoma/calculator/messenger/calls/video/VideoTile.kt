@@ -167,7 +167,7 @@ private fun SelfTile(store: MessengerStore, callId: String, modifier: Modifier =
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF101010)),
+            .background(CallWindowTheme.WindowBg),
     ) {
         AndroidView(
             modifier = Modifier
@@ -250,7 +250,7 @@ private fun RemoteOverlayLayer(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(if (opaque) Color(0xFF101010) else Color.Transparent),
+                .background(if (opaque) CallWindowTheme.WindowBg else Color.Transparent),
             contentAlignment = Alignment.Center,
         ) {
             Text(

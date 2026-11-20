@@ -37,8 +37,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -65,23 +67,10 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
     var pickerOpen by remember { mutableStateOf(false) }
     var statsOpen by remember { mutableStateOf(false) }
 
-    var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000L) }
-    LaunchedEffect(call.callId) {
-        while (true) {
-            now = System.currentTimeMillis() / 1000L
-            delay(1_000L)
-        }
-    }
+    val now = rememberTickingNowSeconds(call.callId)
     
     
     val duration = (now - call.startedAt).coerceAtLeast(0L)
-    val preAcceptLabel = when {
-        call.direction == CallDirection.Out && call.status == CallStatus.Offered -> "Calling…"
-        call.direction == CallDirection.In && call.status == CallStatus.Ringing -> "Ringing…"
-        call.status == CallStatus.Ringing -> "Ringing…" 
-        call.status == CallStatus.Offered -> "Calling…"
-        else -> ""
-    }
 
     
     val pulse = rememberInfiniteTransition(label = "in-call pulse")
@@ -128,44 +117,13 @@ fun InCallBar(call: CallEntry, store: MessengerStore) {
             Spacer(modifier = Modifier.weight(1f))
             
             
-            val routeGlyph = glyphFor(current)
-            val solid = fontAwesomeSolid()
-            val brands = fontAwesomeBrands()
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(percent = 50))
-                    .background(BarRouteBg)
-                    .clickable { pickerOpen = true }
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = routeGlyph,
-                    color = BarText,
-                    fontSize = 14.sp,
-                    fontFamily = if (isBrandsGlyph(routeGlyph)) brands else solid,
-                )
-            }
+            RouteChip(current = current, onTap = { pickerOpen = true })
             
             
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(percent = 50))
-                    .background(if (isMuted) BarMuteBg else BarRouteBg)
-                    .clickable { store.toggleMute(call.callId) }
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = if (isMuted) CallIcons.MicrophoneSlash else CallIcons.Microphone,
-                    color = if (isMuted) BarAccent else BarText,
-                    fontSize = 14.sp,
-                    fontFamily = solid,
-                )
-            }
+            MicMuteChip(isMuted = isMuted, onTap = { store.toggleMute(call.callId) })
         } else {
             Text(
-                text = preAcceptLabel,
+                text = preAcceptLabel(call),
                 color = BarText,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -196,11 +154,80 @@ internal fun glyphFor(route: AudioRoute?): String = when (route?.kind) {
 }
 
 
+internal fun preAcceptLabel(call: CallEntry): String = when {
+    call.direction == CallDirection.Out && call.status == CallStatus.Offered -> "Calling…"
+    call.direction == CallDirection.In && call.status == CallStatus.Ringing -> "Ringing…"
+    call.status == CallStatus.Ringing -> "Ringing…" 
+    call.status == CallStatus.Offered -> "Calling…"
+    else -> ""
+}
+
+
+@Composable
+internal fun rememberTickingNowSeconds(key: Any): Long {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000L) }
+    LaunchedEffect(key) {
+        while (true) {
+            now = System.currentTimeMillis() / 1000L
+            delay(1_000L)
+        }
+    }
+    return now
+}
+
+
+@Composable
+private fun RouteChip(current: AudioRoute?, onTap: () -> Unit) {
+    val routeGlyph = glyphFor(current)
+    val solid = fontAwesomeSolid()
+    val brands = fontAwesomeBrands()
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(percent = 50))
+            .background(BarRouteBg)
+            .clickable(onClickLabel = "Audio route") { onTap() }
+            .padding(horizontal = 10.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = routeGlyph,
+            color = BarText,
+            fontSize = 14.sp,
+            fontFamily = if (isBrandsGlyph(routeGlyph)) brands else solid,
+        )
+    }
+}
+
+
+@Composable
+private fun MicMuteChip(isMuted: Boolean, onTap: () -> Unit) {
+    val solid = fontAwesomeSolid()
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(percent = 50))
+            .background(if (isMuted) BarMuteBg else BarRouteBg)
+            .clickable(
+                onClickLabel = if (isMuted) "Microphone unmute" else "Microphone mute",
+            ) { onTap() }
+            .padding(horizontal = 10.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = if (isMuted) CallIcons.MicrophoneSlash else CallIcons.Microphone,
+            color = if (isMuted) BarAccent else BarText,
+            fontSize = 14.sp,
+            fontFamily = solid,
+        )
+    }
+}
+
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun StreamStatsChip(
+internal fun StreamStatsChip(
     stream: CallStreamState?,
     nowMs: Long,
+    background: Color = BarRouteBg,
     onLongPress: () -> Unit,
 ) {
     val micColor = micArrowColor(stream?.mic, nowMs)
@@ -212,7 +239,7 @@ private fun StreamStatsChip(
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(percent = 50))
-            .background(BarRouteBg)
+            .background(background)
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -222,39 +249,58 @@ private fun StreamStatsChip(
                     onLongPress()
                 },
             )
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(horizontal = 8.dp, vertical = 1.dp),
         contentAlignment = Alignment.Center,
     ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "↑",
-                color = micColor,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Black,
-            )
-            Text(
-                text = "↓",
-                color = spkColor,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Black,
-            )
+            
+            
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "↑",
+                    color = micColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    style = PillTextStyle,
+                )
+                Text(
+                    text = "↓",
+                    color = spkColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    style = PillTextStyle,
+                )
+            }
             Text(
                 text = if (jitter != null) "${jitter.toInt()}ms" else "—",
                 color = BarText,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
+                style = PillTextStyle,
             )
         }
     }
 }
 
 
+private val PillTextStyle = TextStyle(
+    lineHeight = 12.sp,
+    lineHeightStyle = LineHeightStyle(
+        alignment = LineHeightStyle.Alignment.Center,
+        trim = LineHeightStyle.Trim.Both,
+    ),
+)
+
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CallStatsSheet(
+internal fun CallStatsSheet(
     callId: String,
     stream: CallStreamState?,
     nowMs: Long,

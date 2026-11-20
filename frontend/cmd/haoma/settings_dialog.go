@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 
+	"haoma-frontend/internal/chat"
 	"haoma-frontend/internal/ipc"
 )
 
@@ -128,5 +130,13 @@ func (sd *sessionDispatcher) handleClientLockState(sess *ipc.Session, f ipc.Fram
 		slog.Debug("client lock state changed",
 			slog.Bool("soft_locked", req.SoftLocked),
 		)
+	}
+
+	if prev && !req.SoftLocked {
+		focus := sd.d.clientFocus.Load()
+		if focus != nil && focus.ChatID != "" && focus.ScrollPosition == 0 {
+			chatID := chat.ChatID(focus.ChatID)
+			go sd.d.autoMarkOnArrival(context.Background(), chatID)
+		}
 	}
 }

@@ -123,9 +123,14 @@ class MainActivity : ComponentActivity() {
         }
 
         
-        consumeDisguiseTipExtras(intent, app)
-        consumeDeepLinkExtra(intent, app)
-        consumeShareExtra(intent, app)
+        val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !fromHistory) {
+            consumeDisguiseTipExtras(intent, app)
+            consumeDeepLinkExtra(intent, app)
+            consumeShareExtra(intent, app)
+        } else {
+            Logger.d("activity", "launch extras skipped restored=${savedInstanceState != null} history=$fromHistory")
+        }
 
         setContent {
             MaterialTheme {

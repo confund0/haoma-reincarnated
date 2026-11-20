@@ -97,6 +97,11 @@ export TZ=UTC
 export LC_ALL=C.UTF-8
 export SOURCE_DATE_EPOCH=1234567890
 
+# zlib-build-stamp has no inputs, so make never sees a new zlib tag (the
+# other stamps hang on a Makefile that the git clean above removes).
+# Always build zlib from scratch.
+rm -f "$WORK_DIR/zlib-build-stamp"
+
 make -C "$WORK_DIR" tor
 
 # --- Stage output --------------------------------------------------------

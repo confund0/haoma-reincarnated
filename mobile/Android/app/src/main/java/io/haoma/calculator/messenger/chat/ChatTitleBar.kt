@@ -101,7 +101,7 @@ internal fun ChatTitleBar(
         Spacer(modifier = Modifier.width(12.dp))
         
         
-        PresenceArrows(view = view, fontSize = 16.sp)
+        PresenceArrows(view = view, fontSize = 13.sp, arrowGap = (-2).sp)
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = label,

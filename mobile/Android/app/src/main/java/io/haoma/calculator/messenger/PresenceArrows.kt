@@ -17,9 +17,15 @@ internal fun PresenceArrows(
     modifier: Modifier = Modifier,
     fontSize: TextUnit = 14.sp,
     dim: Boolean = false,
+    arrowGap: TextUnit = TextUnit.Unspecified,
 ) {
     val text = buildAnnotatedString {
-        withStyle(SpanStyle(color = if (dim) HaomaPalette.FG_DIM else arrowColour(view.accepting))) { append("↑") }
+        withStyle(
+            SpanStyle(
+                color = if (dim) HaomaPalette.FG_DIM else arrowColour(view.accepting),
+                letterSpacing = arrowGap,
+            ),
+        ) { append("↑") }
         withStyle(SpanStyle(color = if (dim) HaomaPalette.FG_DIM else arrowColour(view.sending))) { append("↓") }
     }
     Text(

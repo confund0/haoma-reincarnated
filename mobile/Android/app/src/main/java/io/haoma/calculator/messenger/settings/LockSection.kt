@@ -199,10 +199,10 @@ internal fun LockSection(store: MessengerStore, onBack: () -> Unit) {
 
             Section(label = "Sharing") {
                 ToggleRow(
-                    label = "Show “Haoma” in the system share sheet",
+                    label = "Show “Calculator” in the system share sheet",
                     hint = "Lets other apps share photos and videos into Haoma. " +
-                        "Turning it on makes an entry named “Haoma” visible to " +
-                        "anyone who opens a share sheet on this device. Only " +
+                        "Turning it on adds an entry named “Calculator” to " +
+                        "every share sheet on this device. Only " +
                         "the answer “No one” keeps it on; the other three " +
                         "turn it off.",
                     checked = shareTarget,

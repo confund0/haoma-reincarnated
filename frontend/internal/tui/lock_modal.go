@@ -127,9 +127,9 @@ loop:
 		a.app.SetRoot(a.mainRoot, true).SetFocus(a.input)
 	})
 	a.locked.Store(false)
-	a.sendRequest(ipc.FrameClientLockState, ipc.ClientLockStateRequest{SoftLocked: false}, nil)
 
 	if ok {
+		a.sendRequest(ipc.FrameClientLockState, ipc.ClientLockStateRequest{SoftLocked: false}, nil)
 		a.lastActivity.Store(time.Now().Unix())
 	}
 	return ok

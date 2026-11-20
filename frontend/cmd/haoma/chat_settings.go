@@ -217,6 +217,24 @@ func (sd *sessionDispatcher) handleMarkRead(ctx context.Context, sess *ipc.Sessi
 		sendError(sess, f.ID, "not_ready", "events log not wired")
 		return
 	}
+
+	if sd.d.clientSoftLocked.Load() {
+		slog.Debug("handle mark_read: skipped, client soft-locked",
+			slog.String("chat_id", req.ChatID),
+		)
+		resp, err := ipc.NewFrame(ipc.FrameMarkedRead, f.ID, ipc.MarkedReadResponse{
+			ChatID:      req.ChatID,
+			MarkedCount: 0,
+		})
+		if err != nil {
+			sendError(sess, f.ID, "encode_frame", err.Error())
+			return
+		}
+		if err := sess.Send(resp); err != nil {
+			slog.Warn("send marked_read frame failed", slog.Any("err", err))
+		}
+		return
+	}
 	n, pending, err := sd.d.events.MarkRead(chat.ChatID(req.ChatID))
 	if err != nil {
 		sendError(sess, f.ID, "internal", err.Error())
@@ -305,6 +323,13 @@ const focusPresencePushTimeout = 2 * time.Minute
 
 func (d *daemon) autoMarkOnArrival(ctx context.Context, chatID chat.ChatID) {
 	if d.events == nil {
+		return
+	}
+
+	if d.clientSoftLocked.Load() {
+		slog.Debug("auto-mark on arrival: skipped, client soft-locked",
+			slog.String("chat_id", string(chatID)),
+		)
 		return
 	}
 	focus := d.clientFocus.Load()

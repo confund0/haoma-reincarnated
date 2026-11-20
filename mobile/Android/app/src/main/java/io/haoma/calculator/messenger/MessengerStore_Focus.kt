@@ -51,6 +51,9 @@ fun MessengerStore.syncLockState(softLocked: Boolean) {
     if (softLocked) dropDeviceSyncWait("locked")
     
     if (softLocked) forgetTypedJoinSecrets()
+    
+    
+    if (softLocked) currentFocusChatId = ""
     emitLockState(softLocked)
     
     
@@ -69,7 +72,11 @@ internal fun MessengerStore.emitLockState(softLocked: Boolean) {
 }
 
 
-fun MessengerStore.refireFocusOnResume() {
+fun MessengerStore.refireFocusOnResume(warm: Boolean) {
+    if (!warm) {
+        Logger.d("messenger", "refireFocusOnResume: skipped, app not Warm")
+        return
+    }
     val chatId = currentFocusChatId
     if (chatId.isEmpty()) return
     markRead(chatId)

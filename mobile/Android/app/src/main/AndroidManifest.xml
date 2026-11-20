@@ -42,10 +42,9 @@
             android:enabled="false"
             android:exported="true"
             android:excludeFromRecents="true"
+            android:autoRemoveFromRecents="true"
             android:noHistory="true"
             android:taskAffinity=""
-            android:icon="@drawable/ic_share_haoma"
-            android:label="@string/share_target_label"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

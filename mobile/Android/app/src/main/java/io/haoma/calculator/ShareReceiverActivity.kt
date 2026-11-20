@@ -20,7 +20,7 @@ class ShareReceiverActivity : Activity() {
         }
         if (uri == null) {
             Logger.i("share", "share receiver: no stream uri; dropping")
-            finish()
+            finishAndRemoveTask()
             return
         }
         Logger.i("share", "share receiver → MainActivity type=${intent?.type ?: "?"}")
@@ -32,9 +32,12 @@ class ShareReceiverActivity : Activity() {
             
             clipData = ClipData.newRawUri(null, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
         }
         startActivity(fwd)
-        finish()
+        finishAndRemoveTask()
     }
 }

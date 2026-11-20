@@ -276,6 +276,11 @@ func (sd *sessionDispatcher) run(ctx context.Context, sess *ipc.Session) {
 			return
 		case f := <-reads:
 
+			if f.Type == ipc.FrameClientLockState {
+				sd.handleClientLockState(sess, f)
+				continue
+			}
+
 			fctx, place := takeSendPlace(ctx, sd.d, f)
 			go func() {
 				if place != nil {
@@ -418,8 +423,7 @@ func (sd *sessionDispatcher) dispatch(ctx context.Context, sess *ipc.Session, f 
 		sd.handleGetSettings(sess, f)
 	case ipc.FrameSyncSettings:
 		sd.handleSyncSettings(sess, f)
-	case ipc.FrameClientLockState:
-		sd.handleClientLockState(sess, f)
+
 	case ipc.FrameStartCall:
 		sd.handleStartCall(ctx, sess, f)
 	case ipc.FrameRespondCall:
