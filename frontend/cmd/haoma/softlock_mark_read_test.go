@@ -18,7 +18,7 @@ func seedInboundRow(t *testing.T, d *daemon, peerID string) chat.ChatID {
 	body, _ := json.Marshal(events.TextBody{Text: "hi"})
 	if _, err := d.events.AppendInbound(events.InboundParams{
 		ChatID: cid, Kind: events.KindText, SenderTs: time.Now().Unix(),
-		SenderSeq: 1, EnvelopeID: "env-plan46", MsgID: "1111111111111111bbbbbbbbbbbbbbbb",
+		SenderSeq: 1, EnvelopeID: "env-softlock1", MsgID: "1111111111111111bbbbbbbbbbbbbbbb",
 		Status: events.DecryptOK, Body: body,
 	}); err != nil {
 		t.Fatalf("seedInboundRow: %v", err)

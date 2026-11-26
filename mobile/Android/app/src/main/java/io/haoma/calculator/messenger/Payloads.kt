@@ -1830,7 +1830,30 @@ data class CallStreamSide(
     val framesIn: Long,
     val prevFramesIn: Long,
     val jitterMs: Double,
-)
+    val hasPrev: Boolean,
+) {
+    
+    val framesInStopped: Boolean
+        get() = hasPrev && prevFramesIn != 0L && framesIn == prevFramesIn
+
+    
+    val framesOutStopped: Boolean
+        get() = hasPrev && prevFramesOut != 0L && framesOut <= prevFramesOut
+
+    companion object {
+        
+        fun next(prev: CallStreamSide?, ev: CallStreamEventPayload, nowMs: Long): CallStreamSide =
+            CallStreamSide(
+                lastSampleAtMs = nowMs,
+                framesOut = ev.framesOut,
+                prevFramesOut = prev?.framesOut ?: ev.framesOut,
+                framesIn = ev.framesIn,
+                prevFramesIn = prev?.framesIn ?: ev.framesIn,
+                jitterMs = ev.jitterMs,
+                hasPrev = prev != null,
+            )
+    }
+}
 
 data class CallStreamState(
     val mic: CallStreamSide? = null,

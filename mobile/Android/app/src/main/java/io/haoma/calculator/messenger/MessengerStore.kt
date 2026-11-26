@@ -405,8 +405,7 @@ class MessengerStore(
                         val spk = s.spk ?: continue
                         val sampleStale = (now - mic.lastSampleAtMs) > 5_000L &&
                             (now - spk.lastSampleAtMs) > 5_000L
-                        val peerSilent = spk.prevFramesIn != 0L &&
-                            spk.framesIn == spk.prevFramesIn
+                        val peerSilent = spk.framesInStopped
                         val dead = sampleStale || peerSilent
                         if (dead) {
                             val since = staleSince[callId]
@@ -505,6 +504,7 @@ class MessengerStore(
         
         
         notificationPoster?.cancelAll()
+        notificationPoster?.cancelCallBanners()
         
         
         lastSoftLocked = false

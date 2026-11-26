@@ -1,4 +1,4 @@
-.PHONY: bootstrap build release clean install audit test help
+.PHONY: bootstrap build release clean install audit test verify-apk help
 
 SDK_ROOT     ?= $(HOME)/sdk
 JAVA_HOME    := $(SDK_ROOT)/jdk
@@ -44,8 +44,15 @@ ifneq (,$(wildcard $(BUBBLE_LIB)))
         BUBBLE_BINDS=("$$SDK_ROOT" "$$HOME/.gradle" "$$HOME/.android" "$$HOME/.code-signing" "$$ANDROID_DIR"); \
         . $(BUBBLE_LIB); \
         bubble "$$@"' bash
+    # verify-apk reads an APK outside this dir (the release artifacts),
+    # so it binds the APK's own dir instead of the gradle dirs.
+    VERIFY_BUBBLE = SDK_ROOT="$(SDK_ROOT)" APK_DIR="$(dir $(abspath $(APK)))" bash -c '\
+        BUBBLE_BINDS=("$$SDK_ROOT" "$$APK_DIR"); \
+        . $(BUBBLE_LIB); \
+        bubble "$$@"' bash
 else
     IN_BUBBLE =
+    VERIFY_BUBBLE =
 endif
 
 help:
@@ -57,6 +64,7 @@ help:
 	@echo "  clean     - gradle clean"
 	@echo "  audit     - check APK for analytics/telemetry leaks"
 	@echo "  test      - run unit tests across all modules"
+	@echo "  verify-apk APK=<absolute path> - apksigner check; the certificate must be in HOWTO-VERIFY.md"
 
 bootstrap:
 	./bootstrap.sh
@@ -88,3 +96,19 @@ audit:
 test:
 	@mkdir -p $(JVM_TMP)
 	@$(QUIET) env $(IN_BUBBLE) sh -c '$(ENV) ./gradlew --no-scan --no-daemon testDebugUnitTest'
+
+# Release check: apksigner verifies the APK, then its certificate
+# SHA-256 must appear in HOWTO-VERIFY.md (public-only/docs here, docs/
+# in the public tree). Full apksigner output in build/verify-apk.txt.
+VERIFY_OUT := build/verify-apk.txt
+verify-apk:
+	@test -f "$(APK)" || { echo "FATAL: $(APK) not found"; exit 1; }
+	@mkdir -p build
+	@$(VERIFY_BUBBLE) sh -c '$(ENV) apksigner verify --verbose --print-certs "$(abspath $(APK))"' > $(VERIFY_OUT) 2>&1 \
+	  || { grep -v '^alpsec:' $(VERIFY_OUT) | head -20; echo "FATAL: apksigner failed (full output: $(VERIFY_OUT))"; exit 1; }
+	@D=$$(awk -F': ' '/^Signer #1 certificate SHA-256 digest/{print $$2}' $(VERIFY_OUT)); \
+	 test -n "$$D" || { echo "FATAL: no certificate digest in $(VERIFY_OUT)"; exit 1; }; \
+	 H=$$(ls ../../public-only/docs/HOWTO-VERIFY.md ../../docs/HOWTO-VERIFY.md 2>/dev/null | head -1); \
+	 test -n "$$H" || { echo "FATAL: HOWTO-VERIFY.md not found"; exit 1; }; \
+	 grep -q "$$D" "$$H" || { echo "FATAL: certificate $$D is not in $$H"; exit 1; }; \
+	 echo "verify-apk: ok (certificate $$D is in $$H)"

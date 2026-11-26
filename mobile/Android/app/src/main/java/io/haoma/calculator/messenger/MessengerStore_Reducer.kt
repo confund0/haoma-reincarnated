@@ -306,22 +306,12 @@ internal fun MessengerStore.dispatch(frame: Frame) {
                     val now = System.currentTimeMillis()
                     _callStreamState.update { prev ->
                         val cur = prev[ev.callId] ?: CallStreamState()
-                        val side = CallStreamSide(
-                            lastSampleAtMs = now,
-                            framesOut = ev.framesOut,
-                            prevFramesOut = when (ev.side) {
-                                "mic" -> cur.mic?.framesOut ?: ev.framesOut
-                                "spk" -> cur.spk?.framesOut ?: ev.framesOut
-                                else -> ev.framesOut
-                            },
-                            framesIn = ev.framesIn,
-                            prevFramesIn = when (ev.side) {
-                                "mic" -> cur.mic?.framesIn ?: ev.framesIn
-                                "spk" -> cur.spk?.framesIn ?: ev.framesIn
-                                else -> ev.framesIn
-                            },
-                            jitterMs = ev.jitterMs,
-                        )
+                        val prevSide = when (ev.side) {
+                            "mic" -> cur.mic
+                            "spk" -> cur.spk
+                            else -> null
+                        }
+                        val side = CallStreamSide.next(prevSide, ev, now)
                         val next = when (ev.side) {
                             "mic" -> cur.copy(mic = side)
                             "spk" -> cur.copy(spk = side)

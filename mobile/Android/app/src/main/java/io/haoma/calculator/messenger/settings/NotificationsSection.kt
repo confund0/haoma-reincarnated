@@ -136,7 +136,7 @@ internal fun NotificationsSection(store: MessengerStore, onBack: () -> Unit) {
                 )
                 ToggleRow(
                     label = "Noisy notifications",
-                    hint = "Lock-screen visible + heads-up banners while unlocked. Off = silent tray entry, lock-screen hidden.",
+                    hint = "Lock-screen visible + heads-up banners while unlocked; incoming calls ring. Off = silent tray entry, lock-screen hidden, calls sound once.",
                     checked = noisy,
                     onCheckedChange = { noisy = it; if (error != null) error = null },
                 )

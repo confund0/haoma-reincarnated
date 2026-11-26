@@ -276,6 +276,9 @@ internal fun MessengerStore.applyCallStateChange(call: CallEntry) {
                 peerLabel = label,
                 hasVideo = CallModality.Video in call.modalities,
                 softLocked = lastSoftLocked,
+                
+                
+                chatMuted = _chats.value.any { it.chatId == call.chatId && it.notificationsMuted },
             )
         } else if (call.isTerminal) {
             poster.cancelCall(call.callId)

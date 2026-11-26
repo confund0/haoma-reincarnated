@@ -10,6 +10,8 @@
     <string name="messages_noisy_channel_description">Inbound message banners — standard messenger posture: lock-screen visible + heads-up popup.</string>
     <string name="calls_channel_name">Calls</string>
     <string name="calls_channel_description">Incoming call ringers.</string>
+    <string name="calls_ring_channel_name">Calls (ringing)</string>
+    <string name="calls_ring_channel_description">Incoming calls ring with the phone\'s ringtone until answered or declined.</string>
     <string name="calls_incoming_title">Incoming audio call</string>
     <string name="calls_incoming_video_title">Incoming video call</string>
     <string name="calls_incoming_body">%1$s is calling</string>

@@ -54,6 +54,11 @@ fun MessengerStore.syncLockState(softLocked: Boolean) {
     
     
     if (softLocked) currentFocusChatId = ""
+    
+    
+    if (softLocked && loadNotificationSettings()?.onLock != true) {
+        notificationPoster?.cancelCallBanners()
+    }
     emitLockState(softLocked)
     
     

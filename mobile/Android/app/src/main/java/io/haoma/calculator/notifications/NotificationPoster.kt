@@ -1,10 +1,13 @@
 package io.haoma.calculator.notifications
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -90,7 +93,7 @@ class NotificationPoster(
 
         val noisy = settings?.noisy == true
         val persistUntilOpen = settings?.persistUntilOpen == true
-        val channelId = if (noisy) NOISY_CHANNEL_ID else CHANNEL_ID
+        val channelId = messageChannelId(noisy)
         val visibility = if (noisy) {
             NotificationCompat.VISIBILITY_PUBLIC
         } else {
@@ -275,6 +278,29 @@ class NotificationPoster(
             }
             mgr.createNotificationChannel(calls)
         }
+        
+        
+        if (mgr.getNotificationChannel(CALLS_RING_CHANNEL_ID) == null) {
+            val ring = NotificationChannel(
+                CALLS_RING_CHANNEL_ID,
+                app.getString(R.string.calls_ring_channel_name),
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = app.getString(R.string.calls_ring_channel_description)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+                setShowBadge(false)
+                enableVibration(true)
+                enableLights(true)
+                setSound(
+                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+            }
+            mgr.createNotificationChannel(ring)
+        }
     }
 
     
@@ -284,55 +310,40 @@ class NotificationPoster(
         peerLabel: String,
         hasVideo: Boolean,
         softLocked: Boolean,
+        chatMuted: Boolean,
     ) {
         val mgr = NotificationManagerCompat.from(app)
         if (!mgr.areNotificationsEnabled()) {
             Logger.i("notifications", "skip call notify reason=permission-denied call=${shortTag(callId)}")
             return
         }
-        if (softLocked && settingsProvider()?.onLock != true) {
+        val settings = settingsProvider()
+        val plan = planCallBanner(settings, softLocked, chatMuted)
+        if (plan.skipReason != null) {
             Logger.i(
                 "notifications",
-                "skip call notify reason=soft-locked+notifications_on_lock=false call=${shortTag(callId)}",
+                "skip call notify reason=${plan.skipReason} call=${shortTag(callId)}",
             )
             return
         }
 
-        val title = app.getString(
-            if (hasVideo) R.string.calls_incoming_video_title else R.string.calls_incoming_title,
-        )
-        val body = app.getString(R.string.calls_incoming_body, peerLabel)
-
-        val tapIntent = Intent(app, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val notification = if (plan.disguise) {
+            disguisedCallBanner(
+                channelId = plan.channelId,
+                noisy = settings?.noisy == true,
+                persistUntilOpen = settings?.persistUntilOpen == true,
+            )
+        } else {
+            plainCallBanner(callId, peerLabel.takeIf { plan.showName }, hasVideo, plan.channelId, plan.ring)
         }
-        val tap = PendingIntent.getActivity(
-            app,
-            callId.hashCode(),
-            tapIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        val answer = callActionPendingIntent(callId, ACTION_ANSWER)
-        val decline = callActionPendingIntent(callId, ACTION_DECLINE)
-
-        val notification = NotificationCompat.Builder(app, CALLS_CHANNEL_ID)
-            .setSmallIcon(iconProvider())
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setAutoCancel(false)
-            .setOngoing(true)
-            .setContentIntent(tap)
-            .addAction(0, app.getString(R.string.calls_decline), decline)
-            .addAction(0, app.getString(R.string.calls_answer), answer)
-            .build()
         try {
             mgr.notify(callId, NOTIF_ID_CALL, notification)
-            Logger.i("notifications", "posted call call=${shortTag(callId)} chat=${shortTag(chatId)}")
+            Logger.i(
+                "notifications",
+                "posted call call=${shortTag(callId)} chat=${shortTag(chatId)} " +
+                    "disguise=${plan.disguise} sender=${plan.showName} ring=${plan.ring} " +
+                    "channel=${plan.channelId}",
+            )
         } catch (t: SecurityException) {
             Logger.w("notifications", "call notify() threw: ${t.message}")
         }
@@ -360,6 +371,89 @@ class NotificationPoster(
         }
     }
 
+    
+    private fun plainCallBanner(
+        callId: String,
+        peerLabel: String?,
+        hasVideo: Boolean,
+        channelId: String,
+        ring: Boolean,
+    ): Notification {
+        val title = app.getString(
+            if (hasVideo) R.string.calls_incoming_video_title else R.string.calls_incoming_title,
+        )
+        val tapIntent = Intent(app, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val tap = PendingIntent.getActivity(
+            app,
+            callId.hashCode(),
+            tapIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val answer = callActionPendingIntent(callId, ACTION_ANSWER)
+        val decline = callActionPendingIntent(callId, ACTION_DECLINE)
+
+        val builder = NotificationCompat.Builder(app, channelId)
+            .setSmallIcon(iconProvider())
+            .setContentTitle(title)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setContentIntent(tap)
+            .addAction(0, app.getString(R.string.calls_decline), decline)
+            .addAction(0, app.getString(R.string.calls_answer), answer)
+        if (peerLabel != null) {
+            val body = app.getString(R.string.calls_incoming_body, peerLabel)
+            builder.setContentText(body).setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        }
+        val notification = builder.build()
+        
+        
+        if (ring) notification.flags = notification.flags or Notification.FLAG_INSISTENT
+        return notification
+    }
+
+    
+    private fun disguisedCallBanner(
+        channelId: String,
+        noisy: Boolean,
+        persistUntilOpen: Boolean,
+    ): Notification {
+        val tip = tipProvider()
+        val tapIntent = Intent(app, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_DISGUISE_TIP_TITLE, tip.title)
+            putExtra(EXTRA_DISGUISE_TIP_BODY, tip.body)
+        }
+        
+        
+        val tap = PendingIntent.getActivity(
+            app,
+            1,
+            tapIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = NotificationCompat.Builder(app, channelId)
+            .setSmallIcon(iconProvider())
+            .setContentTitle(tip.title)
+            .setContentText(tip.body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(tip.body))
+            .setVisibility(
+                if (noisy) NotificationCompat.VISIBILITY_PUBLIC else NotificationCompat.VISIBILITY_SECRET,
+            )
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            
+            
+            .setAutoCancel(!persistUntilOpen)
+            .setContentIntent(tap)
+            .setShowWhen(true)
+        if (noisy) builder.priority = NotificationCompat.PRIORITY_HIGH
+        return builder.build()
+    }
+
     private fun callActionPendingIntent(callId: String, action: String): PendingIntent {
         val intent = Intent(app, io.haoma.calculator.notifications.CallActionReceiver::class.java).apply {
             this.action = action
@@ -383,8 +477,49 @@ class NotificationPoster(
         const val CHANNEL_ID = "haoma_messages"
         const val NOISY_CHANNEL_ID = "haoma_messages_noisy"
         const val CALLS_CHANNEL_ID = "haoma_calls"
+        const val CALLS_RING_CHANNEL_ID = "haoma_calls_ring"
         const val NOTIF_ID_MESSAGE = 2001
         const val NOTIF_ID_CALL = 2002
+
+        
+        data class CallBannerPlan(
+            val skipReason: String?,
+            val disguise: Boolean,
+            val showName: Boolean,
+            val ring: Boolean,
+            val channelId: String,
+        )
+
+        
+        fun planCallBanner(
+            settings: NotificationSettings?,
+            softLocked: Boolean,
+            chatMuted: Boolean,
+        ): CallBannerPlan {
+            fun skip(reason: String) = CallBannerPlan(reason, false, false, false, "")
+            if (settings == null) return skip("no-settings")
+            if (!settings.shellEnabled) return skip("notifications-off")
+            if (softLocked && !settings.onLock) return skip("soft-locked+notifications_on_lock=false")
+            if (chatMuted) return skip("chat-muted")
+            
+            
+            val disguise = settings.disguiseEnabled
+            val ring = !disguise && settings.noisy
+            return CallBannerPlan(
+                skipReason = null,
+                disguise = disguise,
+                showName = !disguise && settings.showSender,
+                ring = ring,
+                
+                channelId = if (disguise) messageChannelId(settings.noisy) else callChannelId(ring),
+            )
+        }
+
+        fun callChannelId(ring: Boolean): String =
+            if (ring) CALLS_RING_CHANNEL_ID else CALLS_CHANNEL_ID
+
+        fun messageChannelId(noisy: Boolean): String =
+            if (noisy) NOISY_CHANNEL_ID else CHANNEL_ID
 
         
         const val AUTO_DISMISS_DEBOUNCE_MS = 500L
