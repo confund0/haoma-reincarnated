@@ -12,7 +12,14 @@ APK_RELEASE := $(ANDROID)/app/build/outputs/apk/release/app-release.apk
 TOR_BUILD     := $(ROOT)/mobile/tor-build
 TOR_JNILIBS   := $(ANDROID)/app/src/main/jniLibs
 TOR_LOCKFILE  := $(ANDROID)/app/tor-prebuilt.lock
-TOR_BUBBLE    := /usr/local/lib/alpsec/bubble.sh
+
+# The NDK is glibc-linked; on a musl host the NDK targets run inside a
+# Debian chroot through BUBBLE_LIB, a bash lib that defines
+# `bubble <cmd>` and reads the BUBBLE_BINDS array. Its path is a machine
+# value: set BUBBLE_LIB in the untracked local.mk at the repo root.
+-include $(ROOT)/local.mk
+BUBBLE_CHECK = @test -n "$(BUBBLE_LIB)" && test -f "$(BUBBLE_LIB)" \
+	|| (echo "FATAL: BUBBLE_LIB is not set or missing ('$(BUBBLE_LIB)'); set it in local.mk"; exit 1)
 
 # Call-streamer native deps (libopus, libsodium, libvpx) cross-compile
 # recipe + the committed static archives it produces. NOT runtime
@@ -181,14 +188,14 @@ android-release: android-bins ## signed release APK (needs HAOMA_RELEASE_* in th
 
 # Cross-compile Tor for arm64-v8a from upstream sources via the
 # vendored Briar/Guardian-Project recipe in mobile/tor-build/. Runs
-# inside the alpsec Debian chroot (NDK is a glibc-linked toolchain).
+# through BUBBLE_LIB (NDK is a glibc-linked toolchain).
 # After build success, copies output into the committed jniLibs dir
 # and writes the SHA-256 to tor-prebuilt.lock.
 tor-rebuild: ## cross-compile Tor and its dependencies to libtor.so (~15 min)
-	@test -f $(TOR_BUBBLE) || (echo "FATAL: alpsec bubble missing at $(TOR_BUBBLE)"; exit 1)
+	$(BUBBLE_CHECK)
 	@SDK_ROOT="$(HOME)/sdk" REPO_DIR="$(ROOT)" bash -c '\
 	    BUBBLE_BINDS=("$$SDK_ROOT" "$$REPO_DIR"); \
-	    . $(TOR_BUBBLE); \
+	    . $(BUBBLE_LIB); \
 	    bubble env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy \
 	      bash $(TOR_BUILD)/build.sh'
 	@mkdir -p $(TOR_JNILIBS)/arm64-v8a
@@ -218,16 +225,15 @@ tor-verify: ## re-hash the committed libtor.so against its lockfile
 
 # Cross-compile libopus, libsodium and libvpx static archives for
 # arm64-v8a from upstream sources via mobile/streams-build/. Runs
-# inside the alpsec Debian chroot (NDK is a glibc-linked toolchain;
-# autotools needs native glibc make / autoconf / clang). After build
-# success, the
+# through BUBBLE_LIB (NDK is a glibc-linked toolchain; autotools needs
+# native glibc make / autoconf / clang). After build success, the
 # committed archives + headers are at mobile/streams-build/prebuilt/
 # and the SHA-256 lockfile is rewritten.
 streams-deps: ## cross-compile libopus, libsodium and libvpx for arm64-v8a
-	@test -f $(TOR_BUBBLE) || (echo "FATAL: alpsec bubble missing at $(TOR_BUBBLE)"; exit 1)
+	$(BUBBLE_CHECK)
 	@SDK_ROOT="$(HOME)/sdk" REPO_DIR="$(ROOT)" bash -c '\
 	    BUBBLE_BINDS=("$$SDK_ROOT" "$$REPO_DIR"); \
-	    . $(TOR_BUBBLE); \
+	    . $(BUBBLE_LIB); \
 	    bubble env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy \
 	      bash $(STREAMS_BUILD)/build.sh'
 	@SHA_OPUS=$$(sha256sum $(STREAMS_PREBUILT)/arm64-v8a/lib/libopus.a | awk '{print $$1}'); \
@@ -282,15 +288,15 @@ streams-verify: ## re-hash the committed streams archives against their lockfile
 # These are PIE ELF executables — the lib*.so naming is what makes
 # Android's PackageManager extract them to nativeLibraryDir, where
 # exec is permitted (W^X is enforced everywhere else from API 29).
-# Runs inside the alpsec bubble: the NDK is glibc-linked. The NDK
+# Runs through BUBBLE_LIB: the NDK is glibc-linked. The NDK
 # builds with debug info even in Release, so llvm-strip removes it and
 # the symbol table (with them the build paths); .dynsym stays.
 android-streams: ## cross-compile the four call libraries (mic, spk, cam, vid) into jniLibs
-	@test -f $(TOR_BUBBLE) || (echo "FATAL: alpsec bubble missing at $(TOR_BUBBLE)"; exit 1)
+	$(BUBBLE_CHECK)
 	@$(MAKE) streams-verify
 	@SDK_ROOT="$(HOME)/sdk" REPO_DIR="$(ROOT)" bash -c '\
 	    BUBBLE_BINDS=("$$SDK_ROOT" "$$REPO_DIR"); \
-	    . $(TOR_BUBBLE); \
+	    . $(BUBBLE_LIB); \
 	    bubble env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy \
 	      bash -c "cd $(ROOT)/streams && \
 	        cmake -S . -B build-android \

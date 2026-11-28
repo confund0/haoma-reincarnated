@@ -116,10 +116,12 @@ The Linux build needs Go, CMake, pkg-config and the development
 packages of libopus, libsodium, libvpx and libpipewire-0.3.
 
 The Android build needs a glibc Linux host (tested on Debian) with
-NDK r29 at `~/sdk/android/ndk/r29`. Today `make android-streams`,
-`make tor-rebuild` and `make streams-deps` stop unless the maintainer's
-build sandbox is installed; running them on a plain glibc host is open
-work. See `mobile/tor-build/README.md` for the Tor build recipe and
+NDK r29 at `~/sdk/android/ndk/r29`. `make android-streams`,
+`make tor-rebuild` and `make streams-deps` run the NDK inside a Debian
+chroot and stop unless `BUBBLE_LIB` in an untracked `local.mk` at the
+repo root names the bash library that sets it up; running them on a
+plain glibc host is open work. See `mobile/tor-build/README.md` for
+the Tor build recipe and
 `mobile/streams-build/README.md` for the call libraries.
 
 ## License

@@ -5,8 +5,8 @@
 # Briar/Guardian Project Makefile, stages the output binary as
 # output/<abi>/libtor.so.
 #
-# Designed to run inside the alpsec Debian chroot via the bubble. Caller
-# (the root Makefile's tor-rebuild target) handles the bubble wrapper.
+# Designed to run inside a Debian (glibc) chroot. Caller (the root
+# Makefile's tor-rebuild target) wraps it through BUBBLE_LIB.
 
 set -euo pipefail
 

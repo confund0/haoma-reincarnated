@@ -105,7 +105,7 @@ opus-clean:
 	-rm -f opus-build-stamp
 	-$(MAKE) -C opus uninstall || true
 	-$(MAKE) -C opus clean || true
-	-cd opus && git clean -fdx > /dev/null 2>&1 || true
+	-cd opus && git clean -fdx -e '/opus_data-*.tar.gz' > /dev/null 2>&1 || true
 
 #---------------------------------------------------------------------#
 # libsodium — modern crypto primitives. Minimal build (drops legacy /

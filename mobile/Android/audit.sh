@@ -1,5 +1,5 @@
 #!/bin/bash
-# Privacy audit — runs inside the alpsec bubble via the Makefile.
+# Privacy audit — runs through BUBBLE_LIB via the Makefile when it is set.
 # Usage: bash audit.sh <apk-path>
 set -eu
 

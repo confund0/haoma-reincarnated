@@ -5,8 +5,8 @@
 # streams-versions.json, drives the Makefile recipe, stages the output
 # under prebuilt/<abi>/.
 #
-# Designed to run inside the alpsec Debian chroot via the bubble. Caller
-# (the root Makefile's streams-deps target) handles the bubble wrapper.
+# Designed to run inside a Debian (glibc) chroot. Caller (the root
+# Makefile's streams-deps target) wraps it through BUBBLE_LIB.
 
 set -euo pipefail
 
@@ -74,7 +74,9 @@ clone_or_fetch() {
         git -C "$dest" checkout -f "$commit"
     fi
     git -C "$dest" reset --hard >/dev/null
-    git -C "$dest" clean -dffx >/dev/null
+    # Keep opus's model tarball (134 MB): dnn/download_model.sh skips a
+    # present file and still checks its SHA-256.
+    git -C "$dest" clean -dffx -e '/opus_data-*.tar.gz' >/dev/null
 }
 
 for component in opus libsodium libvpx; do

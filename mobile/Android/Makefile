@@ -32,12 +32,16 @@ ENV := JAVA_HOME=$(JAVA_HOME) \
        JAVA_TOOL_OPTIONS=-XX:-FlightRecorder \
        HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= NO_PROXY= no_proxy=
 
-# Detect alpsec bubble. If present, every gradle invocation runs inside the
-# Debian chroot — Android binaries run native glibc, no patchelf needed.
-# On a glibc host, fall back to direct exec.
-BUBBLE_LIB := /usr/local/lib/alpsec/bubble.sh
+# BUBBLE_LIB comes from the untracked local.mk at the repo root (see the
+# root Makefile). When it is set and present, every gradle invocation
+# runs inside a Debian chroot — Android binaries run native glibc, no
+# patchelf needed. Unset (a glibc host): direct exec.
 ANDROID_DIR := $(CURDIR)
-ifneq (,$(wildcard $(BUBBLE_LIB)))
+-include $(ANDROID_DIR)/../../local.mk
+# BUBBLE_NOISE (local.mk): an ERE for the lib's own log lines, dropped
+# from apksigner's error output. Empty: nothing is dropped.
+BUBBLE_FILTER = $(if $(BUBBLE_NOISE),grep -Ev '$(BUBBLE_NOISE)',cat)
+ifneq (,$(and $(BUBBLE_LIB),$(wildcard $(BUBBLE_LIB))))
     # Use bash -c so we can source bubble.sh and call bubble().
     # BUBBLE_BINDS scopes filesystem reach inside the sandbox.
     IN_BUBBLE = SDK_ROOT="$(SDK_ROOT)" ANDROID_DIR="$(ANDROID_DIR)" bash -c '\
@@ -67,7 +71,7 @@ help:
 	@echo "  verify-apk APK=<absolute path> - apksigner check; the certificate must be in HOWTO-VERIFY.md"
 
 bootstrap:
-	./bootstrap.sh
+	BUBBLE_LIB="$(BUBBLE_LIB)" ./bootstrap.sh
 
 # build and test are quiet like the root targets: one line on success,
 # the error lines on failure, the full output in
@@ -105,7 +109,7 @@ verify-apk:
 	@test -f "$(APK)" || { echo "FATAL: $(APK) not found"; exit 1; }
 	@mkdir -p build
 	@$(VERIFY_BUBBLE) sh -c '$(ENV) apksigner verify --verbose --print-certs "$(abspath $(APK))"' > $(VERIFY_OUT) 2>&1 \
-	  || { grep -v '^alpsec:' $(VERIFY_OUT) | head -20; echo "FATAL: apksigner failed (full output: $(VERIFY_OUT))"; exit 1; }
+	  || { $(BUBBLE_FILTER) < $(VERIFY_OUT) | head -20; echo "FATAL: apksigner failed (full output: $(VERIFY_OUT))"; exit 1; }
 	@D=$$(awk -F': ' '/^Signer #1 certificate SHA-256 digest/{print $$2}' $(VERIFY_OUT)); \
 	 test -n "$$D" || { echo "FATAL: no certificate digest in $(VERIFY_OUT)"; exit 1; }; \
 	 H=$$(ls ../../public-only/docs/HOWTO-VERIFY.md ../../docs/HOWTO-VERIFY.md 2>/dev/null | head -1); \

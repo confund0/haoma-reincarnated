@@ -53,7 +53,10 @@ fun MessengerStore.syncLockState(softLocked: Boolean) {
     if (softLocked) forgetTypedJoinSecrets()
     
     
-    if (softLocked) currentFocusChatId = ""
+    if (softLocked && currentFocusChatId.isNotEmpty()) {
+        currentFocusChatId = ""
+        emitClientFocus("", 0)
+    }
     
     
     if (softLocked && loadNotificationSettings()?.onLock != true) {

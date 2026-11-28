@@ -16,4 +16,5 @@ kjv.txt
 .DS_Store
 mobile/Android/.kotlin/
 frontend/haoma-dev-stub
+/local.mk
 

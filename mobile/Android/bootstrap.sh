@@ -1,7 +1,7 @@
 #!/bin/bash
 # Userland Android toolchain bootstrap.
 #
-# Runs every step inside the alpsec Debian chroot via bwrap so that all
+# Runs every step inside a Debian chroot via BUBBLE_LIB so that all
 # downloaded binaries (JDK, sdkmanager, build-tools, AGP's aapt2 daemon)
 # are native Debian glibc — no patchelf, no glibc rootfs, no LD shims.
 #
@@ -21,15 +21,16 @@ ANDROID_DIR="$(cd "$(dirname "$0")" && pwd)"
 SDK_ROOT="${SDK_ROOT:-$HOME/sdk}"
 mkdir -p "$SDK_ROOT" "$HOME/.gradle" "$HOME/.android"
 
-BUBBLE_LIB="/usr/local/lib/alpsec/bubble.sh"
-if [ ! -f "$BUBBLE_LIB" ]; then
-    echo "bootstrap: $BUBBLE_LIB not found." >&2
-    echo "On Alpine (musl) hosts the build chain runs inside the alpsec Debian chroot." >&2
-    echo "On a glibc host you can run this script with USE_BUBBLE=0 to install directly." >&2
-    : "${USE_BUBBLE:=1}"
-fi
-
+# BUBBLE_LIB: the bash lib that defines `bubble`; `make bootstrap` passes
+# it from the untracked local.mk at the repo root.
+BUBBLE_LIB="${BUBBLE_LIB:-}"
 USE_BUBBLE="${USE_BUBBLE:-1}"
+if [ "$USE_BUBBLE" = "1" ] && { [ -z "$BUBBLE_LIB" ] || [ ! -f "$BUBBLE_LIB" ]; }; then
+    echo "bootstrap: BUBBLE_LIB is not set or missing ('$BUBBLE_LIB')." >&2
+    echo "On a musl host the build chain runs inside a Debian chroot: set BUBBLE_LIB in local.mk." >&2
+    echo "On a glibc host you can run this script with USE_BUBBLE=0 to install directly." >&2
+    exit 1
+fi
 
 # in_chroot CMD ARGS...
 # Runs the given command either inside the bubble or directly, with
